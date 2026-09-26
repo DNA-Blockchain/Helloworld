@@ -90,7 +90,7 @@ def test_single_instance_lock(tmp_path):
 def test_real_nodes_restart_after_crash_and_daily_report(tmp_path):
     cfg = sup.Config(base_dir=str(tmp_path / "auto"), node_count=2, base_port=19780,
                      heartbeat_seconds=1, round_seconds=4, takeover_seconds=1,
-                     run_tests=False, notify=False)
+                     run_tests=False, run_self_tests=False, notify=False)
     s = sup.Supervisor(cfg)
     s.load_keys()
     try:

@@ -13,7 +13,8 @@ What it does:
     autonomous/period_totals.json, so crashes, restarts and reboots
     don't lose the day's numbers
   - once a day (REPORT_HOUR, local time, or at the next start if the PC
-    was off then): stops the nodes, runs the test suite, writes
+    was off then): stops the nodes, runs the test suite and
+    run_self_tests.py (each component's own self-test), writes
     autonomous/reports/YYYY-MM-DD.md, moves the day's chain/identity/
     token/log files into autonomous/archive/YYYY-MM-DD/ (keeping 30 days),
     shows a Windows notification, and starts the nodes again
@@ -63,6 +64,7 @@ class Config:
     keep_archive_days: int = 30
     poll_seconds: float = 5.0
     run_tests: bool = True
+    run_self_tests: bool = True
     notify: bool = True
     python: str = field(default_factory=lambda: console_python())
 
@@ -142,7 +144,7 @@ def merge_totals(snapshots: dict) -> dict:
 
 def build_report(date: dt.date, period_start: float, period_end: float, totals: dict,
                  crashes: list[dict], tests: Optional[dict], log_problems: dict[int, list[str]],
-                 node_count: int) -> tuple[str, bool, list[str]]:
+                 node_count: int, self_tests: Optional[dict] = None) -> tuple[str, bool, list[str]]:
     """(markdown, ok, attention reasons)."""
     reasons = []
     per_node = merge_totals(totals)
@@ -164,6 +166,12 @@ def build_report(date: dt.date, period_start: float, period_end: float, totals: 
         reasons.append(f"nodes exited unexpectedly {len(crashes)} times")
     if tests is not None and not tests.get("ok"):
         reasons.append(f"test suite: {tests.get('summary')}")
+    if self_tests is not None:
+        if self_tests.get("error"):
+            reasons.append(f"component self-tests didn't run: {self_tests['error']}")
+        elif self_tests.get("counts", {}).get("FAIL"):
+            failed = [r["file"] for r in self_tests.get("results", []) if r.get("status") == "FAIL"]
+            reasons.append(f"component self-tests failed: {', '.join(failed)}")
     ok = not reasons
 
     fmt = lambda ts: dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
@@ -217,6 +225,22 @@ def build_report(date: dt.date, period_start: float, period_end: float, totals: 
         lines.append(f"{'PASSED' if tests.get('ok') else 'FAILED'}: {tests.get('summary')}")
         for f in (tests.get("failures") or [])[:15]:
             lines.append(f"- {f}")
+
+    lines += ["", "## Component self-tests", ""]
+    if self_tests is None:
+        lines.append("Not run.")
+    elif self_tests.get("error"):
+        lines.append(f"Didn't run: {self_tests['error']}")
+    else:
+        c = self_tests.get("counts", {})
+        lines.append(f"{c.get('PASS', 0)} passed, {c.get('FAIL', 0)} failed, "
+                     f"{c.get('MISSING', 0)} not in the project yet (run_self_tests.py).")
+        for r in self_tests.get("results", []):
+            if r.get("status") == "FAIL":
+                lines.append(f"- FAILED: {r['label']} ({r['file']}) - log: {r.get('log')}")
+        missing = [r["file"] for r in self_tests.get("results", []) if r.get("status") == "MISSING"]
+        if missing:
+            lines.append(f"- Not in the project (listed, not counted as failures): {', '.join(missing)}")
 
     if any(log_problems.values()):
         lines += ["", "## Errors from the node logs", ""]
@@ -478,16 +502,35 @@ class Supervisor:
         failures = [l for l in lines if l.startswith("FAILED") or l.startswith("ERROR")]
         return {"ok": out.returncode == 0, "summary": summary, "failures": failures}
 
+    def run_self_tests(self) -> dict:
+        """run_self_tests.py (each component's own self-test); logs go to
+        autonomous/logs/self-tests/, overwritten each day."""
+        log_dir = os.path.join(self.cfg.logs_dir, "self-tests")
+        json_out = os.path.join(log_dir, "summary.json")
+        shutil.rmtree(log_dir, ignore_errors=True)
+        os.makedirs(log_dir, exist_ok=True)
+        try:
+            subprocess.run([self.cfg.python, os.path.join(PROJECT_DIR, "run_self_tests.py"),
+                            "--log-dir", log_dir, "--json-out", json_out], cwd=PROJECT_DIR,
+                           capture_output=True, text=True, timeout=1800, creationflags=NO_WINDOW)
+            with open(json_out, encoding="utf-8") as f:
+                return json.load(f)
+        except subprocess.TimeoutExpired:
+            return {"error": "timed out after 30 minutes"}
+        except (OSError, ValueError) as e:
+            return {"error": f"no results ({e})"}
+
     def daily(self, now: dt.datetime) -> str:
         self.log.info("daily report starting")
         self.stop_nodes()
         self.collect_status()
         tests = self.run_tests() if self.cfg.run_tests else None
+        self_tests = self.run_self_tests() if self.cfg.run_self_tests else None
         log_problems = {i: scan_log(os.path.join(self.cfg.logs_dir, f"node-{i}.log"))
                         for i in range(self.cfg.node_count)}
         report, ok, reasons = build_report(
             now.date(), self.state["period_start"], now.timestamp(), self.state["snapshots"],
-            self.state["crashes"], tests, log_problems, self.cfg.node_count)
+            self.state["crashes"], tests, log_problems, self.cfg.node_count, self_tests)
         path = os.path.join(self.cfg.reports_dir, f"{now.date().isoformat()}.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(report)
@@ -640,8 +683,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     g.add_argument("--stop", action="store_true", help="stop the running supervisor and its nodes")
     p.add_argument("--report-hour", type=int, default=8, help="local hour for the daily report (0-23)")
     p.add_argument("--no-tests", action="store_true", help="skip running the test suite in the report")
+    p.add_argument("--no-self-tests", action="store_true",
+                   help="skip run_self_tests.py (component self-tests) in the report")
     args = p.parse_args(argv)
-    cfg = Config(report_hour=args.report_hour, run_tests=not args.no_tests)
+    cfg = Config(report_hour=args.report_hour, run_tests=not args.no_tests,
+                 run_self_tests=not args.no_self_tests)
 
     if args.install:
         return install()

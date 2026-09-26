@@ -76,10 +76,17 @@ BIOMARKER  = "BRCA1"
 python -m pytest -q
 ```
 
-As of this writing: **217 tests pass** in about a minute. The tests
+As of this writing: **223 tests pass** in about a minute. The tests
 deliberately do **not** hit the live external APIs (those are verified
 by manual runs — see [`KNOWN_GAPS.md`](KNOWN_GAPS.md)) so the suite
 stays deterministic.
+
+To run every component's own built-in self-test (plus short live network
+runs) in one go, with a log per component in `self_test_logs/`:
+
+```bash
+python run_self_tests.py
+```
 
 ## Running on its own (autonomous mode)
 
@@ -100,7 +107,7 @@ python node_supervisor.py --uninstall   # stop and remove the logon task
   if it's down or slow, the next node takes it over after 20 seconds.
 - A node that exits is restarted (5s, 10s, 20s ... up to 5 min apart).
 - Every day at 08:00 (or at the next logon if the PC was off) the
-  supervisor runs the test suite, writes `autonomous/reports/<date>.md`,
+  supervisor runs the test suite and `run_self_tests.py`, writes `autonomous/reports/<date>.md`,
   archives the day's chains/logs to `autonomous/archive/` (30 days kept)
   and shows a Windows notification saying OK or what needs attention.
 - Everything lives under `autonomous/` (gitignored). Signing keys are in

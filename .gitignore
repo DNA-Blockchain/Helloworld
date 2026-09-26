@@ -11,6 +11,7 @@ chain_node-*.json
 consolidated_run/
 node_data/
 autonomous/
+self_test_logs/
 
 # Node Ed25519 private signing keys -- never commit these
 keys/
