@@ -109,7 +109,8 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
         kernel32.LocalFree(blob_out.pbData)
 
 
-def save_passphrase(passphrase: str, path: Path = DPAPI_FILE) -> Path:
+def save_passphrase(passphrase: str, path: Path | None = None) -> Path:
+    path = Path(path or DPAPI_FILE)
     if len(passphrase) < 12:
         raise ValueError("passphrase must be at least 12 characters")
     if os.name != "nt":
@@ -121,7 +122,8 @@ def save_passphrase(passphrase: str, path: Path = DPAPI_FILE) -> Path:
     return path
 
 
-def load_passphrase(path: Path = DPAPI_FILE) -> str:
+def load_passphrase(path: Path | None = None) -> str:
+    path = Path(path or DPAPI_FILE)
     env = os.environ.get(PASSPHRASE_ENV)
     if env:
         return env
@@ -307,9 +309,12 @@ def offsite_sync(dest: Path) -> dict | None:
     if not offsite_s3.S3Offsite.load_config(dest):
         return None
     try:
-        return offsite_s3.S3Offsite(dest, runner=offsite_s3.cli_runner).sync()
+        report = offsite_s3.S3Offsite(dest, runner=offsite_s3.cli_runner).sync()
     except Exception as e:
-        return {"error": str(e)[:300]}
+        report = {"error": str(e)[:300]}
+    # backup_health.py reads this to alert on failed syncs
+    (Path(dest) / "offsite_last_sync.json").write_text(json.dumps({**report, "at": time.time()}), encoding="utf-8")
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -368,7 +373,12 @@ def main(argv: list[str] | None = None) -> int:
                                        details={**{k: entry[k] for k in ("vault_id", "file_count",
                                                                           "bundle_bytes", "verified")},
                                                 "pruned": pruned, "offsite": offsite_summary})
-        print(json.dumps({**entry, "pruned": pruned, "offsite": offsite}, indent=2))
+        try:   # weekly test restore when due, health checks, desktop alert if anything's wrong
+            import backup_health
+            health = backup_health.run_scheduled(bs.dest, passphrase, audit_path=args.audit)
+        except Exception as e:
+            health = {"error": str(e)[:300]}
+        print(json.dumps({**entry, "pruned": pruned, "offsite": offsite, "health": health}, indent=2))
         return 0
     if args.command == "verify":
         ids = [e["vault_id"] for e in bs.entries()] if args.vault_id == "all" else [args.vault_id]

@@ -542,7 +542,12 @@ class Supervisor:
         report, ok, reasons = build_report(
             now.date(), self.state["period_start"], now.timestamp(), self.state["snapshots"],
             self.state["crashes"], tests, log_problems, self.cfg.node_count, self_tests)
-        path = os.path.join(self.cfg.reports_dir, f"{now.date().isoformat()}.md")
+        backup_alerts = self.backup_alerts()
+        if backup_alerts:
+            report += "\n## Backups\n\n" + "".join(f"- [ALERT] {a}\n" for a in backup_alerts)
+            ok = False
+            reasons = reasons + [f"backups: {a}" for a in backup_alerts]
+        path =os.path.join(self.cfg.reports_dir, f"{now.date().isoformat()}.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(report)
         rotate(self.cfg, now.date())
@@ -558,6 +563,18 @@ class Supervisor:
             else:
                 notify("dna-chain-project: needs attention", "; ".join(reasons)[:300] + f"  ({path})")
         return path
+
+    def backup_alerts(self) -> list[str]:
+        """backup_health.py's alerts, once backups have been set up (the
+        backup folder exists); silent before that."""
+        try:
+            import backup
+            import backup_health
+            if not backup.DEFAULT_DEST.exists():
+                return []
+            return backup_health.check(backup.DEFAULT_DEST)
+        except Exception as e:
+            return [f"backup health check failed to run: {e}"]
 
     def apply_retention(self, now: dt.datetime) -> Optional[dict]:
         """retention.py on the shared live store, while the nodes are stopped

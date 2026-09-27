@@ -607,6 +607,24 @@ python offsite_s3.py sync
 python offsite_s3.py pull all-missing     # new PC: fetch backups, then backup.py restore
 ```
 
+### Backup health and test restores
+
+`backup_health.py` checks that backups are really happening: the newest
+is under 36 hours old and verified, the passphrase loads, every backup
+older than that is confirmed in S3, the last sync had no errors, there's
+at least 1 GB free, and the nightly task exists and last ran cleanly.
+Once a week, after the nightly backup, it restores the newest backup into
+a throwaway folder -- every file checked against its SHA-256, every SQLite
+database integrity-checked, every JSON file parsed -- and downloads and
+decrypts the newest S3 copy too. Problems raise a desktop notification
+and appear in the supervisor's daily report; results go to
+`test_restores.jsonl` and the audit trail.
+
+```powershell
+python backup_health.py check          # [ALERT] lines, exit 1 if any
+python backup_health.py test-restore   # run a test restore now
+```
+
 ### JSON interface and interpreter
 
 The Blockchain-DNA skill uses a JSON request/response interface. For
