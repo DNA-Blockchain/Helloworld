@@ -159,7 +159,13 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
     });
     if !output
         .iter()
-        .any(|line| line.contains("DHCP configured: IPv4 "))
+        .any(|line| line.contains("PIT timer verified: "))
+        || !output
+            .iter()
+            .any(|line| line.contains("Physical frame allocator verified: "))
+        || !output
+            .iter()
+            .any(|line| line.contains("DHCP configured: IPv4 "))
         || !output
             .iter()
             .any(|line| line.contains("ICMP echo reply from 10.0.2.2"))
@@ -244,6 +250,8 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
 
     let mut output = Vec::new();
     let mut saw_dhcp = false;
+    let mut saw_timer = false;
+    let mut saw_memory = false;
     let mut saw_ipv4_echo = false;
     let mut saw_slaac = false;
     let mut saw_default_route = false;
@@ -254,13 +262,17 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {
                 saw_dhcp |= line.contains("DHCP configured: IPv4 ");
+                saw_timer |= line.contains("PIT timer verified: ");
+                saw_memory |= line.contains("Physical frame allocator verified: ");
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");
                 saw_default_route |= line.contains("IPv6 default gateway: fe80::1");
                 saw_ipv6_echo |= line.contains("ICMPv6 echo reply from fe80::1");
                 saw_service_ready |= line.contains("HTTP health service listening on port 8080");
                 output.push(line);
-                if saw_dhcp
+                if saw_timer
+                    && saw_memory
+                    && saw_dhcp
                     && saw_ipv4_echo
                     && saw_slaac
                     && saw_default_route
@@ -300,7 +312,9 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
     print_output(&output);
     qemu_cleanup?;
     router_cleanup?;
-    if !(saw_dhcp
+    if !(saw_timer
+        && saw_memory
+        && saw_dhcp
         && saw_ipv4_echo
         && saw_slaac
         && saw_default_route
@@ -308,7 +322,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, physical frame allocator: {saw_memory}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

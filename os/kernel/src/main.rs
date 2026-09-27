@@ -2,7 +2,9 @@
 #![no_main]
 
 mod e1000;
+mod memory;
 mod network;
+mod timer;
 
 use bootloader_api::{BootInfo, BootloaderConfig, config::Mapping, entry_point};
 use core::fmt::{self, Write};
@@ -55,6 +57,14 @@ impl Write for Serial {
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     Serial::initialize();
     let _ = writeln!(Serial, "Network OS prototype: booted in x86_64 QEMU.");
+    timer::initialize();
+    timer::wait_for_ticks(10);
+    let _ = writeln!(
+        Serial,
+        "PIT timer verified: {} ticks at {} ms.",
+        timer::ticks(),
+        timer::milliseconds()
+    );
     match network::run(boot_info) {
         Ok(()) => exit_qemu(0x10),
         Err(error) => {

@@ -12,6 +12,11 @@ this kernel.
   network adapter.
 - Initializes the QEMU Intel 82540EM (`8086:100e`) E1000 using DMA
   descriptor rings and memory-mapped registers.
+- Installs a 100 Hz PIT interrupt handler, remaps and masks the legacy PIC,
+  provides a monotonic millisecond clock, and uses `hlt` while waiting.
+- Initializes a fixed-metadata physical frame allocator for usable memory
+  below 4 GiB; the boot check allocates, maps, writes, releases, and reuses a
+  page. This does not yet provide general virtual-memory management.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an

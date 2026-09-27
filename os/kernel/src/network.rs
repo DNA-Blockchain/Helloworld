@@ -15,17 +15,22 @@ use smoltcp::{
 const DHCP_WAIT_MS: i64 = 15_000;
 const SLAAC_WAIT_MS: i64 = 5_000;
 const PING_WAIT_MS: i64 = 3_000;
-const QEMU_NETWORK_SETTLE_SPINS: usize = 10_000_000;
 const HTTP_PORT: u16 = 8080;
 const HTTP_REQUEST_CAPACITY: usize = 512;
 const IPV6_TEST_GATEWAY: Ipv6Address = Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
 
 pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> {
     let mut device = E1000::initialize(boot_info)?;
+    crate::memory::initialize(boot_info)?;
+    crate::memory::verify_allocate_and_release()?;
+    let _ = writeln!(
+        Serial,
+        "Physical frame allocator verified: allocate, map, release, reuse."
+    );
     let mut config = Config::new(EthernetAddress(device.mac()).into());
     config.random_seed = 0x4e45_5457;
     config.slaac = true;
-    let mut interface = Interface::new(config, &mut device, Instant::from_millis(0));
+    let mut interface = Interface::new(config, &mut device, Instant::from_millis(now_ms()));
 
     let link_local = link_local_address(device.mac());
     let mut link_local_error = false;
@@ -63,15 +68,10 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     let icmp_handle = sockets.add(icmp_socket);
     let tcp_handle = sockets.add(tcp_socket);
 
+    let dhcp_deadline = now_ms().saturating_add(DHCP_WAIT_MS);
     let mut dhcp_config = None;
-    for milliseconds in 0..DHCP_WAIT_MS {
-        let timestamp = Instant::from_millis(milliseconds);
-        interface.poll(timestamp, &mut device, &mut sockets);
-        if milliseconds == 0 {
-            for _ in 0..QEMU_NETWORK_SETTLE_SPINS {
-                core::hint::spin_loop();
-            }
-        }
+    loop {
+        interface.poll(Instant::from_millis(now_ms()), &mut device, &mut sockets);
         match sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll() {
             Some(dhcpv4::Event::Configured(config)) => {
                 dhcp_config = Some(config);
@@ -82,7 +82,10 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         if device.take_tx_error() {
             return Err("E1000 transmit descriptor did not complete");
         }
-        core::hint::spin_loop();
+        if now_ms() >= dhcp_deadline {
+            break;
+        }
+        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
     }
 
     let Some(config) = dhcp_config else {
@@ -117,11 +120,9 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         &mut sockets,
         icmp_handle,
         gateway,
-        DHCP_WAIT_MS,
     )?;
 
-    let ipv6_address =
-        wait_for_slaac_address(&mut interface, &mut device, &mut sockets, DHCP_WAIT_MS)?;
+    let ipv6_address = wait_for_slaac_address(&mut interface, &mut device, &mut sockets)?;
     let ipv6_gateway = if let Some(address) = ipv6_address {
         let _ = writeln!(Serial, "IPv6 SLAAC configured: {}", address);
         let gateway = interface
@@ -169,7 +170,6 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         &mut sockets,
         icmp_handle,
         ipv6_gateway,
-        DHCP_WAIT_MS + SLAAC_WAIT_MS,
     )?;
     if device.take_tx_error() {
         return Err("E1000 transmit descriptor did not complete");
@@ -231,14 +231,18 @@ fn link_local_address(mac: [u8; 6]) -> Ipv6Address {
     )
 }
 
+fn now_ms() -> i64 {
+    crate::timer::milliseconds().min(i64::MAX as u64) as i64
+}
+
 fn wait_for_slaac_address(
     interface: &mut Interface,
     device: &mut E1000,
     sockets: &mut SocketSet<'_>,
-    start_ms: i64,
 ) -> Result<Option<Ipv6Address>, &'static str> {
-    for milliseconds in start_ms..start_ms + SLAAC_WAIT_MS {
-        interface.poll(Instant::from_millis(milliseconds), device, sockets);
+    let deadline = now_ms().saturating_add(SLAAC_WAIT_MS);
+    loop {
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
         if let Some(address) = interface.ip_addrs().iter().find_map(|cidr| match cidr {
             IpCidr::Ipv6(cidr) if !cidr.address().is_unicast_link_local() => Some(cidr.address()),
             _ => None,
@@ -248,9 +252,11 @@ fn wait_for_slaac_address(
         if device.take_tx_error() {
             return Err("E1000 transmit descriptor did not complete");
         }
-        core::hint::spin_loop();
+        if now_ms() >= deadline {
+            return Ok(None);
+        }
+        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
     }
-    Ok(None)
 }
 
 fn serve_http(
@@ -262,10 +268,8 @@ fn serve_http(
 ) -> Result<(), &'static str> {
     let mut request = [0; HTTP_REQUEST_CAPACITY];
     let mut request_len = 0;
-    let mut milliseconds = DHCP_WAIT_MS + SLAAC_WAIT_MS + PING_WAIT_MS;
     loop {
-        interface.poll(Instant::from_millis(milliseconds), device, sockets);
-        milliseconds += 1;
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
         let socket = sockets.get_mut::<tcp::Socket>(handle);
         if !socket.is_open() {
             socket
@@ -315,7 +319,7 @@ fn serve_http(
         if device.take_tx_error() {
             return Err("E1000 transmit descriptor did not complete");
         }
-        core::hint::spin_loop();
+        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
     }
 }
 
@@ -325,7 +329,6 @@ fn verify_ipv4_gateway_echo(
     sockets: &mut SocketSet<'_>,
     handle: smoltcp::iface::SocketHandle,
     gateway: Ipv4Address,
-    start_ms: i64,
 ) -> Result<(), &'static str> {
     let ident = 0x4244;
     let sequence = 1;
@@ -355,8 +358,9 @@ fn verify_ipv4_gateway_echo(
         .emit(&mut packet, &device.capabilities().checksum);
     }
 
-    for milliseconds in start_ms..start_ms + PING_WAIT_MS {
-        interface.poll(Instant::from_millis(milliseconds), device, sockets);
+    let deadline = now_ms().saturating_add(PING_WAIT_MS);
+    loop {
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
         let socket = sockets.get_mut::<icmp::Socket>(handle);
         if socket.can_recv() {
             let (packet, source) = socket
@@ -381,9 +385,11 @@ fn verify_ipv4_gateway_echo(
         if device.take_tx_error() {
             return Err("E1000 transmit descriptor did not complete");
         }
-        core::hint::spin_loop();
+        if now_ms() >= deadline {
+            return Err("no ICMP echo reply received from the QEMU IPv4 gateway");
+        }
+        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
     }
-    Err("no ICMP echo reply received from the QEMU IPv4 gateway")
 }
 
 fn verify_ipv6_gateway_echo(
@@ -392,7 +398,6 @@ fn verify_ipv6_gateway_echo(
     sockets: &mut SocketSet<'_>,
     handle: smoltcp::iface::SocketHandle,
     gateway: Ipv6Address,
-    start_ms: i64,
 ) -> Result<(), &'static str> {
     let ident = 0x4244;
     let sequence = 1;
@@ -425,8 +430,9 @@ fn verify_ipv6_gateway_echo(
         );
     }
 
-    for milliseconds in start_ms..start_ms + PING_WAIT_MS {
-        interface.poll(Instant::from_millis(milliseconds), device, sockets);
+    let deadline = now_ms().saturating_add(PING_WAIT_MS);
+    loop {
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
         let socket = sockets.get_mut::<icmp::Socket>(handle);
         if socket.can_recv() {
             let (packet, source_address) = socket
@@ -453,7 +459,9 @@ fn verify_ipv6_gateway_echo(
         if device.take_tx_error() {
             return Err("E1000 transmit descriptor did not complete");
         }
-        core::hint::spin_loop();
+        if now_ms() >= deadline {
+            return Err("no ICMPv6 echo reply received from the QEMU IPv6 gateway");
+        }
+        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
     }
-    Err("no ICMPv6 echo reply received from the QEMU IPv6 gateway")
 }
