@@ -17,6 +17,7 @@ Usage
 
 from __future__ import annotations
 import json
+import os
 import ssl
 import time
 import urllib.parse
@@ -35,7 +36,11 @@ _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def _http_get_json(url: str, params: dict) -> dict:
-    full_url = f"{url}?{urllib.parse.urlencode(params)}"
+    request_params = dict(params)
+    api_key = os.environ.get("NCBI_API_KEY", "").strip()
+    if api_key and "eutils.ncbi.nlm.nih.gov" in url:
+        request_params["api_key"] = api_key
+    full_url = f"{url}?{urllib.parse.urlencode(request_params)}"
     req = urllib.request.Request(full_url, headers={"User-Agent": _USER_AGENT})
     with urllib.request.urlopen(req, timeout=20, context=_SSL_CONTEXT) as resp:
         return json.loads(resp.read())

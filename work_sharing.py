@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -218,12 +219,14 @@ class WorkManager:
             self._note_audit(work, block.get("origin"))
 
     def _note_audit(self, work: dict, by) -> None:
-        result = work.get("result") or {}
-        entry = {"round": work.get("round"), "by": by, **result}
+        provenance = work.get("result_provenance") or {}
+        summary = provenance.get("summary") or {}
+        entry = {"round": work.get("round"), "by": by, **summary}
         self.recent_audits = (self.recent_audits + [entry])[-20:]
-        if not result.get("ok"):
-            self.node.log(f"!! audit by node-{by} found problems in node-{result.get('target')}'s chain: "
-                          f"{result.get('problems')}")
+        if summary.get("ok") is False:
+            self.node.log(
+                f"!! audit by node-{by} found problems in node-{summary.get('target')}'s chain"
+            )
 
     # -- doing work --
 
@@ -267,8 +270,38 @@ class WorkManager:
             if task.task_id in self.done:   # someone else finished first while we worked
                 self.stats["work_finished_late"] += 1
                 return
-            work = {"task": task.task_id, "kind": task.kind, "round": task.round_no,
-                    "by": self.node.node_id, "takeover": position > 0, "result": result}
+            result_digest = hashlib.sha256(
+                json.dumps(
+                    result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            if task.kind == "audit":
+                audit_result = result
+                summary = {
+                    "target": audit_result.get("target"),
+                    "ok": bool(audit_result.get("ok")),
+                    "blocks_checked": audit_result.get("blocks_checked", 0),
+                    "problem_count": audit_result.get("problem_count", 0),
+                }
+            else:
+                summary = {
+                    "source": result.get("source", task.kind) if isinstance(result, dict) else task.kind,
+                    "status": (
+                        "unavailable" if isinstance(result, dict) and result.get("error")
+                        else "completed"
+                    ),
+                }
+            work = {
+                "task": task.task_id,
+                "kind": task.kind,
+                "round": task.round_no,
+                "by": self.node.node_id,
+                "takeover": position > 0,
+                "result_provenance": {
+                    "result_sha256": result_digest,
+                    "summary": summary,
+                },
+            }
             self.done[task.task_id] = {"by": self.node.node_id, "at": self.clock()}
             self.stats[f"work_done:{task.kind}"] += 1
             if position > 0:

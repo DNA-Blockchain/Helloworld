@@ -50,7 +50,7 @@ from project_identifier import compute_project_identifier, save_manifest
 
 # ---- edit these for your real use ----
 SEED_LABEL = "my-research-node"
-HOST, PORT = "0.0.0.0", 8765
+HOST, PORT = "127.0.0.1", 8765
 CONDITION = "breast cancer"
 BIOMARKER = "BRCA1"
 INTERVAL_SECONDS = 3600

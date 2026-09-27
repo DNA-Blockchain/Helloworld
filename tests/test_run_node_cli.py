@@ -28,6 +28,46 @@ def test_default_identity_text_is_neutral():
     assert cli.build_parser().parse_args(["--id", "0"]).identity_text == cli.DEFAULT_IDENTITY_TEXT
 
 
+def test_run_all_default_listener_is_local_only():
+    import run_all
+    assert run_all.HOST == "127.0.0.1"
+
+
+def test_research_gossip_is_opt_in():
+    args = cli.build_parser().parse_args(["--id", "0", "--no-external-info"])
+    assert args.allow_research_gossip is False
+    assert cli.build_enrichers(args) == []
+
+    args = cli.build_parser().parse_args([
+        "--id", "0", "--allow-research-gossip", "--no-external-info"
+    ])
+    assert cli.build_enrichers(args) == [cli.research_enricher]
+
+
+def test_external_data_enrichment_is_opt_in():
+    default_args = cli.build_parser().parse_args(["--id", "0"])
+    assert cli.build_enrichers(default_args) == []
+
+    enabled_args = cli.build_parser().parse_args(["--id", "0", "--allow-external-info"])
+    assert cli.build_enrichers(enabled_args) == [cli.external_info_enricher]
+
+
+def test_provenance_queue_rejects_live_enrichers():
+    with pytest.raises(SystemExit) as exc:
+        import asyncio
+        asyncio.run(cli.main([
+            "--id", "0", "--provenance-queue", "outbox", "--allow-external-info"
+        ]))
+    assert exc.value.code == 2
+
+
+def test_research_gossip_flags_cannot_conflict():
+    with pytest.raises(SystemExit) as exc:
+        import asyncio
+        asyncio.run(cli.main(["--id", "0", "--allow-research-gossip", "--no-research"]))
+    assert exc.value.code == 2
+
+
 async def test_show_key_is_stable_and_refuses_changed_pin(tmp_path, capsys):
     workdir = str(tmp_path / "n0")
     assert await cli.main(["--id", "0", "--workdir", workdir, "--show-key"]) == 0

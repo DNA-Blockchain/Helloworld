@@ -3,6 +3,7 @@ when everyone is up, takeover when the first-in-line node is down, and
 chain audits that catch tampering."""
 import asyncio
 import hashlib
+import json
 import time
 
 from digital_dna import DigitalDNA
@@ -99,6 +100,44 @@ async def test_each_job_done_exactly_once_when_all_nodes_are_up(tmp_path):
         assert sum(m.stats["takeovers"] for m in managers) == 0
     finally:
         await _close(nodes)
+
+
+async def test_work_result_content_is_hashed_before_gossip(tmp_path):
+    blocks = []
+
+    class FakeNode:
+        node_id = 4
+        on_verified_block = []
+        background = []
+        peer_signing_keys = {}
+        work = None
+
+        async def mine_and_gossip(self, *, extra, run_enrichers):
+            blocks.append(extra["work"])
+            assert run_enrichers is False
+
+        def log(self, message):
+            pass
+
+    node = FakeNode()
+    manager = WorkManager(
+        node,
+        WorkSchedule(round_seconds=100, research_every=1, external_every=0, audits=False),
+        runners={"research": lambda: {
+            "source": "clinicaltrials.gov",
+            "id": "NCT00000000",
+            "abstract": "private source text must not be broadcast",
+        }},
+    )
+    task = manager.schedule.tasks_for_round(1, [node.node_id])[0]
+    await manager.run_task(task, 0)
+
+    payload = json.dumps(blocks[0])
+    assert "private source text" not in payload
+    assert "NCT00000000" not in payload
+    assert "result" not in blocks[0]
+    assert len(blocks[0]["result_provenance"]["result_sha256"]) == 64
+    assert blocks[0]["result_provenance"]["summary"]["source"] == "clinicaltrials.gov"
 
 
 async def test_next_node_takes_over_when_first_in_line_is_down(tmp_path):

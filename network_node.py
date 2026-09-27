@@ -74,6 +74,7 @@ from crypto_layer import (
 from chain_store import ChainStore
 from token_ledger import TokenLedger
 from digital_dna import DigitalDNA
+from research_provenance import ResearchProvenanceQueue
 
 HANDSHAKE_CONTEXT = b"dna-chain-project/node-session/v1"
 HANDSHAKE_SIG_CONTEXT = b"dna-chain-project/handshake-sig/v1|"
@@ -135,6 +136,7 @@ class NetworkNode:
         known_peers_path: Optional[str] = None,
         peers: Optional[list[tuple[str, int]]] = None,
         bind_host: str = "127.0.0.1",
+        provenance_queue: Optional[ResearchProvenanceQueue] = None,
     ):
         self.node_id = node_id
         self.node_key = f"node-{node_id}"
@@ -154,6 +156,7 @@ class NetworkNode:
         self.chain = ChainStore(store_path=os.path.join(chain_dir, f"chain_{self.node_key}.json"))
         self.mine_interval = mine_interval
         self.enrichers = enrichers or []
+        self.provenance_queue = provenance_queue
 
         self.my_priv, self.my_pub = generate_exchange_keypair_raw()
         if signing_key_path:
@@ -471,7 +474,9 @@ class NetworkNode:
             if writer is not None:
                 writer.close()
 
-    async def mine_and_gossip(self, extra: Optional[dict] = None, run_enrichers: bool = True):
+    async def mine_and_gossip(
+        self, extra: Optional[dict] = None, run_enrichers: bool = True
+    ) -> bool:
         self.block_counter += 1
 
         enrichment = {}
@@ -530,9 +535,11 @@ class NetworkNode:
         tag = " ".join(f"[{k}]" for k in enrichment)
         self.log(f"-> mined block #{self.block_counter} hash={digest.hex()[:12]}... {tag}")
 
+        all_peers_accepted = bool(self.peers)
         for addr in self.peers:
             session = await self._ensure_handshake(addr)
             if session is None:
+                all_peers_accepted = False
                 continue
             status = await self._send_block(addr, session, block)
             if status == STATUS_NO_SESSION:
@@ -540,10 +547,15 @@ class NetworkNode:
                 self.outbound.pop(addr, None)
                 session = await self._ensure_handshake(addr)
                 if session is not None:
-                    await self._send_block(addr, session, block)
+                    status = await self._send_block(addr, session, block)
+                else:
+                    status = None
             elif status is None:
                 # unreachable: handshake afresh next time it's back
                 self.outbound.pop(addr, None)
+            if status != STATUS_OK:
+                all_peers_accepted = False
+        return all_peers_accepted
 
     # -- chain audits: serve / fetch a node's recent chain over its session --
 
@@ -637,8 +649,25 @@ class NetworkNode:
     async def run(self, stop_event: asyncio.Event):
         await self.start_server()
         background = [asyncio.create_task(loop(stop_event)) for loop in self.background]
+        next_provenance_retry = 0.0
         while not stop_event.is_set():
-            await self.mine_and_gossip()
+            queued = (
+                self.provenance_queue.peek()
+                if self.provenance_queue and self.peers
+                else None
+            )
+            if queued and time.monotonic() >= next_provenance_retry:
+                event, path = queued
+                accepted = await self.mine_and_gossip(
+                    extra={"research_provenance": event},
+                    run_enrichers=False,
+                )
+                if accepted:
+                    self.provenance_queue.acknowledge(path, event["event_id"])
+                else:
+                    next_provenance_retry = time.monotonic() + 5.0
+            else:
+                await self.mine_and_gossip()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self.mine_interval)
             except asyncio.TimeoutError:

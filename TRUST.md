@@ -1,7 +1,10 @@
 # TRUST.md — what stays open, and why
 
-This project is MIT-licensed. This file makes explicit which parts
-that openness is actually protecting, so it doesn't quietly erode as
+Project material is offered under CC0 1.0 Universal (see [LICENSE](LICENSE)),
+to the extent the person applying CC0 holds or is authorized to waive the
+relevant rights. Third-party data, software, or contributions not authorized
+for CC0 are not covered by that dedication. This file makes explicit which
+parts that openness is actually protecting, so it doesn't quietly erode as
 the project grows or gets built on by others.
 
 ## The core claim this project makes
@@ -46,7 +49,8 @@ exercised yet.
 - Any file that decides what counts as "consented," what gets hashed
   vs. stored raw, or what leaves a device vs. stays local
   (`signal_stats_bridge.py`, `research_art_generator.py`'s
-  abstraction boundary, etc.)
+  abstraction boundary, and `dna_shell.py` /
+  `dataset_sharing.py`'s dataset classification and explicit sharing gate)
 
 Keeping these open is what lets a security researcher, a grant
 reviewer, or a journalist verify the privacy story directly, rather

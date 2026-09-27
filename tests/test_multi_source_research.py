@@ -110,6 +110,18 @@ def test_request_failure_returns_empty_list(monkeypatch):
     assert msr.search_pubmed("breast cancer", biomarker="BRCA1") == []
 
 
+def test_ncbi_api_key_is_read_from_environment_without_logging(monkeypatch):
+    captured = []
+    monkeypatch.setenv("NCBI_API_KEY", "test-api-key")
+    _install_fake_urlopen(monkeypatch, {
+        "esearch.fcgi": {"esearchresult": {"idlist": []}},
+    }, captured=captured)
+
+    assert msr.search_pubmed("BRCA1") == []
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(captured[0]).query)
+    assert params["api_key"] == ["test-api-key"]
+
+
 def test_summary_records_missing_for_some_pmids_are_skipped(monkeypatch):
     _install_fake_urlopen(monkeypatch, {
         "esearch.fcgi": {"esearchresult": {"idlist": ["1", "2"]}},
