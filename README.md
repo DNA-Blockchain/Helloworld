@@ -586,6 +586,27 @@ The DPAPI copy of the passphrase only works for your Windows account on
 this PC. Keep your own copy (a password manager): if this PC is lost,
 the backups can't be decrypted without it.
 
+### Off-site copy (Amazon S3)
+
+`offsite_s3.py` uploads each encrypted backup (and the name-free index)
+to S3 after every nightly run, with an S3-verified SHA-256 on upload and
+a checksum comparison afterwards; a backup only counts as off-site once
+they match. Uploads never overwrite an existing object, and anything that
+fails (offline, AWS down) is retried on the next run, before local
+pruning. AWS only ever receives ciphertext; the passphrase stays here.
+
+`aws_backup_setup.ps1` creates the AWS side after you sign in with
+`aws login`: a private, versioned, TLS-only bucket whose backups expire
+after 35 days, and an IAM user that can put/get/list under `network-os/`
+but cannot delete -- so a compromised PC can't erase the off-site copies.
+Review its header for the exact resources and expected cost first.
+
+```powershell
+python offsite_s3.py status
+python offsite_s3.py sync
+python offsite_s3.py pull all-missing     # new PC: fetch backups, then backup.py restore
+```
+
 ### JSON interface and interpreter
 
 The Blockchain-DNA skill uses a JSON request/response interface. For

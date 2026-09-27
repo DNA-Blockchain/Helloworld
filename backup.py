@@ -300,6 +300,18 @@ class BackupSet:
                 "backup_created_at": manifest["created_at"]}
 
 
+def offsite_sync(dest: Path) -> dict | None:
+    """Copies new backups to S3 if offsite_s3.py is configured for `dest`;
+    None if it isn't. Never raises: a failed upload stays pending for next time."""
+    import offsite_s3
+    if not offsite_s3.S3Offsite.load_config(dest):
+        return None
+    try:
+        return offsite_s3.S3Offsite(dest, runner=offsite_s3.cli_runner).sync()
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Encrypted backups of network-os-project's state.")
     p.add_argument("--dest", type=Path, default=DEFAULT_DEST, help=f"backup folder (default: {DEFAULT_DEST})")
@@ -345,14 +357,18 @@ def main(argv: list[str] | None = None) -> int:
             import retention
             retention.apply(str(args.root / "live_store.db"), retention.load_policy(), audit_path=args.audit)
         entry = bs.run(passphrase, root=args.root)
+        offsite = offsite_sync(bs.dest)   # before pruning, so nothing is pruned before it's off-site
         pruned = bs.prune(args.keep_days, args.keep_min)
+        offsite_summary = None if offsite is None else {
+            "uploaded": len(offsite.get("uploaded", [])), "failed": len(offsite.get("failed", {})),
+            "still_pending": offsite.get("still_pending")}
         if args.audit:
             from audit_trail import AuditTrail
             AuditTrail(args.audit).log(module="backup", action="backup_created", node_id="backup",
                                        details={**{k: entry[k] for k in ("vault_id", "file_count",
                                                                           "bundle_bytes", "verified")},
-                                                "pruned": pruned})
-        print(json.dumps({**entry, "pruned": pruned}, indent=2))
+                                                "pruned": pruned, "offsite": offsite_summary})
+        print(json.dumps({**entry, "pruned": pruned, "offsite": offsite}, indent=2))
         return 0
     if args.command == "verify":
         ids = [e["vault_id"] for e in bs.entries()] if args.vault_id == "all" else [args.vault_id]
