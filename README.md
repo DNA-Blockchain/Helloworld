@@ -563,6 +563,29 @@ python retention.py forget --stream dna --key my-research-node --confirm
 file (e.g. `dna_state.json`) still holds it until you delete that too.
 Backups and copies elsewhere are not touched.
 
+### Encrypted backups
+
+`backup.py` zips everything the project saves at runtime (state files,
+`autonomous/`, `node_data/`, `dna_shell_data/`, and every SQLite database
+via SQLite's online backup, so a running node's database is still copied
+consistently), encrypts it as one `encrypted_data_vault.py` object, and
+decrypts it end to end to verify it before it counts. Node signing keys
+(`keys/`, `*.pem`) are never included. Backups go to `~/network-os-backups`
+(outside the repo; same disk until an off-site copy exists), and anything
+older than 30 days is pruned, always keeping the newest 7.
+
+```powershell
+python backup.py init                        # once: passphrase, stored with Windows DPAPI
+.\install_backup_task.ps1                    # nightly at 02:30 (retention first, then backup)
+python backup.py list
+python backup.py verify
+python backup.py restore latest --to C:\restore-test   # never writes over existing files
+```
+
+The DPAPI copy of the passphrase only works for your Windows account on
+this PC. Keep your own copy (a password manager): if this PC is lost,
+the backups can't be decrypted without it.
+
 ### JSON interface and interpreter
 
 The Blockchain-DNA skill uses a JSON request/response interface. For

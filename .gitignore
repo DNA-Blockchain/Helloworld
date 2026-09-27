@@ -48,3 +48,6 @@ interop_client.exe
 interop_client
 *.o
 *.class
+
+# backup.py nightly task output
+backup_task.log
