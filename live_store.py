@@ -101,6 +101,8 @@ class LiveStore:
                                      isolation_level=None)   # autocommit; each write is its own transaction
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # deleted rows are overwritten with zeros, not just unlinked (see retention.py)
+        self._conn.execute("PRAGMA secure_delete=ON")
         self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
@@ -179,6 +181,59 @@ class LiveStore:
         if row is None:
             return None
         return {"stream": stream, "key": str(key), "updated_at": row[0], "sha256": row[1], "data": json.loads(row[2])}
+
+    def streams(self) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT stream FROM events UNION SELECT stream FROM snapshots ORDER BY 1").fetchall()
+        return [r[0] for r in rows]
+
+    # ---- deletes (used by retention.py) ----
+    def count_events_before(self, stream: str, cutoff_ts: float) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM events WHERE stream = ? AND ts < ?",
+                                      (stream, cutoff_ts)).fetchone()[0]
+
+    def count_snapshots_before(self, stream: str, cutoff_ts: float) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM snapshots WHERE stream = ? AND updated_at < ?",
+                                      (stream, cutoff_ts)).fetchone()[0]
+
+    def delete_events_before(self, stream: str, cutoff_ts: float) -> int:
+        with self._lock:
+            return self._conn.execute("DELETE FROM events WHERE stream = ? AND ts < ?",
+                                      (stream, cutoff_ts)).rowcount
+
+    def delete_snapshots_before(self, stream: str, cutoff_ts: float) -> int:
+        with self._lock:
+            return self._conn.execute("DELETE FROM snapshots WHERE stream = ? AND updated_at < ?",
+                                      (stream, cutoff_ts)).rowcount
+
+    def forget(self, stream: str, key: str) -> tuple[int, int]:
+        """Deletes one snapshot and every event about it (source == key).
+        Returns (events_deleted, snapshots_deleted)."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                ev = self._conn.execute("DELETE FROM events WHERE stream = ? AND source = ?",
+                                        (stream, str(key))).rowcount
+                sn = self._conn.execute("DELETE FROM snapshots WHERE stream = ? AND key = ?",
+                                        (stream, str(key))).rowcount
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+        return ev, sn
+
+    def compact(self) -> dict:
+        """VACUUM, then fold the WAL back in and truncate it, so deleted rows
+        leave neither the main file nor the -wal file. Another process
+        holding a read open can keep the WAL from truncating; `wal_busy`
+        reports that, and the next compact finishes the job."""
+        with self._lock:
+            self._conn.execute("VACUUM")
+            busy, _, _ = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return {"vacuumed": True, "wal_busy": bool(busy)}
 
 
 # ---- process-wide default store: what the module hooks write to ----

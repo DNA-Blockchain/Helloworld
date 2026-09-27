@@ -540,6 +540,29 @@ python os_live_bridge.py --audit system_audit.jsonl
 curl "http://127.0.0.1:8790/snapshot?stream=os&key=check"
 ```
 
+### Data retention
+
+`retention.py` decides how long each live-store stream is kept and
+enforces it. By default chain blocks, audit entries and ledger
+transactions are kept forever (the tamper-evidence depends on them),
+node status ages out after 30 days, other operational streams after
+90-365 days, and personal DNA state is never deleted by age -- only by
+an explicit `forget`. Deleted rows are overwritten and the database is
+compacted, so they don't linger in the file; each run is logged to the
+audit trail as counts only. `node_supervisor.py` applies it daily (policy
+override: `autonomous/retention_policy.json`).
+
+```bash
+python retention.py show-policy
+python retention.py plan                       # dry run
+python retention.py apply --audit system_audit.jsonl
+python retention.py forget --stream dna --key my-research-node --confirm
+```
+
+`forget` removes data from the live store only; the module's own state
+file (e.g. `dna_state.json`) still holds it until you delete that too.
+Backups and copies elsewhere are not touched.
+
 ### JSON interface and interpreter
 
 The Blockchain-DNA skill uses a JSON request/response interface. For

@@ -547,7 +547,8 @@ class Supervisor:
             f.write(report)
         rotate(self.cfg, now.date())
         prune_archive(self.cfg, now.date())
-        self.state = {"period_start": now.timestamp(), "snapshots": {}, "crashes": [],
+        self.apply_retention(now)
+        self.state ={"period_start": now.timestamp(), "snapshots": {}, "crashes": [],
                       "last_report_date": now.date().isoformat()}
         self._save_state()
         self.log.info("report written to %s (%s)", path, "OK" if ok else "; ".join(reasons))
@@ -557,6 +558,24 @@ class Supervisor:
             else:
                 notify("dna-chain-project: needs attention", "; ".join(reasons)[:300] + f"  ({path})")
         return path
+
+    def apply_retention(self, now: dt.datetime) -> Optional[dict]:
+        """retention.py on the shared live store, while the nodes are stopped
+        (so the compaction isn't competing with their writes). Optional:
+        a failure is logged and the daily cycle carries on."""
+        if not os.path.exists(self.cfg.live_db):
+            return None
+        try:
+            import retention
+            policy_path = self.cfg.path("retention_policy.json")
+            policy = retention.load_policy(policy_path if os.path.exists(policy_path) else None)
+            report = retention.apply(self.cfg.live_db, policy, now=now.timestamp(),
+                                     audit_path=self.cfg.path("retention_audit.jsonl"))
+            self.log.info("retention: deleted %d rows %s", report["total_deleted"], report["deleted"] or "")
+            return report
+        except Exception as e:
+            self.log.warning("retention skipped: %s", e)
+            return None
 
     def report_due(self, now: dt.datetime) -> bool:
         last = self.state.get("last_report_date")
