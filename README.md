@@ -19,6 +19,7 @@ run — see [Owning your copy](#owning-your-copy).
 |---|---|---|
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
+| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; serial console and PCI network-device discovery only |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
 | Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
 | Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
@@ -73,6 +74,19 @@ CONDITION  = "breast cancer"
 BIOMARKER  = "BRCA1"
 ```
 
+## Experimental bootable OS prototype
+
+The project also contains a separate Rust `no_std` x86_64 kernel prototype
+in [`os/`](os/). It does not replace Windows and does not run the Python
+research application inside the kernel. It boots only in QEMU, prints to a
+serial console, and scans for an emulated PCI network controller. This first
+milestone has **no NIC driver, DHCP, TCP/IP stack, or internet access**.
+
+See [`os/README.md`](os/README.md) for toolchain requirements and how to
+build and boot it, including a QEMU integration check for the boot and
+network-device discovery. Keep testing in the emulator; do not write its disk
+image to a physical drive.
+
 ## Running the tests
 
 ```bash
@@ -122,10 +136,14 @@ The reusable assistant instructions are in
 [`.claude/agents/Blockchain-DNA.agent.md`](.claude/agents/Blockchain-DNA.agent.md).
 When invoked in a compatible agent host, it can use that host's available
 browser and configured MCP tools alongside this project's research APIs.
-The assistant itself is not an always-on process: `node_supervisor.py`
-continues the project's existing local node and scheduled API work, while
-browser research runs only during an agent session. Sources without event
-support are polled according to the project's existing schedules.
+The assistant is not a continuous browser process. A host automation runs
+the two agent roles daily at 09:00 local time: refreshes at most one
+already-tracked topic via read-only public API requests (updating only the
+local research store), then checks repository status and runs the local
+test suite. It does not edit source code, install packages, run remote
+commands, or write to cloud/public chains. `node_supervisor.py` separately
+continues the project's local nodes and its existing scheduled API work.
+Sources without event support are polled according to their schedules.
 
 When the assistant explicitly saves a finding, local storage is the default
 where the source permits it. The existing research worker persists source
@@ -135,6 +153,51 @@ This project does not currently upload records to cloud/MCP destinations or
 submit transactions to a public blockchain. Those require an explicitly
 configured connector and a confirmed destination; the supervisor's
 Bitcoin/Ethereum chain-tip reads are public, read-only lookups.
+
+### Continuous operation across hosts
+
+The current Windows supervisor and agent-host daily schedule do not make
+this project a 24/7 cross-host service. The supervisor's three nodes bind
+to loopback and use local files; they do not coordinate with a cloud VM or
+home server. A powered-off PC cannot run its local worker.
+
+Running both a cloud host and a home server simultaneously would require
+deployment configuration plus durable shared/reconciled task state,
+idempotent task IDs, leases/heartbeats, retry/backoff, duplicate handling,
+secure private connectivity, and backups. No cloud or home-server
+deployment is configured by this repository yet. Before setting one up,
+the user's selected cloud provider is AWS; the home-server device is not
+yet identified. The AWS account ID is not stored here, and the CLI is not
+installed or authenticated. Approve the exact network exposure, data
+handling, and any ongoing cost before provisioning. Collection should continue with
+deterministic code if an AI/chat provider is unavailable; switching models
+or sending data to another provider must be explicitly configured and
+approved.
+
+### Local-first alternative to Supabase
+
+Supabase is optional and is not part of the project's runtime. Its CLI and
+`supabase/config.toml` are present only for optional future local Supabase
+development; this project does not require Supabase, Docker, or a hosted
+database to store its current state. Research topics, chains, audit records,
+and node state already persist in local files.
+
+To avoid a hosted database, the simpler path is to run the existing Python
+supervisor on one always-on computer you control (for example, a home
+server), and use the existing signed TCP peer nodes for explicitly trusted
+devices. Start with a single host and local-only binding. The current
+`node_supervisor.py` configuration is loopback-only and uses local files;
+it does not automatically become a multi-host supervisor when moved to
+another computer.
+
+For remote access, prefer a private VPN between devices rather than
+forwarding the node port directly from your router. A VPN still requires a
+reachable, powered-on home host and secure key exchange; it does not provide
+cloud uptime if your home power or internet connection is down. If multiple
+hosts independently perform research, add shared task IDs and coordination
+before enabling overlapping schedules to avoid duplicate work. The
+provider-specific setup is intentionally not automated until the home
+server OS/network and access method are known and approved.
 
 ### JSON interface and interpreter
 

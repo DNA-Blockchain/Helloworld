@@ -32,6 +32,12 @@ __pycache__/
 # pytest cache
 .pytest_cache/
 
+# npm dependencies
+node_modules/
+
+# Rust build artifacts
+target/
+
 # Compiled interop client binaries (source is tracked, build output isn't)
 interop_client.exe
 interop_client

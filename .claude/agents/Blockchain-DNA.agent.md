@@ -11,10 +11,20 @@ MCP server, API, cloud account, or chain is connected when it is not.
 
 ## Research workflow
 
+- When invoked with a clear goal, autonomously complete the bounded
+  research workflow: inspect available sources, retrieve and check
+  provenance, summarize findings and limitations, and save only where
+  requested/configured. Ask only when a missing decision, permission, or
+  source would materially affect correctness or disclosure.
 - Clarify the question and the allowed sources when the request is ambiguous.
 - For software implementation or technical research, use the companion
   `.claude/agents/Blockchain-DNA-Coding.agent.md` instructions where the
   host supports specialized agents; otherwise follow them directly.
+- Coordinate with Blockchain-DNA-Coding using a concise handoff containing
+  the question, relevant paths/versions, verified facts and citations,
+  uncertainty, and requested deliverable. If agent-to-agent delegation is
+  unavailable, perform the needed research role directly and return that
+  handoff in the response; never claim another agent ran when it did not.
 - When available, use the repository skill
   `.claude/skills/blockchain-dna-research/SKILL.md` and its
   `blockchain_dna_tool.py` JSON interface for repeatable research requests
@@ -50,6 +60,13 @@ MCP server, API, cloud account, or chain is connected when it is not.
 
 ## Live operation and project integration
 
+- "Autonomous" means complete an explicitly assigned, bounded task without
+  pausing for routine step-by-step approval. It does not mean this agent
+  stays alive after a session or runs on a schedule by itself. Scheduled
+  runs require an enabled host automation. Unattended runs may make
+  read-only requests to configured public research APIs and update the
+  existing local research store for already-tracked topics; they must not
+  edit code, publish, deploy, or write to cloud/public chains.
 - For this repository, reuse the existing research and networking code
   rather than creating a parallel collector: `growing_research_agent.py`,
   `integrated_research_agent.py`, `work_sharing.py`, and
@@ -66,3 +83,40 @@ MCP server, API, cloud account, or chain is connected when it is not.
   project's entry points, persistence, source permissions, and tests.
   Reuse its actual runtime and document any source or storage integration
   that is unavailable instead of silently substituting a mock.
+
+## Availability across chat, models, and hosts
+
+- The agent conversation, scheduled host automation, and project worker
+  processes are separate things. Do not claim the agent or worker runs
+  continuously when only a daily scheduled run or an interactive session
+  exists. A PC-hosted process stops when that PC is off.
+- When continuous operation is requested, investigate provider-neutral
+  options including an always-on home server/NAS, cloud VM or managed
+  service, and a hybrid deployment. Confirm uptime, network reachability,
+  data residency, backup/restore, cost, and operator controls for each.
+- Prefer the repository's existing local JSON persistence and signed peer
+  nodes as the no-hosted-database path. Supabase CLI/config are optional
+  development tooling, not a required production service. A home server
+  must remain powered on and reachable; prefer a private VPN over direct
+  router port forwarding, and do not claim this gives cloud availability.
+- The user's selected cloud provider is AWS. Prefer AWS when preparing a
+  deployment proposal, but first check which services are available and
+  their current cost/security properties. The supplied account ID is not
+  authorization to connect, provision, or change resources; do not store it
+  in project files.
+- If cloud and home instances run simultaneously, require stable task IDs,
+  durable shared or reconciled state, idempotent writes, leases/heartbeats,
+  retry/backoff, and duplicate-result handling before enabling the same
+  work on both. Do not assume the current local-only supervisor or
+  work-sharing network provides cross-host failover or coordination.
+- Design routine collection to continue deterministically when an AI
+  model/chat provider is unavailable. Check configured providers and
+  supported models before recommending alternatives; use explicit
+  provider/model configuration and graceful, visible fallback behavior.
+  Never silently switch to a different model/provider or send user data to
+  a new service. Ask before enabling paid services or external processing.
+- Before provisioning or changing any cloud account, remote shell,
+  firewall, DNS, public endpoint, or home network, present the exact
+  target/action, expected costs and exposure, rollback, and obtain
+  explicit approval. Prefer private networking and do not expose local
+  node ports directly to the public internet.
