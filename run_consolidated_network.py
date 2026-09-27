@@ -23,6 +23,8 @@ RUN_SECONDS and writes only into ./consolidated_run/ (gitignored).
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import shutil
 
@@ -63,19 +65,35 @@ def shared_per_round(fetch):
 async def research_enricher(counter: int) -> dict | None:
     if counter % 3 != 0:
         return None
+    query = "leukemia"
+    query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()
     try:
         resp = await asyncio.to_thread(
             requests.get,
             "https://clinicaltrials.gov/api/v2/studies",
-            params={"query.cond": "leukemia", "pageSize": 1, "format": "json"},
+            params={"query.cond": query, "pageSize": 1, "format": "json"},
             timeout=8,
         )
         resp.raise_for_status()
         studies = resp.json().get("studies", [])
         ident = studies[0]["protocolSection"]["identificationModule"] if studies else {}
-        return {"research": {"source": "clinicaltrials.gov", "id": ident.get("nctId", "?")}}
-    except Exception as e:
-        return {"research": {"source": "none", "error": str(e)}}
+        record_id = ident.get("nctId")
+        return {"research_provenance": {
+            "source": "clinicaltrials.gov",
+            "query_sha256": query_hash,
+            "record_id_sha256": (
+                hashlib.sha256(record_id.encode("utf-8")).hexdigest()
+                if isinstance(record_id, str) else None
+            ),
+            "status": "record_found" if record_id else "no_match",
+        }}
+    except Exception:
+        return {"research_provenance": {
+            "source": "clinicaltrials.gov",
+            "query_sha256": query_hash,
+            "record_id_sha256": None,
+            "status": "unavailable",
+        }}
 
 
 @shared_per_round
@@ -83,7 +101,14 @@ async def external_info_enricher(counter: int) -> dict | None:
     if counter % 4 != 0:
         return None
     snapshot = await asyncio.to_thread(build_external_info_snapshot)
-    return {"external_info": snapshot}
+    digest = hashlib.sha256(
+        json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {"external_info_provenance": {
+        "source": "external_chain_bridge",
+        "snapshot_sha256": digest,
+        "observed_at": snapshot.get("timestamp"),
+    }}
 
 
 async def main():
