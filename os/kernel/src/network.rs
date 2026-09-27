@@ -37,6 +37,13 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         Serial,
         "Virtual memory verified: map, read/write, unmap, and reuse."
     );
+    crate::heap::initialize()?;
+    let heap_pages = crate::heap::verify_allocation_lifecycle()?;
+    let _ = writeln!(
+        Serial,
+        "Kernel heap verified: Vec/Box allocation, release, and growth to {} KiB.",
+        heap_pages * 4
+    );
     let mut config = Config::new(EthernetAddress(device.mac()).into());
     config.random_seed = 0x4e45_5457;
     config.slaac = true;

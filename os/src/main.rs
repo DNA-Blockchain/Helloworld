@@ -168,6 +168,9 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .any(|line| line.contains("Virtual memory verified: "))
         || !output
             .iter()
+            .any(|line| line.contains("Kernel heap verified: Vec/Box allocation"))
+        || !output
+            .iter()
             .any(|line| line.contains("DHCP configured: IPv4 "))
         || !output
             .iter()
@@ -256,6 +259,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
     let mut saw_timer = false;
     let mut saw_memory = false;
     let mut saw_virtual_memory = false;
+    let mut saw_heap = false;
     let mut saw_ipv4_echo = false;
     let mut saw_slaac = false;
     let mut saw_default_route = false;
@@ -269,6 +273,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
                 saw_timer |= line.contains("PIT timer verified: ");
                 saw_memory |= line.contains("Physical frame allocator verified: ");
                 saw_virtual_memory |= line.contains("Virtual memory verified: ");
+                saw_heap |= line.contains("Kernel heap verified: Vec/Box allocation");
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");
                 saw_default_route |= line.contains("IPv6 default gateway: fe80::1");
@@ -278,6 +283,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
                 if saw_timer
                     && saw_memory
                     && saw_virtual_memory
+                    && saw_heap
                     && saw_dhcp
                     && saw_ipv4_echo
                     && saw_slaac
@@ -321,6 +327,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
     if !(saw_timer
         && saw_memory
         && saw_virtual_memory
+        && saw_heap
         && saw_dhcp
         && saw_ipv4_echo
         && saw_slaac
@@ -329,7 +336,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

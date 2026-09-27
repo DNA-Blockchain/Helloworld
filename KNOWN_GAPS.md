@@ -40,11 +40,13 @@ confident-looking file imply more than it's actually verified.
   controlled local router to send a real RA; it verifies the SLAAC address,
   RA-installed default route, and ICMPv6 echo in QEMU. This does not establish
   behavior on physical networks. The kernel has a QEMU-verified 100 Hz PIT
-  clock, a fixed-metadata physical frame allocator below 4 GiB, and a
-  kernel-only 4-KiB virtual-page arena tested for map/read/write/unmap/reuse.
+  clock, a fixed-metadata physical frame allocator below 4 GiB, a kernel-only
+  4-KiB virtual-page arena tested for map/read/write/unmap/reuse, and a fixed
+  kernel heap verified growing from 64 KiB for a large `Vec` allocation, then
+  allocating and releasing `Box` values; it is capped at 512 KiB.
   It still lacks multiple address spaces, user mappings and privilege
-  isolation, a heap, syscalls, scheduling, storage/filesystems, and broad
-  hardware support. The driver only supports the QEMU 82540EM model; the
+  isolation, syscalls, scheduling, storage/filesystems, and broad hardware
+  support. The driver only supports the QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
   general-purpose or installable operating system. The HTTP service is a
   small test endpoint, not a hardened production server.

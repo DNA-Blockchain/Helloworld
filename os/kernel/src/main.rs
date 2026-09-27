@@ -1,7 +1,10 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 mod e1000;
+mod heap;
 mod memory;
 mod network;
 mod timer;

@@ -21,7 +21,11 @@ this kernel.
   maps a zeroed 4-KiB frame, verifies read/write access, unmaps it, checks the
   page-table entry was cleared, rejects a repeated free, and reuses the
   virtual slot. Empty page-table levels are reclaimed. This does not yet
-  implement process address spaces, user mappings, large pages, or a heap.
+  implement process address spaces, user mappings, or large pages.
+- Provides a kernel heap backed by mapped pages and a first-fit free-list
+  allocator. It starts at 64 KiB and can grow by contiguous pages to at most
+  512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
+  allocation and release. The heap is not available to user-mode programs.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an
