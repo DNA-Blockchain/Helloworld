@@ -540,6 +540,91 @@ python os_live_bridge.py --audit system_audit.jsonl
 curl "http://127.0.0.1:8790/snapshot?stream=os&key=check"
 ```
 
+### Data retention
+
+`retention.py` decides how long each live-store stream is kept and
+enforces it. By default chain blocks, audit entries and ledger
+transactions are kept forever (the tamper-evidence depends on them),
+node status ages out after 30 days, other operational streams after
+90-365 days, and personal DNA state is never deleted by age -- only by
+an explicit `forget`. Deleted rows are overwritten and the database is
+compacted, so they don't linger in the file; each run is logged to the
+audit trail as counts only. `node_supervisor.py` applies it daily (policy
+override: `autonomous/retention_policy.json`).
+
+```bash
+python retention.py show-policy
+python retention.py plan                       # dry run
+python retention.py apply --audit system_audit.jsonl
+python retention.py forget --stream dna --key my-research-node --confirm
+```
+
+`forget` removes data from the live store only; the module's own state
+file (e.g. `dna_state.json`) still holds it until you delete that too.
+Backups and copies elsewhere are not touched.
+
+### Encrypted backups
+
+`backup.py` zips everything the project saves at runtime (state files,
+`autonomous/`, `node_data/`, `dna_shell_data/`, and every SQLite database
+via SQLite's online backup, so a running node's database is still copied
+consistently), encrypts it as one `encrypted_data_vault.py` object, and
+decrypts it end to end to verify it before it counts. Node signing keys
+(`keys/`, `*.pem`) are never included. Backups go to `~/network-os-backups`
+(outside the repo; same disk until an off-site copy exists), and anything
+older than 30 days is pruned, always keeping the newest 7.
+
+```powershell
+python backup.py init                        # once: passphrase, stored with Windows DPAPI
+.\install_backup_task.ps1                    # nightly at 02:30 (retention first, then backup)
+python backup.py list
+python backup.py verify
+python backup.py restore latest --to C:\restore-test   # never writes over existing files
+```
+
+The DPAPI copy of the passphrase only works for your Windows account on
+this PC. Keep your own copy (a password manager): if this PC is lost,
+the backups can't be decrypted without it.
+
+### Off-site copy (Amazon S3)
+
+`offsite_s3.py` uploads each encrypted backup (and the name-free index)
+to S3 after every nightly run, with an S3-verified SHA-256 on upload and
+a checksum comparison afterwards; a backup only counts as off-site once
+they match. Uploads never overwrite an existing object, and anything that
+fails (offline, AWS down) is retried on the next run, before local
+pruning. AWS only ever receives ciphertext; the passphrase stays here.
+
+`aws_backup_setup.ps1` creates the AWS side after you sign in with
+`aws login`: a private, versioned, TLS-only bucket whose backups expire
+after 35 days, and an IAM user that can put/get/list under `network-os/`
+but cannot delete -- so a compromised PC can't erase the off-site copies.
+Review its header for the exact resources and expected cost first.
+
+```powershell
+python offsite_s3.py status
+python offsite_s3.py sync
+python offsite_s3.py pull all-missing     # new PC: fetch backups, then backup.py restore
+```
+
+### Backup health and test restores
+
+`backup_health.py` checks that backups are really happening: the newest
+is under 36 hours old and verified, the passphrase loads, every backup
+older than that is confirmed in S3, the last sync had no errors, there's
+at least 1 GB free, and the nightly task exists and last ran cleanly.
+Once a week, after the nightly backup, it restores the newest backup into
+a throwaway folder -- every file checked against its SHA-256, every SQLite
+database integrity-checked, every JSON file parsed -- and downloads and
+decrypts the newest S3 copy too. Problems raise a desktop notification
+and appear in the supervisor's daily report; results go to
+`test_restores.jsonl` and the audit trail.
+
+```powershell
+python backup_health.py check          # [ALERT] lines, exit 1 if any
+python backup_health.py test-restore   # run a test restore now
+```
+
 ### JSON interface and interpreter
 
 The Blockchain-DNA skill uses a JSON request/response interface. For

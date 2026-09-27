@@ -1,359 +1,399 @@
 #!/usr/bin/env python3
-"""Create verified, local-only ZIP snapshots of this project."""
+"""
+backup.py — nightly encrypted backups of this project's state.
+
+WHAT ONE BACKUP IS
+-----------------------
+One zip of everything the project saves at runtime, encrypted as a single
+encrypted_data_vault.py object (AES-256-GCM, scrypt-derived key) and
+verified by decrypting it end to end before it counts:
+
+- the runtime state files (dna_state.json, ledgers, research store,
+  corpus, audit log, *.dna.json, chain_node-*.json, ...)
+- autonomous/ (the supervisor's nodes, archive, reports, logs),
+  node_data/, consolidated_run/, dna_shell_data/
+- every SQLite database among them (live_store.db, the research catalog
+  and sessions) copied with SQLite's online-backup API, so a database
+  that is being written during the backup is still copied consistently
+
+Node signing keys (keys/, *.pem) are left out, matching node_supervisor's
+rule that keys are never archived: a restore gets the data back, and
+nodes keep (or regenerate) their own identities. A BACKUP_MANIFEST.json
+inside the zip lists every file with its size and SHA-256.
+
+WHERE THINGS GO
+--------------------
+    <dest>/vault/<vault-id>.dvault     encrypted backups
+    <dest>/index.jsonl                 vault id, time, size, file count -- no file names
+Default <dest> is ~/network-os-backups: outside the repo, so a git clean or
+a deleted checkout doesn't take the backups with it. It's still the same
+disk; an off-site copy is a separate step.
+
+THE PASSPHRASE
+-------------------
+`python backup.py init` asks for it twice and stores it protected with
+Windows DPAPI: only your Windows account on this PC can unprotect it, so
+the nightly task can run without a prompt. KEEP YOUR OWN COPY (password
+manager): if this PC or its Windows profile is lost, the DPAPI copy goes
+with it, and without the passphrase no backup can ever be decrypted.
+Elsewhere (or to override), set NETWORK_OS_BACKUP_PASSPHRASE.
+
+While a backup is built, the unencrypted zip exists briefly in
+<dest>/.staging and is deleted as soon as it is encrypted (or on error).
+
+Usage
+-----
+    python backup.py init                   # once: set the passphrase
+    python backup.py run --apply-retention --audit system_audit.jsonl
+    python backup.py list
+    python backup.py verify [VAULT_ID|all]
+    python backup.py restore latest --to C:\\restore-test
+"""
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import fnmatch
+import getpass
 import hashlib
 import json
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 import time
 import zipfile
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import Any
+from pathlib import Path
 
-APP_NAME = "NetworkOSBackup"
-CONFIG_NAME = "config.json"
-ARCHIVE_PREFIX = "network-os-backup-"
-MANIFEST_NAME = "backup-manifest.json"
-DEFAULT_RETENTION = 30
-EXCLUDED_DIRS = {
-    ".pytest_cache",
-    ".cache",
-    "__pycache__",
-    ".mypy_cache",
-    ".ruff_cache",
-    "node_modules",
-    "target",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-}
-EXCLUDED_FILES = {"autonomous/supervisor.lock"}
-CHUNK_SIZE = 1024 * 1024
+from encrypted_data_vault import EncryptedDataVault
+
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_DEST = Path.home() / "network-os-backups"
+PASSPHRASE_ENV = "NETWORK_OS_BACKUP_PASSPHRASE"
+DPAPI_FILE = Path(os.environ.get("APPDATA", Path.home())) / "network-os" / "backup_passphrase.dpapi"
+KEEP_DAYS = 30
+KEEP_MIN = 7
+
+STATE_FILES = [
+    "dna_state.json", "network_ledger.json", "token_ledger.json", "network_token_ledger.json",
+    "network_token_ledger_external.json", "node_one_ledger.json", "node_two_ledger.json",
+    "research_store.json", "corpus.json", "crispr_store.json", "system_audit.jsonl",
+    "peer_history.json", "*.dna.json", "chain_node-*.json", "live_store.db",
+]
+STATE_DIRS = ["autonomous", "node_data", "consolidated_run", "dna_shell_data"]
+EXCLUDE_DIRS = {"keys", "__pycache__", ".staging"}
+EXCLUDE_FILES = ["*.pem", "*.tmp", "*.lock", "*.stop", "*-wal", "*-shm", "*-journal"]
+SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
-def config_path() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    else:
-        base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return base / APP_NAME / CONFIG_NAME
+# ---- passphrase (Windows DPAPI, or the environment) ----
+def _dpapi(data: bytes, protect: bool) -> bytes:
+    import ctypes
+    from ctypes import wintypes
 
+    class Blob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
-def load_config() -> dict[str, Any]:
-    path = config_path()
+    buf = ctypes.create_string_buffer(data, len(data))
+    blob_in, blob_out = Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), Blob()
+    crypt32, kernel32 = ctypes.windll.crypt32, ctypes.windll.kernel32
+    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    ok = fn(ctypes.byref(blob_in), None, None, None, None, 0x1, ctypes.byref(blob_out))  # UI_FORBIDDEN
+    if not ok:
+        raise OSError(f"DPAPI {'protect' if protect else 'unprotect'} failed (error {ctypes.GetLastError()})")
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as error:
-        raise RuntimeError("Backup is not initialized; run `python backup.py init` first.") from error
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"Could not read backup configuration at {path}: {error}") from error
-    if not isinstance(config, dict) or not isinstance(config.get("project_root"), str):
-        raise RuntimeError(f"Backup configuration at {path} has an invalid format.")
-    return config
-
-
-def save_config(config: dict[str, Any]) -> None:
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(".tmp")
-    try:
-        temporary_path.write_text(
-            json.dumps(config, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary_path, path)
-    except OSError as error:
-        raise RuntimeError(f"Could not save backup configuration at {path}: {error}") from error
-
-
-def initialize(project_root: Path, backup_root: Path | None) -> None:
-    project_root = project_root.expanduser().resolve(strict=True)
-    if not project_root.is_dir():
-        raise RuntimeError(f"Project root is not a directory: {project_root}")
-    if backup_root is None:
-        if os.name == "nt":
-            backup_root = Path(
-                os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
-            ) / APP_NAME / "archives"
-        else:
-            backup_root = Path.home() / ".local" / "state" / APP_NAME / "archives"
-    backup_root = backup_root.expanduser().resolve()
-    if backup_root == project_root or project_root in backup_root.parents:
-        raise RuntimeError(
-            "Backup destination must be outside the project tree to prevent recursive backups."
-        )
-    backup_root.mkdir(parents=True, exist_ok=True)
-    config = {
-        "version": 1,
-        "project_root": str(project_root),
-        "backup_root": str(backup_root),
-        "retention": DEFAULT_RETENTION,
-        "scheduled_task_name": "NetworkOSNightlyBackup",
-        "contains_sensitive_files": True,
-        "cloud_copy_enabled": False,
-    }
-    save_config(config)
-    print(f"Initialized local backups for: {project_root}")
-    print(f"Archive destination: {backup_root}")
-    print(f"Retention: {DEFAULT_RETENTION} successful archives")
-    print("Archives include private keys and credentials and are not encrypted.")
-    print("Cloud copy is disabled.")
-
-
-def iter_project_files(project_root: Path, backup_root: Path):
-    backup_root = backup_root.resolve()
-    for current_dir, dir_names, file_names in os.walk(project_root, followlinks=False):
-        current_path = Path(current_dir)
-        kept_dirs = []
-        for name in sorted(dir_names):
-            candidate = current_path / name
-            if name in EXCLUDED_DIRS or candidate.is_symlink():
-                continue
-            resolved = candidate.resolve()
-            if resolved == backup_root or backup_root in resolved.parents:
-                continue
-            kept_dirs.append(name)
-        dir_names[:] = kept_dirs
-
-        for name in sorted(file_names):
-            path = current_path / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            relative_name = path.relative_to(project_root).as_posix()
-            if relative_name in EXCLUDED_FILES:
-                continue
-            resolved = path.resolve()
-            if resolved == backup_root or backup_root in resolved.parents:
-                continue
-            yield path, relative_name
-
-
-def create_backup(config: dict[str, Any]) -> Path:
-    project_root = Path(config["project_root"]).resolve(strict=True)
-    backup_root = Path(config["backup_root"]).resolve()
-    if not project_root.is_dir():
-        raise RuntimeError(f"Configured project root no longer exists: {project_root}")
-    backup_root.mkdir(parents=True, exist_ok=True)
-    if backup_root == project_root or project_root in backup_root.parents:
-        raise RuntimeError("Configured backup destination is inside the project tree.")
-
-    lock_path = backup_root / ".backup.lock"
-    try:
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as error:
-        raise RuntimeError(
-            f"Another backup may be running (lock exists at {lock_path}); "
-            "check for a running backup before removing a stale lock."
-        ) from error
-    except OSError as error:
-        raise RuntimeError(f"Could not create backup lock {lock_path}: {error}") from error
-
-    temporary_path: Path | None = None
-    try:
-        os.write(lock_fd, f"pid={os.getpid()}\nstarted={time.time()}\n".encode("ascii"))
-        os.close(lock_fd)
-
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        archive_path = backup_root / f"{ARCHIVE_PREFIX}{timestamp}.zip"
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{ARCHIVE_PREFIX}",
-            suffix=".tmp",
-            dir=backup_root,
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-
-        manifest_files = []
-        with zipfile.ZipFile(
-            temporary_path,
-            mode="w",
-            compression=zipfile.ZIP_DEFLATED,
-            compresslevel=6,
-            allowZip64=True,
-        ) as archive:
-            for source_path, relative_name in iter_project_files(project_root, backup_root):
-                digest = hashlib.sha256()
-                byte_count = 0
-                with source_path.open("rb") as source, archive.open(relative_name, "w") as target:
-                    while True:
-                        chunk = source.read(CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        target.write(chunk)
-                        digest.update(chunk)
-                        byte_count += len(chunk)
-                manifest_files.append(
-                    {"path": relative_name, "size": byte_count, "sha256": digest.hexdigest()}
-                )
-
-            manifest = {
-                "format_version": 1,
-                "created_at_utc": datetime.now(timezone.utc).isoformat(),
-                "project_root": str(project_root),
-                "file_count": len(manifest_files),
-                "files": manifest_files,
-            }
-            archive.writestr(
-                MANIFEST_NAME,
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-            )
-
-        with zipfile.ZipFile(temporary_path, mode="r") as archive:
-            bad_member = archive.testzip()
-            if bad_member is not None:
-                raise RuntimeError(f"New archive failed its CRC check at {bad_member!r}.")
-            verify_archive(archive)
-        os.replace(temporary_path, archive_path)
-        temporary_path = None
-        prune_archives(backup_root, int(config.get("retention", DEFAULT_RETENTION)))
-        return archive_path
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
     finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        try:
-            os.close(lock_fd)
-        except OSError:
-            pass
-        lock_path.unlink(missing_ok=True)
+        kernel32.LocalFree(blob_out.pbData)
 
 
-def verify_archive(archive: zipfile.ZipFile) -> dict[str, Any]:
+def save_passphrase(passphrase: str, path: Path | None = None) -> Path:
+    path = Path(path or DPAPI_FILE)
+    if len(passphrase) < 12:
+        raise ValueError("passphrase must be at least 12 characters")
+    if os.name != "nt":
+        raise OSError(f"DPAPI is Windows-only; set {PASSPHRASE_ENV} instead")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(_dpapi(passphrase.encode("utf-8"), protect=True))
+    os.replace(tmp, path)
+    return path
+
+
+def load_passphrase(path: Path | None = None) -> str:
+    path = Path(path or DPAPI_FILE)
+    env = os.environ.get(PASSPHRASE_ENV)
+    if env:
+        return env
+    if os.name == "nt" and path.exists():
+        return _dpapi(path.read_bytes(), protect=False).decode("utf-8")
+    raise LookupError(f"no backup passphrase: run `python backup.py init` or set {PASSPHRASE_ENV}")
+
+
+# ---- collecting ----
+def _excluded(rel: Path) -> bool:
+    if any(part in EXCLUDE_DIRS for part in rel.parts[:-1]):
+        return True
+    return any(fnmatch.fnmatch(rel.name, pat) for pat in EXCLUDE_FILES)
+
+
+def collect(root: Path = PROJECT_DIR) -> list[Path]:
+    """Relative paths of everything to back up, sorted."""
+    found: set[Path] = set()
+    for pattern in STATE_FILES:
+        for p in root.glob(pattern):
+            if p.is_file():
+                found.add(p.relative_to(root))
+    for d in STATE_DIRS:
+        base = root / d
+        if base.is_dir():
+            for p in base.rglob("*"):
+                if p.is_file():
+                    found.add(p.relative_to(root))
+    return sorted(p for p in found if not _excluded(p))
+
+
+def _is_sqlite(path: Path) -> bool:
     try:
-        manifest = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
-    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError("Archive is missing a valid backup manifest.") from error
-    if not isinstance(manifest, dict) or manifest.get("format_version") != 1:
-        raise RuntimeError("Backup manifest has an unsupported format.")
-    files = manifest.get("files")
-    if not isinstance(files, list) or manifest.get("file_count") != len(files):
-        raise RuntimeError("Backup manifest file list is invalid.")
+        with path.open("rb") as f:
+            return f.read(16) == SQLITE_MAGIC
+    except OSError:
+        return False
 
-    seen = set()
-    for entry in files:
-        if not isinstance(entry, dict):
-            raise RuntimeError("Backup manifest contains an invalid file entry.")
-        relative_name = entry.get("path")
-        if not isinstance(relative_name, str) or not safe_archive_path(relative_name):
-            raise RuntimeError(f"Unsafe archive path in manifest: {relative_name!r}.")
-        if relative_name in seen or relative_name == MANIFEST_NAME:
-            raise RuntimeError(f"Duplicate or reserved path in manifest: {relative_name!r}.")
-        seen.add(relative_name)
-        try:
-            content = archive.read(relative_name)
-        except (KeyError, OSError, zipfile.BadZipFile) as error:
-            raise RuntimeError(f"Archive is missing {relative_name!r}.") from error
-        if len(content) != entry.get("size"):
-            raise RuntimeError(f"Size verification failed for {relative_name!r}.")
-        if hashlib.sha256(content).hexdigest() != entry.get("sha256"):
-            raise RuntimeError(f"SHA-256 verification failed for {relative_name!r}.")
+
+def _sqlite_copy(src: Path, dst: Path) -> None:
+    source = sqlite3.connect(src, timeout=10)
+    target = sqlite3.connect(dst)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_bundle(root: Path, zip_path: Path) -> dict:
+    """Writes the plaintext zip; returns its manifest."""
+    files = []
+    with tempfile.TemporaryDirectory(dir=zip_path.parent) as scratch, \
+            zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel in collect(root):
+            # snapshot first, then hash and zip that same snapshot, so a file
+            # rewritten mid-backup can't make the manifest disagree with the zip
+            src, staged = root / rel, Path(scratch) / "current"
+            try:
+                if _is_sqlite(src):
+                    _sqlite_copy(src, staged)
+                    method = "sqlite-backup"
+                else:
+                    shutil.copyfile(src, staged)
+                    method = "copy"
+            except FileNotFoundError:   # a node rotated it away mid-backup
+                continue
+            zf.write(staged, rel.as_posix())
+            files.append({"path": rel.as_posix(), "bytes": staged.stat().st_size,
+                          "sha256": _sha256(staged), "method": method})
+            staged.unlink()
+        manifest = {"schema_version": 1, "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "project_root": str(root), "file_count": len(files), "files": files,
+                    "excluded": {"dirs": sorted(EXCLUDE_DIRS), "files": EXCLUDE_FILES}}
+        zf.writestr("BACKUP_MANIFEST.json", json.dumps(manifest, indent=2))
     return manifest
 
 
-def safe_archive_path(name: str) -> bool:
-    path = PurePosixPath(name)
-    return (
-        bool(name)
-        and "\\" not in name
-        and ":" not in name
-        and not path.is_absolute()
-        and all(part not in ("", ".", "..") for part in path.parts)
-    )
+# ---- the backup set ----
+class BackupSet:
+    def __init__(self, dest: Path = DEFAULT_DEST):
+        self.dest = Path(dest)
+        self.vault = EncryptedDataVault(self.dest / "vault")
+        self.index_path = self.dest / "index.jsonl"
+
+    def entries(self) -> list[dict]:
+        if not self.index_path.exists():
+            return []
+        with self.index_path.open(encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        present = set(self.vault.list_ids())
+        return [r for r in rows if r["vault_id"] in present]
+
+    def _write_index(self, rows: list[dict]) -> None:
+        tmp = self.index_path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            f.writelines(json.dumps(r, sort_keys=True) + "\n" for r in rows)
+        os.replace(tmp, self.index_path)
+
+    def resolve(self, vault_id: str) -> str:
+        if vault_id == "latest":
+            rows = self.entries()
+            if not rows:
+                raise LookupError("no backups yet")
+            return rows[-1]["vault_id"]
+        return vault_id
+
+    def run(self, passphrase: str, root: Path = PROJECT_DIR) -> dict:
+        staging = self.dest / ".staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        zip_path = staging / f"network-os-backup-{stamp}.zip"
+        started = time.time()
+        try:
+            manifest = build_bundle(root, zip_path)
+            stored = self.vault.store_file(zip_path, passphrase=passphrase, classification="private",
+                                           source_label="network-os nightly backup")
+        finally:
+            zip_path.unlink(missing_ok=True)
+        self.vault.inspect(stored["vault_id"], passphrase=passphrase)   # full decrypt + hash check
+        entry = {"vault_id": stored["vault_id"], "created_at": manifest["created_at"],
+                 "file_count": manifest["file_count"], "bundle_bytes": stored["content_bytes"],
+                 "encrypted_bytes": (self.vault.directory / f"{stored['vault_id']}.dvault").stat().st_size,
+                 "duration_s": round(time.time() - started, 2), "verified": True}
+        with self.index_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
+        return entry
+
+    def prune(self, keep_days: int = KEEP_DAYS, keep_min: int = KEEP_MIN, now: dt.datetime | None = None) -> list[str]:
+        """Deletes backups older than keep_days, always keeping the newest keep_min."""
+        now = now or dt.datetime.now(dt.timezone.utc)
+        rows = self.entries()
+        cutoff = now - dt.timedelta(days=keep_days)
+        doomed = [r for r in rows[:max(0, len(rows) - keep_min)]
+                  if dt.datetime.fromisoformat(r["created_at"]) < cutoff]
+        for r in doomed:
+            (self.vault.directory / f"{r['vault_id']}.dvault").unlink(missing_ok=True)
+        self._write_index([r for r in rows if r not in doomed])
+        return [r["vault_id"] for r in doomed]
+
+    def verify(self, vault_id: str, passphrase: str) -> dict:
+        return self.vault.inspect(self.resolve(vault_id), passphrase=passphrase)
+
+    def restore(self, vault_id: str, target: Path, passphrase: str) -> dict:
+        """Decrypts and unpacks into `target`, which must not exist or be empty --
+        never over live files. Every file is checked against the manifest."""
+        vault_id = self.resolve(vault_id)
+        target = Path(target)
+        if target.exists() and any(target.iterdir()):
+            raise FileExistsError(f"restore target must be empty: {target}")
+        target.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target.parent) as scratch:
+            zip_path = Path(scratch) / "bundle.zip"
+            self.vault.restore_file(vault_id, zip_path, passphrase=passphrase)
+            with zipfile.ZipFile(zip_path) as zf:
+                manifest = json.loads(zf.read("BACKUP_MANIFEST.json"))
+                root = target.resolve()
+                for item in manifest["files"]:
+                    out = (target / item["path"]).resolve()
+                    if root not in out.parents:
+                        raise ValueError(f"unsafe path in backup: {item['path']}")
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(item["path"]) as src, out.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    if _sha256(out) != item["sha256"]:
+                        raise ValueError(f"restored file failed its hash check: {item['path']}")
+        return {"vault_id": vault_id, "restored_to": str(target), "file_count": len(manifest["files"]),
+                "backup_created_at": manifest["created_at"]}
 
 
-def latest_archive(backup_root: Path) -> Path:
-    archives = sorted(
-        backup_root.glob(f"{ARCHIVE_PREFIX}*.zip"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    if not archives:
-        raise RuntimeError(f"No local backup archives found in {backup_root}.")
-    return archives[0]
+def offsite_sync(dest: Path) -> dict | None:
+    """Copies new backups to S3 if offsite_s3.py is configured for `dest`;
+    None if it isn't. Never raises: a failed upload stays pending for next time."""
+    import offsite_s3
+    if not offsite_s3.S3Offsite.load_config(dest):
+        return None
+    try:
+        report = offsite_s3.S3Offsite(dest, runner=offsite_s3.cli_runner).sync()
+    except Exception as e:
+        report = {"error": str(e)[:300]}
+    # backup_health.py reads this to alert on failed syncs
+    (Path(dest) / "offsite_last_sync.json").write_text(json.dumps({**report, "at": time.time()}), encoding="utf-8")
+    return report
 
 
-def prune_archives(backup_root: Path, retention: int) -> None:
-    if retention < 1:
-        raise RuntimeError("Backup retention must be at least one archive.")
-    archives = sorted(
-        backup_root.glob(f"{ARCHIVE_PREFIX}*.zip"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for archive in archives[retention:]:
-        archive.unlink()
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Encrypted backups of network-os-project's state.")
+    p.add_argument("--dest", type=Path, default=DEFAULT_DEST, help=f"backup folder (default: {DEFAULT_DEST})")
+    p.add_argument("--root", type=Path, default=PROJECT_DIR, help="project folder to back up (default: this file's folder)")
+    sub = p.add_subparsers(dest="command", required=True)
+    sub.add_parser("init", help="set the passphrase (stored with Windows DPAPI)")
+    run = sub.add_parser("run", help="make, encrypt and verify one backup, then prune old ones")
+    run.add_argument("--apply-retention", action="store_true",
+                     help="run retention.py on live_store.db first, so expired rows aren't backed up")
+    run.add_argument("--audit", help="log the backup (id, counts, sizes) to this audit_trail.py file")
+    run.add_argument("--keep-days", type=int, default=KEEP_DAYS)
+    run.add_argument("--keep-min", type=int, default=KEEP_MIN)
+    sub.add_parser("list")
+    v = sub.add_parser("verify")
+    v.add_argument("vault_id", nargs="?", default="all")
+    r = sub.add_parser("restore")
+    r.add_argument("vault_id", help="a vault id, or 'latest'")
+    r.add_argument("--to", type=Path, required=True, help="empty or new folder to restore into")
+    args = p.parse_args(argv)
+    bs = BackupSet(args.dest)
 
+    if args.command == "init":
+        first = getpass.getpass("Backup passphrase (12+ characters): ")
+        if first != getpass.getpass("Confirm: "):
+            p.error("passphrases do not match")
+        path = save_passphrase(first)
+        print(f"Saved (DPAPI-protected, this Windows account only): {path}")
+        print("Keep your own copy of this passphrase. Without it, no backup can be decrypted.")
+        return 0
+    if args.command == "list":
+        for e in bs.entries():
+            print(f"{e['vault_id']}  {e['created_at']}  {e['file_count']:>4} files  "
+                  f"{e['encrypted_bytes'] / 1024:>9.1f} KB  verified={e['verified']}")
+        return 0
 
-def restore_test(config: dict[str, Any]) -> tuple[Path, int]:
-    backup_root = Path(config["backup_root"])
-    archive_path = latest_archive(backup_root)
-    restored_files = 0
-    with zipfile.ZipFile(archive_path, mode="r") as archive:
-        manifest = verify_archive(archive)
-        with tempfile.TemporaryDirectory(prefix="network-os-restore-test-") as temp_dir:
-            restore_root = Path(temp_dir)
-            for entry in manifest["files"]:
-                relative_name = entry["path"]
-                destination = restore_root.joinpath(*PurePosixPath(relative_name).parts)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(archive.read(relative_name))
-                restored_files += 1
-                if destination.stat().st_size != entry["size"]:
-                    raise RuntimeError(f"Restore size verification failed for {relative_name!r}.")
-                digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-                if digest != entry["sha256"]:
-                    raise RuntimeError(f"Restore SHA-256 verification failed for {relative_name!r}.")
-    return archive_path, restored_files
+    try:
+        passphrase = load_passphrase()
+    except (LookupError, OSError) as e:
+        p.error(str(e))
 
-
-def command_run() -> int:
-    archive = create_backup(load_config())
-    print(f"Backup verified: {archive}")
+    if args.command == "run":
+        if args.apply_retention and (args.root / "live_store.db").exists():
+            import retention
+            retention.apply(str(args.root / "live_store.db"), retention.load_policy(), audit_path=args.audit)
+        entry = bs.run(passphrase, root=args.root)
+        offsite = offsite_sync(bs.dest)   # before pruning, so nothing is pruned before it's off-site
+        pruned = bs.prune(args.keep_days, args.keep_min)
+        offsite_summary = None if offsite is None else {
+            "uploaded": len(offsite.get("uploaded", [])), "failed": len(offsite.get("failed", {})),
+            "still_pending": offsite.get("still_pending")}
+        if args.audit:
+            from audit_trail import AuditTrail
+            AuditTrail(args.audit).log(module="backup", action="backup_created", node_id="backup",
+                                       details={**{k: entry[k] for k in ("vault_id", "file_count",
+                                                                          "bundle_bytes", "verified")},
+                                                "pruned": pruned, "offsite": offsite_summary})
+        try:   # weekly test restore when due, health checks, desktop alert if anything's wrong
+            import backup_health
+            health = backup_health.run_scheduled(bs.dest, passphrase, audit_path=args.audit)
+        except Exception as e:
+            health = {"error": str(e)[:300]}
+        print(json.dumps({**entry, "pruned": pruned, "offsite": offsite, "health": health}, indent=2))
+        return 0
+    if args.command == "verify":
+        ids = [e["vault_id"] for e in bs.entries()] if args.vault_id == "all" else [args.vault_id]
+        bad = 0
+        for vid in ids:
+            try:
+                bs.verify(vid, passphrase)
+                print(f"OK      {vid}")
+            except Exception as e:
+                bad += 1
+                print(f"FAILED  {vid}: {e}")
+        return 1 if bad else 0
+    print(json.dumps(bs.restore(args.vault_id, args.to, passphrase), indent=2))
     return 0
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    init_parser = subparsers.add_parser("init", help="initialize local backup configuration")
-    init_parser.add_argument("--project-root", type=Path, default=Path.cwd())
-    init_parser.add_argument("--backup-root", type=Path, default=None)
-    subparsers.add_parser("run", help="create and verify a local backup archive")
-    subparsers.add_parser("list", help="verify and list local backup archives")
-    args = parser.parse_args()
-
-    try:
-        if args.command == "init":
-            initialize(args.project_root, args.backup_root)
-            return 0
-        config = load_config()
-        if args.command == "run":
-            return command_run()
-        if args.command == "list":
-            backup_root = Path(config["backup_root"])
-            archives = sorted(
-                backup_root.glob(f"{ARCHIVE_PREFIX}*.zip"),
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
-            )
-            if not archives:
-                print(f"No local backup archives found in {backup_root}.")
-                return 1
-            for path in archives:
-                with zipfile.ZipFile(path, mode="r") as archive:
-                    manifest = verify_archive(archive)
-                print(f"{path.name}: {manifest['file_count']} files; manifest verified")
-            return 0
-    except (OSError, RuntimeError, zipfile.BadZipFile) as error:
-        print(f"Backup error: {error}", file=sys.stderr)
-        return 1
-    return 2
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
