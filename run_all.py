@@ -52,7 +52,7 @@ from live_feed import LiveFeedServer
 
 # ---- edit these for your real use ----
 SEED_LABEL = "my-research-node"
-HOST, PORT = "0.0.0.0", 8765
+HOST, PORT = "127.0.0.1", 8765   # loopback only; use "0.0.0.0" when a peer on another machine must connect
 CONDITION = "breast cancer"
 BIOMARKER = "BRCA1"
 INTERVAL_SECONDS = 3600
