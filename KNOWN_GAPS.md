@@ -44,9 +44,10 @@ confident-looking file imply more than it's actually verified.
   4-KiB virtual-page arena tested for map/read/write/unmap/reuse, and a fixed
   kernel heap verified growing from 64 KiB for a large `Vec` allocation, then
   allocating and releasing `Box` values; it is capped at 512 KiB.
-  It still lacks multiple address spaces, user mappings and privilege
-  isolation, syscalls, scheduling, storage/filesystems, and broad hardware
-  support. The driver only supports the QEMU 82540EM model; the
+  A one-shot kernel task also runs on a separately allocated stack, but there
+  is not yet a scheduler or process model. It still lacks multiple address
+  spaces, user mappings and privilege isolation, syscalls, storage/filesystems,
+  and broad hardware support. The driver only supports the QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
   general-purpose or installable operating system. The HTTP service is a
   small test endpoint, not a hardened production server.

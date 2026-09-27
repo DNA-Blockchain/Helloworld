@@ -7,6 +7,7 @@ mod e1000;
 mod heap;
 mod memory;
 mod network;
+mod task;
 mod timer;
 mod virtual_memory;
 

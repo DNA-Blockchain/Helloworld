@@ -26,6 +26,9 @@ this kernel.
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
   allocation and release. The heap is not available to user-mode programs.
+- Runs a one-shot kernel task on a separate 16-KiB stack and verifies that it
+  can allocate from the kernel heap. This is a stack-switching test, not a
+  scheduler, process, privilege boundary, or user-mode execution.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an

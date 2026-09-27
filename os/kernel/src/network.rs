@@ -44,6 +44,11 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         "Kernel heap verified: Vec/Box allocation, release, and growth to {} KiB.",
         heap_pages * 4
     );
+    crate::task::verify_separate_kernel_stack()?;
+    let _ = writeln!(
+        Serial,
+        "Kernel task verified: separate 16-KiB stack and heap allocation."
+    );
     let mut config = Config::new(EthernetAddress(device.mac()).into());
     config.random_seed = 0x4e45_5457;
     config.slaac = true;
