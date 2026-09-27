@@ -7,7 +7,10 @@ edition = "2024"
 bootloader_api = "0.11.12"
 smoltcp = { version = "0.14.0", default-features = false, features = [
     "medium-ethernet",
+    "iface-max-addr-count-4",
     "proto-ipv4",
+    "proto-ipv6",
+    "proto-ipv6-slaac",
     "socket-dhcpv4",
     "socket-icmp",
     "socket-tcp",

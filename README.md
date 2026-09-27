@@ -79,9 +79,10 @@ BIOMARKER  = "BRCA1"
 The project also contains a separate Rust `no_std` x86_64 kernel prototype
 in [`os/`](os/). It does not replace Windows and does not run the Python
 research application inside the kernel. It boots only in QEMU, drives its
-emulated E1000 NIC, obtains a DHCP lease, and verifies IPv4/ARP/ICMP
-connectivity to QEMU's virtual gateway. UDP and TCP support are enabled in its
-no-heap network stack; this prototype does not yet run a network service.
+emulated E1000 NIC, obtains an IPv4 DHCP lease, and verifies IPv4 and IPv6
+gateway reachability. Its no-heap stack also enables UDP, TCP, and IPv6 SLAAC;
+the QEMU check configures IPv6 statically and does not verify SLAAC.
+This prototype does not yet run a network service.
 
 See [`os/README.md`](os/README.md) for toolchain requirements and how to
 build and boot it, including a QEMU integration check for the boot and

@@ -120,8 +120,8 @@ pub(crate) unsafe fn port_read_u32(port: u16) -> u32 {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     Serial::initialize();
-    let _ = writeln!(Serial, "KERNEL PANIC");
+    let _ = writeln!(Serial, "KERNEL PANIC: {info}");
     exit_qemu(0x11)
 }

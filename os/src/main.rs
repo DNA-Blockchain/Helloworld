@@ -33,7 +33,7 @@ fn main() -> ExitCode {
         "-drive",
         &format!("format=raw,file={image}"),
         "-netdev",
-        "user,id=net0",
+        "user,id=net0,ipv4=on,ipv6=on,ipv6-net=fd00::/64,ipv6-host=fd00::2",
         "-device",
         "e1000,netdev=net0",
     ]);
@@ -55,14 +55,16 @@ fn main() -> ExitCode {
                     || !stdout.contains("E1000 initialized: MAC ")
                     || !stdout.contains("DHCP configured: IPv4 ")
                     || !stdout.contains("ICMP echo reply from 10.0.2.2")
+                    || !stdout.contains("IPv6 configured (static): ")
+                    || !stdout.contains("ICMPv6 echo reply from fd00::2")
                 {
                     eprintln!(
-                        "QEMU booted, but driver, DHCP, or ICMP validation output was missing."
+                        "QEMU booted, but dual-stack driver, DHCP, or echo validation output was missing."
                     );
                     return ExitCode::from(1);
                 }
 
-                println!("QEMU NIC and IPv4 stack check passed.");
+                println!("QEMU NIC dual-stack check passed.");
                 ExitCode::SUCCESS
             }
             Err(error) => {

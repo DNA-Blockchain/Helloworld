@@ -12,10 +12,14 @@ this kernel.
   network adapter.
 - Initializes the QEMU Intel 82540EM (`8086:100e`) E1000 using DMA
   descriptor rings and memory-mapped registers.
-- Uses `smoltcp` as a no-heap IPv4 stack with Ethernet, ARP, DHCP, ICMP, UDP,
-  and TCP support enabled.
+- Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
+  IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an
-  ICMP echo request to the QEMU virtual gateway and verifies the reply.
+  ICMP echo request to the IPv4 gateway.
+- Configures a private IPv6 address for the QEMU test network and verifies an
+  ICMPv6 echo reply from its gateway. SLAAC is enabled, but this QEMU user
+  integration test uses explicit IPv6 configuration and does not claim
+  SLAAC/router-advertisement behavior was exercised.
 - Exits QEMU after the network check completes.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
@@ -45,7 +49,7 @@ cargo run
 
 If QEMU is installed elsewhere, replace `C:\Program Files\qemu` with its
 installation directory. To run a non-interactive integration check that
-asserts NIC initialization, a DHCP lease, and a successful gateway ping:
+asserts NIC initialization, IPv4 DHCP, and IPv4/IPv6 gateway echo replies:
 
 ```powershell
 cargo run -- check
