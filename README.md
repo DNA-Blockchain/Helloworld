@@ -90,8 +90,8 @@ however, QEMU's built-in user network sends no router advertisements, so this
 runner falls back to a labelled static IPv6 test address. The dedicated
 `cargo run -- check-slaac` command runs a local QEMU router-advertisement test
 and verifies a real SLAAC address, default route, and ICMPv6 reply. The kernel
-also validates a 100 Hz PIT timer and physical-frame allocate/release cycle,
-and serves a small HTTP health endpoint at
+also validates a 100 Hz PIT timer, physical-frame allocation/release, and
+kernel virtual-page mapping/unmapping. It serves a small HTTP health endpoint at
 `http://127.0.0.1:18080/health` through a loopback-only QEMU port forward.
 `cargo run -- check` verifies network checks and repeated real HTTP requests.
 

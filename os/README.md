@@ -16,7 +16,12 @@ this kernel.
   provides a monotonic millisecond clock, and uses `hlt` while waiting.
 - Initializes a fixed-metadata physical frame allocator for usable memory
   below 4 GiB; the boot check allocates, maps, writes, releases, and reuses a
-  page. This does not yet provide general virtual-memory management.
+  page.
+- Adds a kernel-only virtual-page arena in an unused PML4 slot. The boot check
+  maps a zeroed 4-KiB frame, verifies read/write access, unmaps it, checks the
+  page-table entry was cleared, rejects a repeated free, and reuses the
+  virtual slot. Empty page-table levels are reclaimed. This does not yet
+  implement process address spaces, user mappings, large pages, or a heap.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an

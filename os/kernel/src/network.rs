@@ -27,6 +27,16 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         Serial,
         "Physical frame allocator verified: allocate, map, release, reuse."
     );
+    let physical_memory_offset = boot_info
+        .physical_memory_offset
+        .into_option()
+        .ok_or("bootloader did not map physical memory for virtual memory")?;
+    crate::virtual_memory::initialize(physical_memory_offset)?;
+    crate::virtual_memory::verify_mapping_lifecycle()?;
+    let _ = writeln!(
+        Serial,
+        "Virtual memory verified: map, read/write, unmap, and reuse."
+    );
     let mut config = Config::new(EthernetAddress(device.mac()).into());
     config.random_seed = 0x4e45_5457;
     config.slaac = true;

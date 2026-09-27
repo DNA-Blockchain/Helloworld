@@ -5,6 +5,7 @@ mod e1000;
 mod memory;
 mod network;
 mod timer;
+mod virtual_memory;
 
 use bootloader_api::{BootInfo, BootloaderConfig, config::Mapping, entry_point};
 use core::fmt::{self, Write};
