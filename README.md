@@ -80,13 +80,17 @@ The project also contains a separate Rust `no_std` x86_64 kernel prototype
 in [`os/`](os/). It does not replace Windows and does not run the Python
 research application inside the kernel. It boots only in QEMU, drives its
 emulated E1000 NIC, obtains an IPv4 DHCP lease, and verifies IPv4 and IPv6
-gateway reachability. Its no-heap stack also enables UDP, TCP, and IPv6 SLAAC;
-the QEMU check configures IPv6 statically and does not verify SLAAC.
-This prototype does not yet run a network service.
+gateway reachability. Its no-heap stack enables UDP, TCP, and IPv6 SLAAC;
+however, QEMU's built-in user network sends no router advertisements, so this
+runner falls back to a labelled static IPv6 test address. The dedicated
+`cargo run -- check-slaac` command runs a local QEMU router-advertisement test
+and verifies a real SLAAC address, default route, and ICMPv6 reply. The kernel
+also serves a small HTTP health endpoint at
+`http://127.0.0.1:18080/health` through a loopback-only QEMU port forward.
+`cargo run -- check` verifies network checks and repeated real HTTP requests.
 
 See [`os/README.md`](os/README.md) for toolchain requirements and how to
-build and boot it, including a QEMU integration check for the boot and
-network-device discovery. Keep testing in the emulator; do not write its disk
+build, boot, and check it. Keep testing in the emulator; do not write its disk
 image to a physical drive.
 
 ## Running the tests

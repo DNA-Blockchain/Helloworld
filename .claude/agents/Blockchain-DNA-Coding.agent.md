@@ -48,6 +48,19 @@ repository and in explicitly connected development environments.
    include that handoff in the result. Never claim an agent handoff occurred
    when it did not.
 
+## Efficient execution and corrections
+
+- For a clear implementation request, inspect the directly relevant files
+  and tests, then implement and run the narrowest meaningful validation.
+  Avoid repeated broad scans, speculative rewrites, and advice-only replies
+  when the task can be completed locally.
+- Treat the user's correction as authoritative task context: identify the
+  specific earlier assumption or statement that was wrong, correct the
+  implementation or documentation, and verify the corrected behavior.
+- In the completion report, separate repository-verified facts, externally
+  sourced facts, inference, and unresolved blockers. Link primary sources
+  with their version or access date when external claims affect correctness.
+
 ## Autonomy and unattended runs
 
 - "Autonomous" means completing the user's assigned, bounded task without
@@ -120,11 +133,11 @@ repository and in explicitly connected development environments.
 - For cross-compilation or other-OS builds, identify the target triple,
   ABI, SDK, runtime, and signing requirements. A successful local build is
   not proof that a target OS binary runs.
-- For the repository's experimental bare-metal code in `os/`, preserve the
-  no_std kernel boundary, test boot images only in QEMU, and distinguish
-  the QEMU-only E1000/IPv4 self-test from general hardware support or a
-  long-running network service. Never write prototype images to physical
-  disks or claim it runs the Python app.
+- For the repository's experimental bare-metal code in `os/`, preserve
+  the no_std kernel boundary, test boot images only in QEMU, and distinguish
+  verified QEMU behaviors from unsupported hardware or untested protocols.
+  Never write prototype images to physical disks or claim it runs the Python
+  app. A running test endpoint does not imply a production-ready server.
 
 ## Local and remote terminals
 

@@ -16,17 +16,26 @@ this kernel.
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an
   ICMP echo request to the IPv4 gateway.
-- Configures a private IPv6 address for the QEMU test network and verifies an
-  ICMPv6 echo reply from its gateway. SLAAC is enabled, but this QEMU user
-  integration test uses explicit IPv6 configuration and does not claim
-  SLAAC/router-advertisement behavior was exercised.
-- Exits QEMU after the network check completes.
+- Enables IPv6 SLAAC and waits for an address and default route from a router
+  advertisement. QEMU's built-in user network sends no router
+  advertisements, so the standard network check reports SLAAC as unavailable
+  and uses an explicitly labelled static test address and route. A separate
+  `check-slaac` run uses a loopback-only QEMU socket network and a small local
+  test router that sends a real RA; it verifies the SLAAC address, RA default
+  route, and ICMPv6 echo response in the guest.
+- Verifies an ICMPv6 echo reply from the QEMU IPv6 gateway.
+- Runs a small in-kernel HTTP health service on guest TCP port 8080. `GET
+  /health` returns `200 OK` with `ok`; other paths return `404`.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
-it is not a general PCI NIC driver. The test uses QEMU user-mode networking,
-which is isolated behind QEMU's virtual NAT and opens no host listening ports.
-The kernel still exits after this finite self-test and does not yet run an
-application or an always-on network service.
+it is not a general PCI NIC driver. The runner uses QEMU user-mode networking
+and forwards host `127.0.0.1:18080` to guest port 8080; it does not bind the
+service to a public host interface. `cargo run` keeps the kernel service
+running until QEMU is stopped. `cargo run -- check` starts QEMU, checks DHCP
+and both gateway echoes, makes repeated real HTTP requests through the
+loopback-only forward, and stops QEMU. `cargo run -- check-slaac` runs the
+controlled RA test described above. This validates the stack and driver only
+in QEMU, not on physical hardware or a production network.
 
 ## Requirements
 
@@ -35,6 +44,7 @@ application or an always-on network service.
   these for this subproject only.
 - QEMU x86_64 (`qemu-system-x86_64`) on `PATH`.
 - On Windows, the pinned GNU-host Rust toolchain needs a MinGW-w64 linker.
+- Python 3 is needed for the optional controlled SLAAC router test.
 - Network access to download the pinned Rust crates on the first build.
 
 ## Build and boot
@@ -48,11 +58,20 @@ cargo run
 ```
 
 If QEMU is installed elsewhere, replace `C:\Program Files\qemu` with its
-installation directory. To run a non-interactive integration check that
-asserts NIC initialization, IPv4 DHCP, and IPv4/IPv6 gateway echo replies:
+installation directory. The health endpoint is available at
+`http://127.0.0.1:18080/health` while the OS is running. To run a
+non-interactive integration check that asserts NIC initialization, IPv4 DHCP,
+IPv4/IPv6 gateway echo replies, and an actual HTTP response:
 
 ```powershell
 cargo run -- check
+```
+
+To verify SLAAC using a controlled local router instead of QEMU's user-mode
+network:
+
+```powershell
+cargo run -- check-slaac
 ```
 
 Build artifacts and generated disk images stay under `os/target/` and are

@@ -34,11 +34,25 @@ MCP server, API, cloud account, or chain is connected when it is not.
   factual summary so findings can be checked later.
 - Prefer source APIs and documented MCP tools for repeatable lookups. Use
   browser tools when available for pages that need human-readable context.
+- Cite primary sources inline for material claims, using a direct URL or
+  stable record ID and the publication/update date when available. Label
+  repository evidence, source-stated facts, and interpretation separately;
+  report when a source could not be reached instead of implying verification.
 - Distinguish source facts from interpretation, report stale or conflicting
   records, and do not claim a source is complete when it was not searched.
 - Respect API rate limits and source terms. Prefer streaming or event
   notifications when a configured source supports them; otherwise poll at
   a documented, conservative interval with backoff.
+
+## Efficient research and corrections
+
+- For a clear research question, search the most authoritative relevant
+  sources first, retrieve only enough evidence to answer it, and return a
+  concise synthesis with citations and limits. Avoid repeating broad searches
+  or presenting an unverified lead as a finding.
+- When the user corrects a summary, name the mistaken claim or assumption,
+  check it against the original evidence, and update the conclusion. Keep
+  verified facts, inference, and unresolved blockers distinct.
 
 ## Storage and provenance
 

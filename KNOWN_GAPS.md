@@ -30,13 +30,19 @@ confident-looking file imply more than it's actually verified.
 ## Documented as not implemented
 
 - **`os/` bootable kernel prototype** — experimental x86_64 QEMU kernel
-  with an E1000 driver and `smoltcp` IPv4/IPv6 stack, tested against QEMU's
-  user-mode DHCP and IPv4/IPv6 gateway echo. The QEMU check uses a static
-  private IPv6 address; SLAAC support is enabled but not integration-tested.
-  The driver only supports the QEMU 82540EM model; the kernel exits after
-  its finite network check, does not run the Python application or a server,
-  and is not a general-purpose or installable operating system. UDP/TCP are
-  enabled in the stack but do not yet have application-level tests.
+  with an E1000 driver and `smoltcp` IPv4/IPv6 stack. The QEMU integration
+  check verifies DHCP, IPv4/IPv6 gateway echo, and a real HTTP `/health`
+  request to the in-kernel TCP service through a host forward bound only to
+  `127.0.0.1`. SLAAC is enabled and the kernel waits for router
+  advertisements. QEMU's built-in user network sends no RA, so the standard
+  check reports this and uses a static IPv6 test address/route. A separate
+  `check-slaac` integration run uses a loopback-only socket backend and a
+  controlled local router to send a real RA; it verifies the SLAAC address,
+  RA-installed default route, and ICMPv6 echo in QEMU. This does not establish
+  behavior on physical networks. The driver only supports the QEMU 82540EM
+  model; the kernel does not run the Python research application and is not a
+  general-purpose or installable operating system. The HTTP service is a
+  small test endpoint, not a hardened production server.
 - **Video generation** (`runway_api_key` in `integrated_research_agent.py`)
   — accepted as a parameter, deliberately left unimplemented. Writing
   untested code against a less-standardized API seemed worse than an
