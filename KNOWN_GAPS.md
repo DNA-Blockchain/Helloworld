@@ -30,10 +30,13 @@ confident-looking file imply more than it's actually verified.
 ## Documented as not implemented
 
 - **`os/` bootable kernel prototype** — experimental x86_64 QEMU kernel
-  that prints to serial and enumerates PCI network-class devices. It has
-  no hardware NIC driver or IP stack, does not run the Python application,
-  and is not a general-purpose or installable operating system. The QEMU
-  `check` mode verifies the boot message and emulated E1000 discovery.
+  with an E1000 driver and `smoltcp` IPv4 stack, tested against QEMU's
+  user-mode DHCP and gateway ICMP echo. The driver only supports the QEMU
+  82540EM model; the kernel exits after its finite network check, does not
+  run the Python application or a server, and is not a general-purpose or
+  installable operating system. The QEMU `check` mode exercises driver
+  initialization, DHCP, ARP, IPv4, and ICMP; UDP/TCP are enabled in the
+  stack but do not yet have application-level integration tests.
 - **Video generation** (`runway_api_key` in `integrated_research_agent.py`)
   — accepted as a parameter, deliberately left unimplemented. Writing
   untested code against a less-standardized API seemed worse than an

@@ -52,15 +52,17 @@ fn main() -> ExitCode {
                 }
                 if !stdout.contains("Network OS prototype: booted in x86_64 QEMU.")
                     || !stdout.contains("network controller: 8086:100e")
-                    || !stdout.contains("Detected 1 PCI network controller(s).")
+                    || !stdout.contains("E1000 initialized: MAC ")
+                    || !stdout.contains("DHCP configured: IPv4 ")
+                    || !stdout.contains("ICMP echo reply from 10.0.2.2")
                 {
                     eprintln!(
-                        "QEMU booted, but expected boot or network-device output was missing."
+                        "QEMU booted, but driver, DHCP, or ICMP validation output was missing."
                     );
                     return ExitCode::from(1);
                 }
 
-                println!("QEMU boot check passed.");
+                println!("QEMU NIC and IPv4 stack check passed.");
                 ExitCode::SUCCESS
             }
             Err(error) => {

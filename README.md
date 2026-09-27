@@ -19,7 +19,7 @@ run — see [Owning your copy](#owning-your-copy).
 |---|---|---|
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
-| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; serial console and PCI network-device discovery only |
+| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; E1000 driver, DHCP lease, and IPv4/ARP/ICMP self-test |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
 | Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
 | Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
@@ -78,9 +78,10 @@ BIOMARKER  = "BRCA1"
 
 The project also contains a separate Rust `no_std` x86_64 kernel prototype
 in [`os/`](os/). It does not replace Windows and does not run the Python
-research application inside the kernel. It boots only in QEMU, prints to a
-serial console, and scans for an emulated PCI network controller. This first
-milestone has **no NIC driver, DHCP, TCP/IP stack, or internet access**.
+research application inside the kernel. It boots only in QEMU, drives its
+emulated E1000 NIC, obtains a DHCP lease, and verifies IPv4/ARP/ICMP
+connectivity to QEMU's virtual gateway. UDP and TCP support are enabled in its
+no-heap network stack; this prototype does not yet run a network service.
 
 See [`os/README.md`](os/README.md) for toolchain requirements and how to
 build and boot it, including a QEMU integration check for the boot and

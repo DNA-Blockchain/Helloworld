@@ -122,8 +122,9 @@ repository and in explicitly connected development environments.
   not proof that a target OS binary runs.
 - For the repository's experimental bare-metal code in `os/`, preserve the
   no_std kernel boundary, test boot images only in QEMU, and distinguish
-  PCI-device discovery from a working NIC driver or network stack. Never
-  write prototype images to physical disks or claim it runs the Python app.
+  the QEMU-only E1000/IPv4 self-test from general hardware support or a
+  long-running network service. Never write prototype images to physical
+  disks or claim it runs the Python app.
 
 ## Local and remote terminals
 
