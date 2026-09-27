@@ -529,6 +529,17 @@ curl "http://127.0.0.1:8790/events?after=0&stream=audit"
 curl "http://127.0.0.1:8790/snapshot?stream=status&key=node-0"
 ```
 
+The kernel prototype reports into the same store: `os_live_bridge.py`
+runs `cargo run -- check` (or `--mode check-slaac`) in `os/` and records
+each boot milestone (PIT timer, frame allocator, E1000, DHCP, ICMP,
+IPv6, HTTP health) as stream `os`, plus a pass/fail snapshot tied to the
+git commit it tested:
+
+```bash
+python os_live_bridge.py --audit system_audit.jsonl
+curl "http://127.0.0.1:8790/snapshot?stream=os&key=check"
+```
+
 ### JSON interface and interpreter
 
 The Blockchain-DNA skill uses a JSON request/response interface. For
