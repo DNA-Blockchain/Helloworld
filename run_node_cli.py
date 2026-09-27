@@ -42,8 +42,10 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
 
 from network_node import NetworkNode
+from research_provenance import ResearchProvenanceQueue
 from digital_dna import DigitalDNA
 from token_ledger import TokenLedger
 from dna_binary_codec import encode_to_dna
@@ -105,8 +107,26 @@ def build_parser() -> argparse.ArgumentParser:
                    help="text every node in this network must share identically")
     p.add_argument("--mine-interval", type=float, default=1.5)
     p.add_argument("--duration", type=float, default=0.0, help="seconds to run, 0 = run until Ctrl+C")
-    p.add_argument("--no-research", action="store_true", help="disable the ClinicalTrials.gov enricher")
-    p.add_argument("--no-external-info", action="store_true", help="disable the Bitcoin/Ethereum enricher")
+    p.add_argument(
+        "--allow-research-gossip", action="store_true",
+        help="opt in to adding a hash of a public ClinicalTrials.gov record to peer blocks",
+    )
+    p.add_argument(
+        "--no-research", action="store_true",
+        help="compatibility option; research-result gossip is already off by default",
+    )
+    p.add_argument(
+        "--allow-external-info", action="store_true",
+        help="opt in to adding Bitcoin/Ethereum market snapshots to peer blocks",
+    )
+    p.add_argument(
+        "--no-external-info", action="store_true",
+        help="compatibility option; external-info sharing is off by default",
+    )
+    p.add_argument(
+        "--provenance-queue", type=str,
+        help="publish queued public research hashes/provenance only; incompatible with enrichers",
+    )
     p.add_argument("--workdir", default="./node_data", help="where this node's keys/chain/identity/token files live")
     p.add_argument("--work-sharing", action="store_true",
                    help="split research/chain-tip lookups and chain audits with the other nodes "
@@ -117,6 +137,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status-file", help="write this node's status JSON here every 30s and on exit")
     p.add_argument("--stop-file", help="stop cleanly when this file appears (used by node_supervisor.py)")
     return p
+
+
+def build_enrichers(args: argparse.Namespace) -> list[Callable]:
+    """Build block enrichers, keeping research-result gossip opt-in."""
+    enrichers = []
+    if args.allow_research_gossip:
+        enrichers.append(research_enricher)
+    if args.allow_external_info and not args.no_external_info:
+        enrichers.append(external_info_enricher)
+    return enrichers
 
 
 def write_status(node, path: str) -> None:
@@ -159,6 +189,14 @@ async def main(argv: list[str] | None = None) -> int:
         trusted = parse_trust(args.trust)
     except ValueError as e:
         parser.error(str(e))
+    if args.allow_research_gossip and args.no_research:
+        parser.error("--allow-research-gossip and --no-research cannot be used together")
+    if args.provenance_queue and (
+        args.allow_research_gossip or args.allow_external_info or args.work_sharing
+    ):
+        parser.error(
+            "--provenance-queue cannot be combined with live enrichers or --work-sharing"
+        )
 
     os.makedirs(args.workdir, exist_ok=True)
     keys_dir = os.path.join(args.workdir, "keys")
@@ -169,12 +207,7 @@ async def main(argv: list[str] | None = None) -> int:
                      dna_path=os.path.join(args.workdir, f"identity_node-{args.id}.dna.json"))
     ledger = TokenLedger(store_path=os.path.join(args.workdir, f"tokens_node-{args.id}.json"))
 
-    enrichers = []
-    if not args.work_sharing:   # with work sharing these lookups are shared jobs instead
-        if not args.no_research:
-            enrichers.append(research_enricher)
-        if not args.no_external_info:
-            enrichers.append(external_info_enricher)
+    enrichers = [] if args.work_sharing or args.provenance_queue else build_enrichers(args)
 
     try:
         node = NetworkNode(
@@ -193,6 +226,10 @@ async def main(argv: list[str] | None = None) -> int:
             signing_key_path=os.path.join(keys_dir, f"node-{args.id}.ed25519.pem"),
             signing_key_passphrase=passphrase,
             known_peers_path=os.path.join(keys_dir, f"node-{args.id}.known_peers.json"),
+            provenance_queue=(
+                ResearchProvenanceQueue(args.provenance_queue)
+                if args.provenance_queue else None
+            ),
         )
         for peer_id, key_hex in trusted.items():
             node.trust_peer(peer_id, key_hex)
@@ -210,14 +247,17 @@ async def main(argv: list[str] | None = None) -> int:
     if args.work_sharing:
         WorkManager(node, WorkSchedule(
             round_seconds=args.round_seconds,
-            research_every=0 if args.no_research else 3,
-            external_every=0 if args.no_external_info else 2,
+            research_every=3 if args.allow_research_gossip else 0,
+            external_every=2 if args.allow_external_info and not args.no_external_info else 0,
         ), takeover_seconds=args.takeover_seconds).attach()
 
     print("=" * 78)
     print(f"REAL NETWORK NODE  id={args.id}  bind={args.bind}:{args.port}")
     print(f"This node's public signing key: {node.signing_pub_hex}")
     print(f"Peers: {peers if peers else '(none — will just mine its own local chain)'}")
+    if args.provenance_queue:
+        print("Chain payload mode: hashes and source/timestamp provenance only; no record content.")
+        print(f"Research provenance outbox: {args.provenance_queue}")
     print(f"Pinned peer keys: {sorted(node.peer_signing_keys) or '(none)'}"
           f"{'  [+ trust on first use]' if args.tofu else ''}")
     print(f"Identity strand (must match every peer's): {identity_strand}")

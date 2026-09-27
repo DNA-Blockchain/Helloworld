@@ -1,0 +1,230 @@
+"""Public variant and gene lookup connectors used by the local research catalog."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import ssl
+import time
+import urllib.parse
+import urllib.request
+from urllib.error import HTTPError, URLError
+
+import certifi
+
+NCBI_ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+NCBI_ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+ENSEMBL_LOOKUP = "https://rest.ensembl.org/lookup/symbol/homo_sapiens/"
+GNOMAD_GRAPHQL = "https://gnomad.broadinstitute.org/api"
+USER_AGENT = "OpenResearchCatalog/1.0 (local research client)"
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+MAX_SUMMARY_CHARS = 4000
+_NCBI_LAST_REQUEST = 0.0
+
+
+def _get_json(url: str) -> dict:
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=SSL_CONTEXT) as response:
+            data = json.loads(response.read())
+    except HTTPError as error:
+        host = urllib.parse.urlsplit(url).hostname or "NCBI"
+        raise RuntimeError(f"research provider {host} returned HTTP {error.code}") from None
+    except (URLError, OSError, TimeoutError) as error:
+        host = urllib.parse.urlsplit(url).hostname or "research provider"
+        raise RuntimeError(
+            f"request to {host} failed ({type(error).__name__})"
+        ) from None
+    if not isinstance(data, dict):
+        raise ValueError("research provider returned a non-object JSON response")
+    return data
+
+
+def _post_json(url: str, payload: dict) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=SSL_CONTEXT) as response:
+            data = json.loads(response.read())
+    except HTTPError as error:
+        host = urllib.parse.urlsplit(url).hostname or "research provider"
+        raise RuntimeError(f"research provider {host} returned HTTP {error.code}") from None
+    except (URLError, OSError, TimeoutError) as error:
+        host = urllib.parse.urlsplit(url).hostname or "research provider"
+        raise RuntimeError(
+            f"request to {host} failed ({type(error).__name__})"
+        ) from None
+    if not isinstance(data, dict):
+        raise ValueError("research provider returned a non-object JSON response")
+    return data
+
+
+def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
+    global _NCBI_LAST_REQUEST
+    now = time.monotonic()
+    wait = 0.11 if os.environ.get("NCBI_API_KEY", "").strip() else 0.36
+    delay = wait - (now - _NCBI_LAST_REQUEST)
+    if delay > 0:
+        time.sleep(delay)
+    api_key = os.environ.get("NCBI_API_KEY", "").strip()
+    request_params = dict(params)
+    if api_key:
+        request_params["api_key"] = api_key
+    data = _get_json(f"{url}?{urllib.parse.urlencode(request_params)}")
+    _NCBI_LAST_REQUEST = time.monotonic()
+    return data
+
+
+def _safe_summary(summary: dict, *, database: str) -> str:
+    if database == "clinvar":
+        allowed = ("accession", "clinical_significance", "variation_type", "genes", "trait_set")
+    else:
+        allowed = ("snp_id", "snp_class", "clinical_significance", "genes", "allele_origin")
+    values = {key: summary[key] for key in allowed if key in summary}
+    return json.dumps(values, ensure_ascii=True, sort_keys=True)[:MAX_SUMMARY_CHARS]
+
+
+def search_ncbi_variants(query: str, *, database: str, max_results: int = 10) -> list[dict]:
+    """Search ClinVar or dbSNP through NCBI E-utilities using an optional env API key."""
+    if database not in {"clinvar", "snp"}:
+        raise ValueError("database must be 'clinvar' or 'snp'")
+    if not query.strip():
+        raise ValueError("query cannot be empty")
+    if not 1 <= max_results <= 100:
+        raise ValueError("max_results must be between 1 and 100")
+
+    search = _ncbi_get_json(NCBI_ESEARCH, {
+        "db": database,
+        "term": query,
+        "retmode": "json",
+        "retmax": str(max_results),
+    })
+    ids = search.get("esearchresult", {}).get("idlist", [])
+    if not isinstance(ids, list) or not ids:
+        return []
+
+    summary_response = _ncbi_get_json(NCBI_ESUMMARY, {
+        "db": database,
+        "id": ",".join(str(item) for item in ids),
+        "retmode": "json",
+    })
+    result = summary_response.get("result", {})
+    if not isinstance(result, dict):
+        raise ValueError(f"NCBI {database} response did not contain record summaries")
+
+    records = []
+    for uid in ids[:max_results]:
+        item = result.get(str(uid))
+        if not isinstance(item, dict):
+            continue
+        if database == "clinvar":
+            source = "clinvar"
+            external_id = str(item.get("accession") or item.get("uid") or uid)
+            title = str(item.get("title") or f"ClinVar variation {external_id}")
+            url = f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/"
+            terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
+        else:
+            source = "dbsnp"
+            snp_id = str(item.get("snp_id") or item.get("rs") or item.get("uid") or uid)
+            external_id = (
+                snp_id if snp_id.lower().startswith("rs")
+                else f"rs{snp_id}" if snp_id.isdigit()
+                else snp_id
+            )
+            title = str(item.get("title") or f"dbSNP record {external_id}")
+            url = f"https://www.ncbi.nlm.nih.gov/snp/{urllib.parse.quote(external_id)}"
+            terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
+        records.append({
+            "source": source,
+            "external_id": external_id,
+            "title": title,
+            "abstract": _safe_summary(item, database=database),
+            "source_url": url,
+            "published_at": "",
+            "classification": "public",
+            "rights_status": "public metadata; review source terms",
+            "terms_url": terms,
+        })
+    return records
+
+
+def lookup_ensembl_gene(symbol: str) -> list[dict]:
+    """Look up one human gene symbol through the public Ensembl REST API."""
+    symbol = symbol.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", symbol):
+        raise ValueError("Ensembl lookup requires a gene symbol or identifier")
+    result = _get_json(ENSEMBL_LOOKUP + urllib.parse.quote(symbol, safe=""))
+    stable_id = result.get("id")
+    if not isinstance(stable_id, str) or not stable_id:
+        return []
+    summary = {
+        key: result[key]
+        for key in ("display_name", "description", "biotype", "seq_region_name", "start", "end", "strand")
+        if key in result
+    }
+    return [{
+        "source": "ensembl",
+        "external_id": stable_id,
+        "title": f"Ensembl gene {result.get('display_name') or symbol} ({stable_id})",
+        "abstract": json.dumps(summary, ensure_ascii=True, sort_keys=True)[:MAX_SUMMARY_CHARS],
+        "source_url": f"https://rest.ensembl.org/lookup/id/{urllib.parse.quote(stable_id, safe='')}",
+        "published_at": "",
+        "classification": "public",
+        "rights_status": "public metadata; review source terms",
+        "terms_url": "https://www.ensembl.org/info/about/legal/",
+    }]
+
+
+def lookup_gnomad_variant(variant_id: str) -> list[dict]:
+    """Look up one normalized variant ID in the public gnomAD v4 GraphQL API."""
+    variant_id = variant_id.strip()
+    if not re.fullmatch(r"(?:[0-9]+|X|Y|MT)-[1-9][0-9]*-[ACGTN]+-[ACGTN]+", variant_id, re.I):
+        raise ValueError("gnomAD lookup requires a variant ID like 7-140753336-A-T")
+    query = """
+    query VariantLookup($variantId: String!, $dataset: DatasetId!) {
+      variant(variantId: $variantId, dataset: $dataset) {
+        variant_id
+        genome { ac an af }
+        exome { ac an af }
+      }
+    }
+    """
+    response = _post_json(GNOMAD_GRAPHQL, {
+        "query": query,
+        "variables": {"variantId": variant_id, "dataset": "gnomad_r4"},
+    })
+    if response.get("errors"):
+        raise RuntimeError("gnomAD rejected the variant lookup")
+    variant = response.get("data", {}).get("variant")
+    if not isinstance(variant, dict):
+        return []
+    external_id = str(variant.get("variant_id") or variant_id)
+    return [{
+        "source": "gnomad",
+        "external_id": external_id,
+        "title": f"gnomAD v4 variant {external_id}",
+        "abstract": json.dumps(
+            {key: variant[key] for key in ("genome", "exome") if key in variant},
+            ensure_ascii=True,
+            sort_keys=True,
+        )[:MAX_SUMMARY_CHARS],
+        "source_url": (
+            f"https://gnomad.broadinstitute.org/variant/{urllib.parse.quote(external_id, safe='')}"
+            "?dataset=gnomad_r4"
+        ),
+        "published_at": "",
+        "classification": "public",
+        "rights_status": "public aggregate data; review source terms",
+        "terms_url": "https://gnomad.broadinstitute.org/terms",
+    }]
