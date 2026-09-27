@@ -23,11 +23,16 @@ run — see [Owning your copy](#owning-your-copy).
 |---|---|---|
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
+| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; E1000 driver, DHCP lease, and IPv4/ARP/ICMP self-test |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
+| Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
+| Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
+| JSON research tool | `blockchain_dna_tool.py`, `.claude/skills/blockchain-dna-research/SKILL.md` | Validates structured research requests, reports source IDs/status, summarizes provenance, and offers opt-in local Python execution |
 | Extra sources | `multi_source_research.py`, `extended_research_sources.py`, `maxwell_research.py` | arXiv, NIH RePORTER, Europe PMC, PubMed metadata |
 | CRISPR suite | `crispr_research_suite.py`, `crispr_guide_design.py` | Literature tracking + a published GC-content guide heuristic |
 | Ledger + audit | `token_ledger.py`, `audit_trail.py` | Local per-node score (not a cryptocurrency); append-only audit log |
 | Provenance | `project_identifier.py` | Hash manifest tying each run to an exact code state |
+| Live data store | `live_store.py`, `live_feed.py` | Local SQLite mirror of everything saved, streamed live over loopback-only HTTP/SSE |
 | Entry points | `run_all.py`, `run_agent.py` | Launch everything, or just the research agent |
 
 **Honest boundaries** (see [`KNOWN_GAPS.md`](KNOWN_GAPS.md) for the full list):
@@ -73,6 +78,26 @@ HOST, PORT = "127.0.0.1", 8765
 CONDITION  = "breast cancer"
 BIOMARKER  = "BRCA1"
 ```
+
+## Experimental bootable OS prototype
+
+The project also contains a separate Rust `no_std` x86_64 kernel prototype
+in [`os/`](os/). It does not replace Windows and does not run the Python
+research application inside the kernel. It boots only in QEMU, drives its
+emulated E1000 NIC, obtains an IPv4 DHCP lease, and verifies IPv4 and IPv6
+gateway reachability. Its no-heap stack enables UDP, TCP, and IPv6 SLAAC;
+however, QEMU's built-in user network sends no router advertisements, so this
+runner falls back to a labelled static IPv6 test address. The dedicated
+`cargo run -- check-slaac` command runs a local QEMU router-advertisement test
+and verifies a real SLAAC address, default route, and ICMPv6 reply. The kernel
+also validates a 100 Hz PIT timer, physical-frame allocation/release, and
+kernel virtual-page mapping/unmapping. It serves a small HTTP health endpoint at
+`http://127.0.0.1:18080/health` through a loopback-only QEMU port forward.
+`cargo run -- check` verifies network checks and repeated real HTTP requests.
+
+See [`os/README.md`](os/README.md) for toolchain requirements and how to
+build, boot, and check it. Keep testing in the emulator; do not write its disk
+image to a physical drive.
 
 ## Local DNA-format shell
 
@@ -408,6 +433,224 @@ python node_supervisor.py --uninstall   # stop and remove the logon task
   and shows a Windows notification saying OK or what needs attention.
 - Everything lives under `autonomous/` (gitignored). Signing keys are in
   `autonomous/node-N/keys/` and are never archived or deleted.
+
+## Blockchain-DNA assistant
+
+The reusable assistant instructions are in
+[`.claude/agents/Blockchain-DNA.agent.md`](.claude/agents/Blockchain-DNA.agent.md).
+When invoked in a compatible agent host, it can use that host's available
+browser and configured MCP tools alongside this project's research APIs.
+The assistant is not a continuous browser process. A host automation runs
+the two agent roles daily at 09:00 local time: refreshes at most one
+already-tracked topic via read-only public API requests (updating only the
+local research store), then checks repository status and runs the local
+test suite. It does not edit source code, install packages, run remote
+commands, or write to cloud/public chains. `node_supervisor.py` separately
+continues the project's local nodes and its existing scheduled API work.
+Sources without event support are polled according to their schedules.
+
+When the assistant explicitly saves a finding, local storage is the default
+where the source permits it. The existing research worker persists source
+IDs and topic metadata; it does not archive full source documents. Only a
+digest and minimal provenance belong on this project's signed local chain.
+This project does not currently upload records to cloud/MCP destinations or
+submit transactions to a public blockchain. Those require an explicitly
+configured connector and a confirmed destination; the supervisor's
+Bitcoin/Ethereum chain-tip reads are public, read-only lookups.
+
+### Continuous operation across hosts
+
+The current Windows supervisor and agent-host daily schedule do not make
+this project a 24/7 cross-host service. The supervisor's three nodes bind
+to loopback and use local files; they do not coordinate with a cloud VM or
+home server. A powered-off PC cannot run its local worker.
+
+Running both a cloud host and a home server simultaneously would require
+deployment configuration plus durable shared/reconciled task state,
+idempotent task IDs, leases/heartbeats, retry/backoff, duplicate handling,
+secure private connectivity, and backups. No cloud or home-server
+deployment is configured by this repository yet. Before setting one up,
+the user's selected cloud provider is AWS; the home-server device is not
+yet identified. The AWS account ID is not stored here, and the CLI is not
+installed or authenticated. Approve the exact network exposure, data
+handling, and any ongoing cost before provisioning. Collection should continue with
+deterministic code if an AI/chat provider is unavailable; switching models
+or sending data to another provider must be explicitly configured and
+approved.
+
+### Local-first alternative to Supabase
+
+Supabase is optional and is not part of the project's runtime. Its CLI and
+`supabase/config.toml` are present only for optional future local Supabase
+development; this project does not require Supabase, Docker, or a hosted
+database to store its current state. Research topics, chains, audit records,
+and node state already persist in local files.
+
+To avoid a hosted database, the simpler path is to run the existing Python
+supervisor on one always-on computer you control (for example, a home
+server), and use the existing signed TCP peer nodes for explicitly trusted
+devices. Start with a single host and local-only binding. The current
+`node_supervisor.py` configuration is loopback-only and uses local files;
+it does not automatically become a multi-host supervisor when moved to
+another computer.
+
+For remote access, prefer a private VPN between devices rather than
+forwarding the node port directly from your router. A VPN still requires a
+reachable, powered-on home host and secure key exchange; it does not provide
+cloud uptime if your home power or internet connection is down. If multiple
+hosts independently perform research, add shared task IDs and coordination
+before enabling overlapping schedules to avoid duplicate work. The
+provider-specific setup is intentionally not automated until the home
+server OS/network and access method are known and approved.
+
+### Live data store
+
+`live_store.py` mirrors everything the modules save into one local SQLite
+file as it happens: chain blocks, audit entries and token-ledger
+transactions as append-only events, plus the latest DNA strand state,
+network ledger, research store, corpus, node status and supervisor totals
+as snapshots. The JSON files stay the source of truth (their hash chains
+are what `verify_chain()` checks); the database is a queryable, live copy.
+A failed database write is logged once and never stops a node.
+
+It is on in `run_all.py` (`live_store.db`, feed on port 8790; set
+`LIVE_DB` / `LIVE_FEED_PORT` to `None` to turn off) and in
+`node_supervisor.py` (`autonomous/live_store.db`, shared by all nodes). For
+a single node, pass `--live-db PATH` to `run_node_cli.py` or set
+`NETWORK_OS_LIVE_DB`.
+
+Watch it live with `live_feed.py`, which binds loopback only because the
+database includes your DNA strand state:
+
+```bash
+python live_feed.py --db autonomous/live_store.db     # supervisor's nodes
+curl -N "http://127.0.0.1:8790/stream?stream=chain"   # Server-Sent Events
+curl "http://127.0.0.1:8790/events?after=0&stream=audit"
+curl "http://127.0.0.1:8790/snapshot?stream=status&key=node-0"
+```
+
+The kernel prototype reports into the same store: `os_live_bridge.py`
+runs `cargo run -- check` (or `--mode check-slaac`) in `os/` and records
+each boot milestone (PIT timer, frame allocator, E1000, DHCP, ICMP,
+IPv6, HTTP health) as stream `os`, plus a pass/fail snapshot tied to the
+git commit it tested:
+
+```bash
+python os_live_bridge.py --audit system_audit.jsonl
+curl "http://127.0.0.1:8790/snapshot?stream=os&key=check"
+```
+
+### Data retention
+
+`retention.py` decides how long each live-store stream is kept and
+enforces it. By default chain blocks, audit entries and ledger
+transactions are kept forever (the tamper-evidence depends on them),
+node status ages out after 30 days, other operational streams after
+90-365 days, and personal DNA state is never deleted by age -- only by
+an explicit `forget`. Deleted rows are overwritten and the database is
+compacted, so they don't linger in the file; each run is logged to the
+audit trail as counts only. `node_supervisor.py` applies it daily (policy
+override: `autonomous/retention_policy.json`).
+
+```bash
+python retention.py show-policy
+python retention.py plan                       # dry run
+python retention.py apply --audit system_audit.jsonl
+python retention.py forget --stream dna --key my-research-node --confirm
+```
+
+`forget` removes data from the live store only; the module's own state
+file (e.g. `dna_state.json`) still holds it until you delete that too.
+Backups and copies elsewhere are not touched.
+
+### Encrypted backups
+
+`backup.py` zips everything the project saves at runtime (state files,
+`autonomous/`, `node_data/`, `dna_shell_data/`, and every SQLite database
+via SQLite's online backup, so a running node's database is still copied
+consistently), encrypts it as one `encrypted_data_vault.py` object, and
+decrypts it end to end to verify it before it counts. Node signing keys
+(`keys/`, `*.pem`) are never included. Backups go to `~/network-os-backups`
+(outside the repo; same disk until an off-site copy exists), and anything
+older than 30 days is pruned, always keeping the newest 7.
+
+```powershell
+python backup.py init                        # once: passphrase, stored with Windows DPAPI
+.\install_backup_task.ps1                    # nightly at 02:30 (retention first, then backup)
+python backup.py list
+python backup.py verify
+python backup.py restore latest --to C:\restore-test   # never writes over existing files
+```
+
+The DPAPI copy of the passphrase only works for your Windows account on
+this PC. Keep your own copy (a password manager): if this PC is lost,
+the backups can't be decrypted without it.
+
+### Off-site copy (Amazon S3)
+
+`offsite_s3.py` uploads each encrypted backup (and the name-free index)
+to S3 after every nightly run, with an S3-verified SHA-256 on upload and
+a checksum comparison afterwards; a backup only counts as off-site once
+they match. Uploads never overwrite an existing object, and anything that
+fails (offline, AWS down) is retried on the next run, before local
+pruning. AWS only ever receives ciphertext; the passphrase stays here.
+
+`aws_backup_setup.ps1` creates the AWS side after you sign in with
+`aws login`: a private, versioned, TLS-only bucket whose backups expire
+after 35 days, and an IAM user that can put/get/list under `network-os/`
+but cannot delete -- so a compromised PC can't erase the off-site copies.
+Review its header for the exact resources and expected cost first.
+
+```powershell
+python offsite_s3.py status
+python offsite_s3.py sync
+python offsite_s3.py pull all-missing     # new PC: fetch backups, then backup.py restore
+```
+
+### Backup health and test restores
+
+`backup_health.py` checks that backups are really happening: the newest
+is under 36 hours old and verified, the passphrase loads, every backup
+older than that is confirmed in S3, the last sync had no errors, there's
+at least 1 GB free, and the nightly task exists and last ran cleanly.
+Once a week, after the nightly backup, it restores the newest backup into
+a throwaway folder -- every file checked against its SHA-256, every SQLite
+database integrity-checked, every JSON file parsed -- and downloads and
+decrypts the newest S3 copy too. Problems raise a desktop notification
+and appear in the supervisor's daily report; results go to
+`test_restores.jsonl` and the audit trail.
+
+```powershell
+python backup_health.py check          # [ALERT] lines, exit 1 if any
+python backup_health.py test-restore   # run a test restore now
+```
+
+### JSON interface and interpreter
+
+The Blockchain-DNA skill uses a JSON request/response interface. For
+example, run a source-backed lookup by piping this request to the tool:
+
+```powershell
+'{"action":"research","condition":"breast cancer","biomarker":"BRCA1"}' |
+  python blockchain_dna_tool.py
+```
+
+The research operation reuses this project's ClinicalTrials.gov, PubMed,
+and ClinVar connectors, records source status (including failures and
+unconfigured sources), and updates `research_store.json`. It returns source
+IDs and related IDs, not full text, and does not attach to a network node or
+write to a chain. The `interpret` action checks supplied records for source
+counts, duplicate IDs, and missing URLs; it does not assess scientific
+quality or infer causation. Request and response shapes are documented in
+[`schemas/`](schemas/).
+
+An `execute_python` action exists only for user-reviewed code. It requires
+both `--allow-code-execution` and `"user_confirmed": true`; execution is
+limited to five seconds and captured output to 64 KB. These limits are not
+a security sandbox: code runs with the current user's filesystem and
+network permissions. Never execute untrusted code. See the
+[Blockchain-DNA skill](.claude/skills/blockchain-dna-research/SKILL.md)
+for the full contract and approval procedure.
 
 ---
 

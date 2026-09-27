@@ -51,6 +51,8 @@ from token_ledger import TokenLedger
 from dna_binary_codec import encode_to_dna
 from run_consolidated_network import research_enricher, external_info_enricher
 from work_sharing import WorkManager, WorkSchedule
+from atomic_io import replace_with_retry
+import live_store
 
 DEFAULT_IDENTITY_TEXT = "dna-chain-project default network"
 
@@ -136,6 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="how long each next-in-line node waits before taking over a job")
     p.add_argument("--status-file", help="write this node's status JSON here every 30s and on exit")
     p.add_argument("--stop-file", help="stop cleanly when this file appears (used by node_supervisor.py)")
+    p.add_argument("--live-db", default=os.environ.get(live_store.ENV_VAR),
+                   help=f"also mirror chain/ledger/DNA/status into this live_store.py SQLite file "
+                        f"(default: ${live_store.ENV_VAR}; off when unset)")
     return p
 
 
@@ -150,10 +155,12 @@ def build_enrichers(args: argparse.Namespace) -> list[Callable]:
 
 
 def write_status(node, path: str) -> None:
+    status = node.status()
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(node.status(), f, indent=2)
-    os.replace(tmp, path)
+        json.dump(status, f, indent=2)
+    replace_with_retry(tmp, path)
+    live_store.snapshot("status", node.node_key, status)
 
 
 async def watch(node, stop_event: asyncio.Event, status_file: str | None, stop_file: str | None) -> None:
@@ -199,6 +206,11 @@ async def main(argv: list[str] | None = None) -> int:
         )
 
     os.makedirs(args.workdir, exist_ok=True)
+    if args.live_db:
+        try:
+            live_store.enable(args.live_db)
+        except Exception as e:   # optional mirror; the node runs on its JSON files regardless
+            print(f"[live_store] disabled: {e}")
     keys_dir = os.path.join(args.workdir, "keys")
     passphrase = os.environ.get("DNA_NODE_KEY_PASSPHRASE", "").encode() or None
 

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Blockchain-DNA tool input",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "condition"],
+      "properties": {
+        "action": { "const": "research" },
+        "condition": { "type": "string", "minLength": 1 },
+        "biomarker": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "records"],
+      "properties": {
+        "action": { "const": "interpret" },
+        "records": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "required": ["source", "id"],
+            "properties": {
+              "source": { "type": "string", "minLength": 1 },
+              "id": { "type": "string", "minLength": 1 },
+              "title": { "type": "string" },
+              "url": { "type": "string" },
+              "source_url": { "type": "string" },
+              "published_at": { "type": "string" },
+              "retrieved_at": { "type": ["string", "number"] },
+              "summary": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "code", "user_confirmed"],
+      "properties": {
+        "action": { "const": "execute_python" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 32000 },
+        "user_confirmed": { "const": true },
+        "timeout_seconds": { "type": "number", "minimum": 1, "maximum": 5 }
+      }
+    }
+  ]
+}

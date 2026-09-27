@@ -47,14 +47,18 @@ from integrated_research_agent import IntegratedResearchAgent
 from crispr_research_suite import CrisprResearchSuite
 from audit_trail import AuditTrail
 from project_identifier import compute_project_identifier, save_manifest
+import live_store
+from live_feed import LiveFeedServer
 
 # ---- edit these for your real use ----
 SEED_LABEL = "my-research-node"
-HOST, PORT = "127.0.0.1", 8765
+HOST, PORT = "127.0.0.1", 8765   # loopback only; use "0.0.0.0" when a peer on another machine must connect
 CONDITION = "breast cancer"
 BIOMARKER = "BRCA1"
 INTERVAL_SECONDS = 3600
 AI_PARTICIPANT_INTERVAL_S = 600
+LIVE_DB = "live_store.db"     # live SQLite mirror of everything saved (see live_store.py); None = off
+LIVE_FEED_PORT = 8790         # loopback-only live feed of LIVE_DB (see live_feed.py); None = off
 # ----------------------------------------
 
 
@@ -63,6 +67,14 @@ async def main():
     save_manifest(manifest)
     print(f"=== project_id: {manifest['project_id']} ===")
     print(f"({manifest['file_count']} files verified — this run is tied to this exact code state)\n")
+
+    feed = None
+    if LIVE_DB:
+        live_store.enable(LIVE_DB)
+        print(f"[live] mirroring all saved state into {LIVE_DB}")
+        if LIVE_FEED_PORT:
+            feed = LiveFeedServer(LIVE_DB, port=LIVE_FEED_PORT).start()
+            print(f"[live] feed on http://127.0.0.1:{feed.port}/stream (loopback only)")
 
     audit = AuditTrail("system_audit.jsonl")
 
@@ -123,6 +135,9 @@ async def main():
         await agent.stop()
         await ai.stop()
         await node.stop()
+        if feed is not None:
+            feed.stop()
+        live_store.disable()
         print("[shutdown] done. All state saved — rerun to continue.")
 
 

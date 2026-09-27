@@ -29,6 +29,25 @@ confident-looking file imply more than it's actually verified.
 
 ## Documented as not implemented
 
+- **`os/` bootable kernel prototype** — experimental x86_64 QEMU kernel
+  with an E1000 driver and `smoltcp` IPv4/IPv6 stack. The QEMU integration
+  check verifies DHCP, IPv4/IPv6 gateway echo, and a real HTTP `/health`
+  request to the in-kernel TCP service through a host forward bound only to
+  `127.0.0.1`. SLAAC is enabled and the kernel waits for router
+  advertisements. QEMU's built-in user network sends no RA, so the standard
+  check reports this and uses a static IPv6 test address/route. A separate
+  `check-slaac` integration run uses a loopback-only socket backend and a
+  controlled local router to send a real RA; it verifies the SLAAC address,
+  RA-installed default route, and ICMPv6 echo in QEMU. This does not establish
+  behavior on physical networks. The kernel has a QEMU-verified 100 Hz PIT
+  clock, a fixed-metadata physical frame allocator below 4 GiB, and a
+  kernel-only 4-KiB virtual-page arena tested for map/read/write/unmap/reuse.
+  It still lacks multiple address spaces, user mappings and privilege
+  isolation, a heap, syscalls, scheduling, storage/filesystems, and broad
+  hardware support. The driver only supports the QEMU 82540EM model; the
+  kernel does not run the Python research application and is not a
+  general-purpose or installable operating system. The HTTP service is a
+  small test endpoint, not a hardened production server.
 - **Video generation** (`runway_api_key` in `integrated_research_agent.py`)
   — accepted as a parameter, deliberately left unimplemented. Writing
   untested code against a less-standardized API seemed worse than an

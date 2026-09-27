@@ -38,6 +38,8 @@ import json
 import os
 import time
 
+import live_store
+
 
 class AuditTrail:
     def __init__(self, path: str):
@@ -84,6 +86,7 @@ class AuditTrail:
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
         self._last_hash = entry_hash
+        live_store.emit("audit", node_id, action, entry)
         return entry
 
     def read_all(self) -> list[dict]:

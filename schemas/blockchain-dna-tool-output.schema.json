@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Blockchain-DNA tool output",
+  "type": "object",
+  "required": ["ok"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "action": { "type": "string" },
+    "result": { "type": "object" },
+    "error": {
+      "type": "object",
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

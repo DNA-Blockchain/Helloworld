@@ -47,6 +47,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from atomic_io import replace_with_retry
+import live_store
+
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 TASK_NAME = "dna-chain-project nodes"
 
@@ -85,6 +88,11 @@ class Config:
 
     def path(self, name: str) -> str:
         return os.path.join(self.base_dir, name)
+
+    @property
+    def live_db(self) -> str:
+        """One live_store.py database shared by the supervisor and all its nodes."""
+        return os.environ.get(live_store.ENV_VAR) or self.path("live_store.db")
 
 
 def console_python() -> str:
@@ -370,7 +378,8 @@ class Supervisor:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=1)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
+        live_store.snapshot("supervisor", "period_totals", self.state)
 
     def collect_status(self) -> None:
         for i in range(self.cfg.node_count):
@@ -407,22 +416,24 @@ class Supervisor:
         return cmd
 
     def load_keys(self) -> None:
+        """Each node's public signing key, read (or created) in-process from
+        the same file run_node_cli.py uses. This used to spawn
+        `run_node_cli.py --show-key` per node, and on a memory-starved PC
+        one slow Python start (> 60s) killed the supervisor at logon."""
+        from crypto_layer import load_or_create_signing_keypair, signing_pub_to_hex
+        passphrase = os.environ.get("DNA_NODE_KEY_PASSPHRASE", "").encode() or None
         for i in range(self.cfg.node_count):
-            out = subprocess.run(
-                [self.cfg.python, os.path.join(PROJECT_DIR, "run_node_cli.py"), "--id", str(i),
-                 "--workdir", self.cfg.node_dir(i), "--show-key"],
-                capture_output=True, text=True, timeout=60, cwd=PROJECT_DIR, creationflags=NO_WINDOW)
-            m = re.search(r"public signing key: ([0-9a-f]{64})", out.stdout)
-            if not m:
-                raise RuntimeError(f"could not read node-{i}'s key: {out.stdout} {out.stderr}")
-            self.keys[i] = m.group(1)
+            path = os.path.join(self.cfg.node_dir(i), "keys", f"node-{i}.ed25519.pem")
+            _, pub = load_or_create_signing_keypair(path, passphrase)
+            self.keys[i] = signing_pub_to_hex(pub)
 
     def start_node(self, n: NodeProc) -> None:
         if os.path.exists(self.stop_file(n.index)):
             os.remove(self.stop_file(n.index))
         n.log_file = open(os.path.join(self.cfg.logs_dir, f"node-{n.index}.log"), "a",
                           encoding="utf-8", buffering=1)
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
+                   **{live_store.ENV_VAR: self.cfg.live_db})
         n.proc = subprocess.Popen(self.node_command(n.index), cwd=PROJECT_DIR, stdout=n.log_file,
                                   stderr=subprocess.STDOUT, env=env, creationflags=NO_WINDOW)
         n.started_at = time.time()
@@ -451,7 +462,7 @@ class Supervisor:
             self._save_state()
             self.log.warning("node-%d exited with code %s; restarting in %.0fs", n.index, code, delay)
 
-    def stop_nodes(self, timeout: float = 30.0) -> None:
+    def stop_nodes(self, timeout: float = 90.0) -> None:
         for n in self.nodes:
             if n.proc is not None:
                 open(self.stop_file(n.index), "w").close()
@@ -531,12 +542,18 @@ class Supervisor:
         report, ok, reasons = build_report(
             now.date(), self.state["period_start"], now.timestamp(), self.state["snapshots"],
             self.state["crashes"], tests, log_problems, self.cfg.node_count, self_tests)
-        path = os.path.join(self.cfg.reports_dir, f"{now.date().isoformat()}.md")
+        backup_alerts = self.backup_alerts()
+        if backup_alerts:
+            report += "\n## Backups\n\n" + "".join(f"- [ALERT] {a}\n" for a in backup_alerts)
+            ok = False
+            reasons = reasons + [f"backups: {a}" for a in backup_alerts]
+        path =os.path.join(self.cfg.reports_dir, f"{now.date().isoformat()}.md")
         with open(path, "w", encoding="utf-8") as f:
             f.write(report)
         rotate(self.cfg, now.date())
         prune_archive(self.cfg, now.date())
-        self.state = {"period_start": now.timestamp(), "snapshots": {}, "crashes": [],
+        self.apply_retention(now)
+        self.state ={"period_start": now.timestamp(), "snapshots": {}, "crashes": [],
                       "last_report_date": now.date().isoformat()}
         self._save_state()
         self.log.info("report written to %s (%s)", path, "OK" if ok else "; ".join(reasons))
@@ -547,6 +564,36 @@ class Supervisor:
                 notify("dna-chain-project: needs attention", "; ".join(reasons)[:300] + f"  ({path})")
         return path
 
+    def backup_alerts(self) -> list[str]:
+        """backup_health.py's alerts, once backups have been set up (the
+        backup folder exists); silent before that."""
+        try:
+            import backup
+            import backup_health
+            if not backup.DEFAULT_DEST.exists():
+                return []
+            return backup_health.check(backup.DEFAULT_DEST)
+        except Exception as e:
+            return [f"backup health check failed to run: {e}"]
+
+    def apply_retention(self, now: dt.datetime) -> Optional[dict]:
+        """retention.py on the shared live store, while the nodes are stopped
+        (so the compaction isn't competing with their writes). Optional:
+        a failure is logged and the daily cycle carries on."""
+        if not os.path.exists(self.cfg.live_db):
+            return None
+        try:
+            import retention
+            policy_path = self.cfg.path("retention_policy.json")
+            policy = retention.load_policy(policy_path if os.path.exists(policy_path) else None)
+            report = retention.apply(self.cfg.live_db, policy, now=now.timestamp(),
+                                     audit_path=self.cfg.path("retention_audit.jsonl"))
+            self.log.info("retention: deleted %d rows %s", report["total_deleted"], report["deleted"] or "")
+            return report
+        except Exception as e:
+            self.log.warning("retention skipped: %s", e)
+            return None
+
     def report_due(self, now: dt.datetime) -> bool:
         last = self.state.get("last_report_date")
         last_date = dt.date.fromisoformat(last) if last else None
@@ -556,6 +603,10 @@ class Supervisor:
 
     def run(self) -> int:
         self.log.info("supervisor starting (pid %d)", os.getpid())
+        try:
+            live_store.enable(self.cfg.live_db)
+        except Exception as e:   # the live mirror is optional; the JSON files carry on without it
+            self.log.warning("live_store disabled: %s", e)
         self.stop_orphans()
         self.load_keys()
         if self.state.get("last_report_date") is None:
@@ -570,16 +621,29 @@ class Supervisor:
                     os.remove(self.cfg.path("supervisor.stop"))
                     self.log.info("stop requested")
                     break
-                now = dt.datetime.now()
-                if os.path.exists(self.cfg.path("report.now")) or self.report_due(now):
-                    if os.path.exists(self.cfg.path("report.now")):
-                        os.remove(self.cfg.path("report.now"))
-                    self.daily(now)
-                self.check_nodes(time.time())
-                if time.time() - last_collect >= 60:
-                    self.collect_status()
-                    last_collect = time.time()
-                time.sleep(self.cfg.poll_seconds)
+                # Nobody is watching this process, so one unexpected error
+                # (a slow disk, a locked file) must not end it: log, wait,
+                # carry on.
+                try:
+                    now = dt.datetime.now()
+                    if os.path.exists(self.cfg.path("report.now")) or self.report_due(now):
+                        if os.path.exists(self.cfg.path("report.now")):
+                            os.remove(self.cfg.path("report.now"))
+                        try:
+                            self.daily(now)
+                        except Exception:
+                            # don't retry a failing report every few seconds
+                            self.log.exception("daily report failed; next attempt tomorrow")
+                            self.state["last_report_date"] = now.date().isoformat()
+                            self._save_state()
+                    self.check_nodes(time.time())
+                    if time.time() - last_collect >= 60:
+                        self.collect_status()
+                        last_collect = time.time()
+                    time.sleep(self.cfg.poll_seconds)
+                except Exception:
+                    self.log.exception("error in supervisor loop; continuing in 60s")
+                    time.sleep(60)
         finally:
             self.stop_nodes()
             self.collect_status()
@@ -627,15 +691,31 @@ def install() -> int:
     if os.name != "nt":
         print("--install uses Windows Task Scheduler; on other systems run it from cron/systemd.")
         return 1
-    action = f'"{pythonw()}" "{os.path.abspath(__file__)}"'
-    out = subprocess.run(["schtasks", "/Create", "/TN", TASK_NAME, "/TR", action, "/SC", "ONLOGON",
-                          "/RL", "LIMITED", "/F"], capture_output=True, text=True)
-    print(out.stdout.strip() or out.stderr.strip())
-    if out.returncode != 0:
-        return out.returncode
-    run = subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], capture_output=True, text=True)
-    print(run.stdout.strip() or run.stderr.strip())
-    return run.returncode
+    # Registered through PowerShell rather than `schtasks /Create`, whose
+    # defaults can't be changed from the command line and don't suit an
+    # always-on job: no start on battery, killed when a laptop is
+    # unplugged, and killed after 72 hours. Paths go in through
+    # environment variables so they can't be read as script.
+    script = (
+        "$u = \"$env:USERDOMAIN\\$env:USERNAME\";"
+        "$a = New-ScheduledTaskAction -Execute $env:DNA_PYW -Argument ('\"' + $env:DNA_SCRIPT + '\"')"
+        " -WorkingDirectory $env:DNA_DIR;"
+        "$t = New-ScheduledTaskTrigger -AtLogOn -User $u;"
+        "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries"
+        " -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999"
+        " -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable;"
+        "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited;"
+        "Register-ScheduledTask -TaskName $env:DNA_TASK -Action $a -Trigger $t -Settings $s"
+        " -Principal $p -Force | Out-Null;"
+        "Start-ScheduledTask -TaskName $env:DNA_TASK;"
+        "Write-Output ('Installed and started scheduled task: ' + $env:DNA_TASK)"
+    )
+    env = dict(os.environ, DNA_PYW=pythonw(), DNA_SCRIPT=os.path.abspath(__file__),
+               DNA_DIR=PROJECT_DIR, DNA_TASK=TASK_NAME)
+    out = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                         env=env, capture_output=True, text=True)
+    print((out.stdout.strip() + "\n" + out.stderr.strip()).strip())
+    return out.returncode
 
 
 def uninstall(cfg: Config) -> int:
@@ -714,12 +794,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     os.makedirs(cfg.logs_dir, exist_ok=True)
     logging.basicConfig(filename=os.path.join(cfg.logs_dir, "supervisor.log"), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    log = logging.getLogger("supervisor")
     lock = SingleInstance(cfg.path("supervisor.lock"))
     if not lock.acquire():
-        logging.getLogger("supervisor").info("another supervisor is already running; exiting")
+        log.info("another supervisor is already running; exiting")
         print("Another supervisor is already running.")
         return 0
-    return Supervisor(cfg).run()
+    # Under pythonw (how the logon task runs it) there's no console, so an
+    # uncaught error would vanish; log it with its traceback instead.
+    try:
+        return Supervisor(cfg).run()
+    except Exception:
+        log.exception("supervisor crashed")
+        raise
 
 
 if __name__ == "__main__":

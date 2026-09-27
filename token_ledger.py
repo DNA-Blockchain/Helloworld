@@ -30,6 +30,9 @@ import json
 import os
 import time
 
+import live_store
+from atomic_io import replace_with_retry
+
 
 class TokenLedger:
     def __init__(self, store_path: str | None = None, audit=None):
@@ -47,7 +50,7 @@ class TokenLedger:
         tmp_path = self.store_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(self.transactions, f, indent=2)
-        os.replace(tmp_path, self.store_path)
+        replace_with_retry(tmp_path, self.store_path)
 
     def credit(self, node_id: str, amount: float, reason: str) -> dict:
         """amount may be negative (a debit) -- there's no floor at zero
@@ -56,6 +59,7 @@ class TokenLedger:
         tx = {"timestamp": time.time(), "node_id": node_id, "amount": amount, "reason": reason}
         self.transactions.append(tx)
         self._save()
+        live_store.emit("ledger", node_id, "credit", tx)
 
         if self.audit is not None:
             self.audit.log(

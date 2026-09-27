@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import shutil
-import time
 
 import requests
 
@@ -126,7 +125,7 @@ async def main():
     # One shared DigitalDNA instance representing the identity all 3 nodes
     # carry (they are all "your" nodes on this network).
     dna_store = os.path.join(WORKDIR, "identity.dna.json")
-    dna = DigitalDNA(seed_label="chase-allen-ringquist", dna_path=dna_store)
+    dna = DigitalDNA(seed_label="consolidated-demo", dna_path=dna_store)
     initial_strand = dna.as_dna()
     # Frozen ONCE, before any mining: this is what every block broadcasts
     # and every peer verifies against for the whole run. dna's own strand

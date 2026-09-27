@@ -20,6 +20,9 @@ research_store.json
 corpus.json
 crispr_store.json
 system_audit.jsonl
+live_store.db
+live_store.db-wal
+live_store.db-shm
 dna_shell_data/
 *.dvault
 visuals/
@@ -34,8 +37,17 @@ __pycache__/
 # pytest cache
 .pytest_cache/
 
+# npm dependencies
+node_modules/
+
+# Rust build artifacts
+target/
+
 # Compiled interop client binaries (source is tracked, build output isn't)
 interop_client.exe
 interop_client
 *.o
 *.class
+
+# backup.py nightly task output
+backup_task.log

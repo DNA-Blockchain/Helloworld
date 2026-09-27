@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["kernel"]
+
+[package]
+name = "network-os-runner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[build-dependencies]
+bootloader = "0.11.12"
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
