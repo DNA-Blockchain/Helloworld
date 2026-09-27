@@ -134,6 +134,7 @@ from dataclasses import dataclass, field
 
 from digital_dna import DigitalDNA
 import crypto_layer as ck
+import live_store
 
 
 HEARTBEAT_INTERVAL_S = 15
@@ -228,6 +229,7 @@ class NetworkNode:
         with open(tmp_path, "w") as f:
             json.dump(self.network_ledger, f, indent=2)
         os.replace(tmp_path, self.ledger_store_path)   # atomic, same pattern as digital_dna.py / growing_research_agent.py
+        live_store.snapshot("network_ledger", self.node_id, self.network_ledger)
 
     # ---- lifecycle ----
     async def start(self):

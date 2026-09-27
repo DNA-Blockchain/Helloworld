@@ -35,6 +35,8 @@ import time
 import urllib.parse
 import urllib.request
 
+import live_store
+
 logger = logging.getLogger("growing_research_agent")
 
 
@@ -394,3 +396,4 @@ class GrowingResearchAgent:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_path, self.store_path)
+        live_store.snapshot("research", live_store.source_from_path(self.store_path), data)

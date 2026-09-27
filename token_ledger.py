@@ -30,6 +30,7 @@ import json
 import os
 import time
 
+import live_store
 from atomic_io import replace_with_retry
 
 
@@ -58,6 +59,7 @@ class TokenLedger:
         tx = {"timestamp": time.time(), "node_id": node_id, "amount": amount, "reason": reason}
         self.transactions.append(tx)
         self._save()
+        live_store.emit("ledger", node_id, "credit", tx)
 
         if self.audit is not None:
             self.audit.log(

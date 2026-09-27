@@ -20,6 +20,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+import live_store
 from atomic_io import replace_with_retry
 
 GENESIS_PREV_HASH = "0" * 64
@@ -92,6 +93,7 @@ class ChainStore:
         block.block_hash = block.compute_hash()
         self.blocks.append(block)
         self._save()
+        live_store.emit("chain", live_store.source_from_path(self.store_path), "block", block.to_dict())
         return block
 
     def verify_chain(self) -> tuple[bool, str]:

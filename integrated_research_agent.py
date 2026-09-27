@@ -53,6 +53,7 @@ import os
 import time
 import urllib.request
 
+import live_store
 from growing_research_agent import GrowingResearchAgent
 
 
@@ -187,6 +188,7 @@ class IntegratedResearchAgent(GrowingResearchAgent):
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(self.corpus, f, indent=2)
         os.replace(tmp_path, self.corpus_path)
+        live_store.snapshot("corpus", live_store.source_from_path(self.corpus_path), self.corpus)
 
 
 if __name__ == "__main__":

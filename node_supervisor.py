@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from atomic_io import replace_with_retry
+import live_store
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 TASK_NAME = "dna-chain-project nodes"
@@ -87,6 +88,11 @@ class Config:
 
     def path(self, name: str) -> str:
         return os.path.join(self.base_dir, name)
+
+    @property
+    def live_db(self) -> str:
+        """One live_store.py database shared by the supervisor and all its nodes."""
+        return os.environ.get(live_store.ENV_VAR) or self.path("live_store.db")
 
 
 def console_python() -> str:
@@ -373,6 +379,7 @@ class Supervisor:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=1)
         replace_with_retry(tmp, path)
+        live_store.snapshot("supervisor", "period_totals", self.state)
 
     def collect_status(self) -> None:
         for i in range(self.cfg.node_count):
@@ -425,7 +432,8 @@ class Supervisor:
             os.remove(self.stop_file(n.index))
         n.log_file = open(os.path.join(self.cfg.logs_dir, f"node-{n.index}.log"), "a",
                           encoding="utf-8", buffering=1)
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8",
+                   **{live_store.ENV_VAR: self.cfg.live_db})
         n.proc = subprocess.Popen(self.node_command(n.index), cwd=PROJECT_DIR, stdout=n.log_file,
                                   stderr=subprocess.STDOUT, env=env, creationflags=NO_WINDOW)
         n.started_at = time.time()
@@ -559,6 +567,10 @@ class Supervisor:
 
     def run(self) -> int:
         self.log.info("supervisor starting (pid %d)", os.getpid())
+        try:
+            live_store.enable(self.cfg.live_db)
+        except Exception as e:   # the live mirror is optional; the JSON files carry on without it
+            self.log.warning("live_store disabled: %s", e)
         self.stop_orphans()
         self.load_keys()
         if self.state.get("last_report_date") is None:

@@ -28,6 +28,7 @@ run — see [Owning your copy](#owning-your-copy).
 | CRISPR suite | `crispr_research_suite.py`, `crispr_guide_design.py` | Literature tracking + a published GC-content guide heuristic |
 | Ledger + audit | `token_ledger.py`, `audit_trail.py` | Local per-node score (not a cryptocurrency); append-only audit log |
 | Provenance | `project_identifier.py` | Hash manifest tying each run to an exact code state |
+| Live data store | `live_store.py`, `live_feed.py` | Local SQLite mirror of everything saved, streamed live over loopback-only HTTP/SSE |
 | Entry points | `run_all.py`, `run_agent.py` | Launch everything, or just the research agent |
 
 **Honest boundaries** (see [`KNOWN_GAPS.md`](KNOWN_GAPS.md) for the full list):
@@ -205,6 +206,32 @@ hosts independently perform research, add shared task IDs and coordination
 before enabling overlapping schedules to avoid duplicate work. The
 provider-specific setup is intentionally not automated until the home
 server OS/network and access method are known and approved.
+
+### Live data store
+
+`live_store.py` mirrors everything the modules save into one local SQLite
+file as it happens: chain blocks, audit entries and token-ledger
+transactions as append-only events, plus the latest DNA strand state,
+network ledger, research store, corpus, node status and supervisor totals
+as snapshots. The JSON files stay the source of truth (their hash chains
+are what `verify_chain()` checks); the database is a queryable, live copy.
+A failed database write is logged once and never stops a node.
+
+It is on in `run_all.py` (`live_store.db`, feed on port 8790; set
+`LIVE_DB` / `LIVE_FEED_PORT` to `None` to turn off) and in
+`node_supervisor.py` (`autonomous/live_store.db`, shared by all nodes). For
+a single node, pass `--live-db PATH` to `run_node_cli.py` or set
+`NETWORK_OS_LIVE_DB`.
+
+Watch it live with `live_feed.py`, which binds loopback only because the
+database includes your DNA strand state:
+
+```bash
+python live_feed.py --db autonomous/live_store.db     # supervisor's nodes
+curl -N "http://127.0.0.1:8790/stream?stream=chain"   # Server-Sent Events
+curl "http://127.0.0.1:8790/events?after=0&stream=audit"
+curl "http://127.0.0.1:8790/snapshot?stream=status&key=node-0"
+```
 
 ### JSON interface and interpreter
 
