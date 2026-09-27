@@ -20,6 +20,8 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from atomic_io import replace_with_retry
+
 GENESIS_PREV_HASH = "0" * 64
 
 
@@ -76,7 +78,7 @@ class ChainStore:
         tmp = f"{self.store_path}.tmp"
         with open(tmp, "w") as f:
             json.dump({"blocks": [b.to_dict() for b in self.blocks]}, f, indent=2)
-        os.replace(tmp, self.store_path)
+        replace_with_retry(tmp, self.store_path)
 
     def tip_hash(self) -> str:
         return self.blocks[-1].block_hash if self.blocks else GENESIS_PREV_HASH

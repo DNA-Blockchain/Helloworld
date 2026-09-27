@@ -93,6 +93,7 @@ class GrowingResearchAgent:
 
         self.topics: dict[str, dict] = {}
         self.queue: list[tuple[str, str | None]] = []
+        self.source_status: dict[str, dict] = {}
 
         self._task: asyncio.Task | None = None
         self._running = False
@@ -161,6 +162,7 @@ class GrowingResearchAgent:
         key = self._topic_key(condition, biomarker)
         existing = self.topics.get(key)
         prev_ids = {src: set(ids) for src, ids in (existing or {}).get("all_ids", {}).items()}
+        self.source_status = {}
 
         ct_ids, related_conditions = await self._fetch_clinicaltrials(condition, biomarker)
         pubmed_ids = await self._fetch_pubmed(condition, biomarker)
@@ -186,10 +188,12 @@ class GrowingResearchAgent:
             "last_checked": now,
             "all_ids": all_ids,
             "new_ids_last_run": new_ids,
+            "source_status": dict(self.source_status),
         }
 
         queued = await self._queue_related_topics(condition, biomarker, related_conditions, candidate_genes)
         self.topics[key]["related_topics_found"] = queued
+        self.topics[key]["source_status"] = dict(self.source_status)
 
         self._save_store()
 
@@ -261,6 +265,7 @@ class GrowingResearchAgent:
             data = await _http_get_json("https://clinicaltrials.gov/api/v2/studies", params=params)
         except Exception as e:
             logger.warning("ClinicalTrials.gov fetch failed: %s", e)
+            self.source_status["clinicaltrials"] = {"status": "failed", "error": str(e)}
             return [], []
 
         ids: list[str] = []
@@ -273,6 +278,7 @@ class GrowingResearchAgent:
             for c in proto.get("conditionsModule", {}).get("conditions", []) or []:
                 if c and c.strip().lower() != condition.strip().lower():
                     related_conditions.add(c.strip())
+        self.source_status["clinicaltrials"] = {"status": "ok"}
         return ids, list(related_conditions)[:5]
 
     async def _fetch_pubmed(self, condition: str, biomarker: str | None) -> list[str]:
@@ -283,8 +289,10 @@ class GrowingResearchAgent:
             data = await _http_get_json("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", params=params)
         except Exception as e:
             logger.warning("PubMed fetch failed: %s", e)
+            self.source_status["pubmed"] = {"status": "failed", "error": str(e)}
             return []
         ids = data.get("esearchresult", {}).get("idlist", [])
+        self.source_status["pubmed"] = {"status": "ok"}
         return [f"PMID:{i}" for i in ids]
 
     async def _fetch_clinvar(self, condition: str, biomarker: str | None) -> tuple[list[str], list[str]]:
@@ -296,9 +304,11 @@ class GrowingResearchAgent:
             uids = data.get("esearchresult", {}).get("idlist", [])
         except Exception as e:
             logger.warning("ClinVar esearch failed: %s", e)
+            self.source_status["clinvar"] = {"status": "failed", "error": str(e)}
             return [], []
 
         if not uids:
+            self.source_status["clinvar"] = {"status": "ok"}
             return [], []
 
         await self._ncbi_limiter.wait()
@@ -307,6 +317,9 @@ class GrowingResearchAgent:
             summary = await _http_get_json("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi", params=params2)
         except Exception as e:
             logger.warning("ClinVar esummary failed: %s", e)
+            self.source_status["clinvar"] = {
+                "status": "partial", "error": str(e), "detail": "IDs found; gene annotations unavailable",
+            }
             return [f"ClinVar:{u}" for u in uids], []
 
         genes: set[str] = set()
@@ -318,6 +331,7 @@ class GrowingResearchAgent:
                 if sym and sym.upper() != (biomarker or "").upper():
                     genes.add(sym.upper())
 
+        self.source_status["clinvar"] = {"status": "ok"}
         return [f"ClinVar:{u}" for u in uids], list(genes)[:5]
 
     async def _fetch_stjude(self, condition: str, biomarker: str | None) -> list[str]:
@@ -332,6 +346,7 @@ class GrowingResearchAgent:
         """
         await self._stjude_limiter.wait()
         logger.info("St. Jude Cloud source not configured (no public unauthenticated API) -- skipping")
+        self.source_status["stjude"] = {"status": "skipped", "reason": "source is not configured"}
         return []
 
     async def _fetch_hgnc(self, symbol: str) -> str | None:
@@ -343,10 +358,13 @@ class GrowingResearchAgent:
             )
         except Exception as e:
             logger.warning("HGNC fetch failed for %s: %s", symbol, e)
+            self.source_status["hgnc"] = {"status": "failed", "error": str(e)}
             return None
         docs = data.get("response", {}).get("docs", [])
         if not docs:
+            self.source_status.setdefault("hgnc", {"status": "ok"})["unmatched_symbol"] = symbol
             return None
+        self.source_status.setdefault("hgnc", {"status": "ok"})
         return docs[0].get("symbol", symbol)
 
     # -- persistence ------------------------------------------------------------

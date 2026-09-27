@@ -26,7 +26,7 @@ def run_ps1(project, answers, extra_env=None):
     proc = subprocess.run(
         [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
          str(project / "run_local.ps1"), "-Answers", answers, "-NoPause"],
-        capture_output=True, text=True, timeout=120, env=env,
+        capture_output=True, text=True, timeout=600, env=env,
     )
     return proc.returncode, proc.stdout + proc.stderr
 

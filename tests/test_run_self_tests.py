@@ -12,7 +12,7 @@ def _components(tmp_path):
     (tmp_path / "ok.py").write_text("print('fine')\n", encoding="utf-8")
     (tmp_path / "bad.py").write_text("raise SystemExit(2)\n", encoding="utf-8")
     (tmp_path / "unicode.py").write_text("print('\\u2713 passed \\u2014 ok')\n", encoding="utf-8")
-    (tmp_path / "slow.py").write_text("import time; time.sleep(30)\n", encoding="utf-8")
+    (tmp_path / "slow.py").write_text("import time; time.sleep(300)\n", encoding="utf-8")
     (tmp_path / "uses_key.py").write_text("import os\nos.environ.get('ANTHROPIC_API_KEY')\n",
                                           encoding="utf-8")
     return [
@@ -28,7 +28,7 @@ def _components(tmp_path):
 
 def test_statuses_counts_and_key_scan(tmp_path):
     comps = _components(tmp_path)
-    out = rst.run_all(str(tmp_path / "logs"), skip_network=True, timeout=3, components=comps,
+    out = rst.run_all(str(tmp_path / "logs"), skip_network=True, timeout=30, components=comps,
                       workdir=str(tmp_path), echo=lambda *_: None)
     status = {r["label"]: r["status"] for r in out["results"]}
     assert status == {"ok": "PASS", "bad": "FAIL", "unicode": "PASS", "slow": "FAIL",

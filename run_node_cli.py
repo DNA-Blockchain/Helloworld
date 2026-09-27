@@ -49,6 +49,7 @@ from token_ledger import TokenLedger
 from dna_binary_codec import encode_to_dna
 from run_consolidated_network import research_enricher, external_info_enricher
 from work_sharing import WorkManager, WorkSchedule
+from atomic_io import replace_with_retry
 
 DEFAULT_IDENTITY_TEXT = "dna-chain-project default network"
 
@@ -123,7 +124,7 @@ def write_status(node, path: str) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(node.status(), f, indent=2)
-    os.replace(tmp, path)
+    replace_with_retry(tmp, path)
 
 
 async def watch(node, stop_event: asyncio.Event, status_file: str | None, stop_file: str | None) -> None:

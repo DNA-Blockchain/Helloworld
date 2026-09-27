@@ -20,6 +20,9 @@ run — see [Owning your copy](#owning-your-copy).
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
+| Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
+| Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
+| JSON research tool | `blockchain_dna_tool.py`, `.claude/skills/blockchain-dna-research/SKILL.md` | Validates structured research requests, reports source IDs/status, summarizes provenance, and offers opt-in local Python execution |
 | Extra sources | `multi_source_research.py`, `extended_research_sources.py`, `maxwell_research.py` | arXiv, NIH RePORTER, Europe PMC, PubMed metadata |
 | CRISPR suite | `crispr_research_suite.py`, `crispr_guide_design.py` | Literature tracking + a published GC-content guide heuristic |
 | Ledger + audit | `token_ledger.py`, `audit_trail.py` | Local per-node score (not a cryptocurrency); append-only audit log |
@@ -112,6 +115,53 @@ python node_supervisor.py --uninstall   # stop and remove the logon task
   and shows a Windows notification saying OK or what needs attention.
 - Everything lives under `autonomous/` (gitignored). Signing keys are in
   `autonomous/node-N/keys/` and are never archived or deleted.
+
+## Blockchain-DNA assistant
+
+The reusable assistant instructions are in
+[`.claude/agents/Blockchain-DNA.agent.md`](.claude/agents/Blockchain-DNA.agent.md).
+When invoked in a compatible agent host, it can use that host's available
+browser and configured MCP tools alongside this project's research APIs.
+The assistant itself is not an always-on process: `node_supervisor.py`
+continues the project's existing local node and scheduled API work, while
+browser research runs only during an agent session. Sources without event
+support are polled according to the project's existing schedules.
+
+When the assistant explicitly saves a finding, local storage is the default
+where the source permits it. The existing research worker persists source
+IDs and topic metadata; it does not archive full source documents. Only a
+digest and minimal provenance belong on this project's signed local chain.
+This project does not currently upload records to cloud/MCP destinations or
+submit transactions to a public blockchain. Those require an explicitly
+configured connector and a confirmed destination; the supervisor's
+Bitcoin/Ethereum chain-tip reads are public, read-only lookups.
+
+### JSON interface and interpreter
+
+The Blockchain-DNA skill uses a JSON request/response interface. For
+example, run a source-backed lookup by piping this request to the tool:
+
+```powershell
+'{"action":"research","condition":"breast cancer","biomarker":"BRCA1"}' |
+  python blockchain_dna_tool.py
+```
+
+The research operation reuses this project's ClinicalTrials.gov, PubMed,
+and ClinVar connectors, records source status (including failures and
+unconfigured sources), and updates `research_store.json`. It returns source
+IDs and related IDs, not full text, and does not attach to a network node or
+write to a chain. The `interpret` action checks supplied records for source
+counts, duplicate IDs, and missing URLs; it does not assess scientific
+quality or infer causation. Request and response shapes are documented in
+[`schemas/`](schemas/).
+
+An `execute_python` action exists only for user-reviewed code. It requires
+both `--allow-code-execution` and `"user_confirmed": true`; execution is
+limited to five seconds and captured output to 64 KB. These limits are not
+a security sandbox: code runs with the current user's filesystem and
+network permissions. Never execute untrusted code. See the
+[Blockchain-DNA skill](.claude/skills/blockchain-dna-research/SKILL.md)
+for the full contract and approval procedure.
 
 ---
 

@@ -86,6 +86,7 @@ import uuid
 from dataclasses import dataclass, asdict
 
 from dna_binary_codec import encode_to_dna, decode_from_dna, gc_content
+from atomic_io import replace_with_retry
 
 
 STRAND_BITS = 256
@@ -241,7 +242,7 @@ class DigitalDNA:
         tmp_path = self.dna_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
-        os.replace(tmp_path, self.dna_path)
+        replace_with_retry(tmp_path, self.dna_path)
 
     def _autosave(self) -> None:
         self._write()

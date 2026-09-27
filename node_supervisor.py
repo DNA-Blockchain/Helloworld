@@ -47,6 +47,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from atomic_io import replace_with_retry
+
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 TASK_NAME = "dna-chain-project nodes"
 
@@ -370,7 +372,7 @@ class Supervisor:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=1)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
 
     def collect_status(self) -> None:
         for i in range(self.cfg.node_count):
@@ -407,15 +409,16 @@ class Supervisor:
         return cmd
 
     def load_keys(self) -> None:
+        """Each node's public signing key, read (or created) in-process from
+        the same file run_node_cli.py uses. This used to spawn
+        `run_node_cli.py --show-key` per node, and on a memory-starved PC
+        one slow Python start (> 60s) killed the supervisor at logon."""
+        from crypto_layer import load_or_create_signing_keypair, signing_pub_to_hex
+        passphrase = os.environ.get("DNA_NODE_KEY_PASSPHRASE", "").encode() or None
         for i in range(self.cfg.node_count):
-            out = subprocess.run(
-                [self.cfg.python, os.path.join(PROJECT_DIR, "run_node_cli.py"), "--id", str(i),
-                 "--workdir", self.cfg.node_dir(i), "--show-key"],
-                capture_output=True, text=True, timeout=60, cwd=PROJECT_DIR, creationflags=NO_WINDOW)
-            m = re.search(r"public signing key: ([0-9a-f]{64})", out.stdout)
-            if not m:
-                raise RuntimeError(f"could not read node-{i}'s key: {out.stdout} {out.stderr}")
-            self.keys[i] = m.group(1)
+            path = os.path.join(self.cfg.node_dir(i), "keys", f"node-{i}.ed25519.pem")
+            _, pub = load_or_create_signing_keypair(path, passphrase)
+            self.keys[i] = signing_pub_to_hex(pub)
 
     def start_node(self, n: NodeProc) -> None:
         if os.path.exists(self.stop_file(n.index)):
@@ -451,7 +454,7 @@ class Supervisor:
             self._save_state()
             self.log.warning("node-%d exited with code %s; restarting in %.0fs", n.index, code, delay)
 
-    def stop_nodes(self, timeout: float = 30.0) -> None:
+    def stop_nodes(self, timeout: float = 90.0) -> None:
         for n in self.nodes:
             if n.proc is not None:
                 open(self.stop_file(n.index), "w").close()
@@ -570,16 +573,29 @@ class Supervisor:
                     os.remove(self.cfg.path("supervisor.stop"))
                     self.log.info("stop requested")
                     break
-                now = dt.datetime.now()
-                if os.path.exists(self.cfg.path("report.now")) or self.report_due(now):
-                    if os.path.exists(self.cfg.path("report.now")):
-                        os.remove(self.cfg.path("report.now"))
-                    self.daily(now)
-                self.check_nodes(time.time())
-                if time.time() - last_collect >= 60:
-                    self.collect_status()
-                    last_collect = time.time()
-                time.sleep(self.cfg.poll_seconds)
+                # Nobody is watching this process, so one unexpected error
+                # (a slow disk, a locked file) must not end it: log, wait,
+                # carry on.
+                try:
+                    now = dt.datetime.now()
+                    if os.path.exists(self.cfg.path("report.now")) or self.report_due(now):
+                        if os.path.exists(self.cfg.path("report.now")):
+                            os.remove(self.cfg.path("report.now"))
+                        try:
+                            self.daily(now)
+                        except Exception:
+                            # don't retry a failing report every few seconds
+                            self.log.exception("daily report failed; next attempt tomorrow")
+                            self.state["last_report_date"] = now.date().isoformat()
+                            self._save_state()
+                    self.check_nodes(time.time())
+                    if time.time() - last_collect >= 60:
+                        self.collect_status()
+                        last_collect = time.time()
+                    time.sleep(self.cfg.poll_seconds)
+                except Exception:
+                    self.log.exception("error in supervisor loop; continuing in 60s")
+                    time.sleep(60)
         finally:
             self.stop_nodes()
             self.collect_status()
@@ -627,15 +643,31 @@ def install() -> int:
     if os.name != "nt":
         print("--install uses Windows Task Scheduler; on other systems run it from cron/systemd.")
         return 1
-    action = f'"{pythonw()}" "{os.path.abspath(__file__)}"'
-    out = subprocess.run(["schtasks", "/Create", "/TN", TASK_NAME, "/TR", action, "/SC", "ONLOGON",
-                          "/RL", "LIMITED", "/F"], capture_output=True, text=True)
-    print(out.stdout.strip() or out.stderr.strip())
-    if out.returncode != 0:
-        return out.returncode
-    run = subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], capture_output=True, text=True)
-    print(run.stdout.strip() or run.stderr.strip())
-    return run.returncode
+    # Registered through PowerShell rather than `schtasks /Create`, whose
+    # defaults can't be changed from the command line and don't suit an
+    # always-on job: no start on battery, killed when a laptop is
+    # unplugged, and killed after 72 hours. Paths go in through
+    # environment variables so they can't be read as script.
+    script = (
+        "$u = \"$env:USERDOMAIN\\$env:USERNAME\";"
+        "$a = New-ScheduledTaskAction -Execute $env:DNA_PYW -Argument ('\"' + $env:DNA_SCRIPT + '\"')"
+        " -WorkingDirectory $env:DNA_DIR;"
+        "$t = New-ScheduledTaskTrigger -AtLogOn -User $u;"
+        "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries"
+        " -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999"
+        " -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable;"
+        "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited;"
+        "Register-ScheduledTask -TaskName $env:DNA_TASK -Action $a -Trigger $t -Settings $s"
+        " -Principal $p -Force | Out-Null;"
+        "Start-ScheduledTask -TaskName $env:DNA_TASK;"
+        "Write-Output ('Installed and started scheduled task: ' + $env:DNA_TASK)"
+    )
+    env = dict(os.environ, DNA_PYW=pythonw(), DNA_SCRIPT=os.path.abspath(__file__),
+               DNA_DIR=PROJECT_DIR, DNA_TASK=TASK_NAME)
+    out = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                         env=env, capture_output=True, text=True)
+    print((out.stdout.strip() + "\n" + out.stderr.strip()).strip())
+    return out.returncode
 
 
 def uninstall(cfg: Config) -> int:
@@ -714,12 +746,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     os.makedirs(cfg.logs_dir, exist_ok=True)
     logging.basicConfig(filename=os.path.join(cfg.logs_dir, "supervisor.log"), level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    log = logging.getLogger("supervisor")
     lock = SingleInstance(cfg.path("supervisor.lock"))
     if not lock.acquire():
-        logging.getLogger("supervisor").info("another supervisor is already running; exiting")
+        log.info("another supervisor is already running; exiting")
         print("Another supervisor is already running.")
         return 0
-    return Supervisor(cfg).run()
+    # Under pythonw (how the logon task runs it) there's no console, so an
+    # uncaught error would vanish; log it with its traceback instead.
+    try:
+        return Supervisor(cfg).run()
+    except Exception:
+        log.exception("supervisor crashed")
+        raise
 
 
 if __name__ == "__main__":

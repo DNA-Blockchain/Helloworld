@@ -123,3 +123,64 @@ def test_real_nodes_restart_after_crash_and_daily_report(tmp_path):
         assert all(n.proc is not None for n in s.nodes)
     finally:
         s.stop_nodes()
+
+
+def test_keys_read_in_process_match_the_cli(tmp_path):
+    import subprocess, sys
+    cfg = sup.Config(base_dir=str(tmp_path), node_count=2, python=sys.executable)
+    s = sup.Supervisor(cfg)
+    s.load_keys()
+    out = subprocess.run([sys.executable, os.path.join(sup.PROJECT_DIR, "run_node_cli.py"), "--id", "1",
+                          "--workdir", cfg.node_dir(1), "--show-key"], capture_output=True, text=True)
+    assert s.keys[1] in out.stdout and s.keys[0] != s.keys[1]
+
+
+def _loop_supervisor(tmp_path, monkeypatch):
+    cfg = sup.Config(base_dir=str(tmp_path), node_count=0, run_tests=False, run_self_tests=False, notify=False)
+    s = sup.Supervisor(cfg)
+    monkeypatch.setattr(sup.time, "sleep", lambda secs: None)
+    monkeypatch.setattr(s, "stop_orphans", lambda: None)
+    return cfg, s
+
+
+def test_loop_survives_an_unexpected_error(tmp_path, monkeypatch, caplog):
+    cfg, s = _loop_supervisor(tmp_path, monkeypatch)
+    calls = []
+
+    def flaky(now):
+        calls.append(now)
+        if len(calls) == 1:
+            raise OSError("disk hiccup")
+        open(cfg.path("supervisor.stop"), "w").close()
+
+    monkeypatch.setattr(s, "check_nodes", flaky)
+    monkeypatch.setattr(s, "report_due", lambda now: False)
+    with caplog.at_level("INFO", logger="supervisor"):
+        assert s.run() == 0
+    assert len(calls) == 2
+    assert "error in supervisor loop" in caplog.text
+
+
+def test_failing_report_is_not_retried_in_a_tight_loop(tmp_path, monkeypatch, caplog):
+    cfg, s = _loop_supervisor(tmp_path, monkeypatch)
+    attempts = []
+
+    def broken_daily(now):
+        attempts.append(now)
+        raise RuntimeError("report broke")
+
+    ticks = []
+
+    def tick(now):
+        ticks.append(now)
+        if len(ticks) == 3:
+            open(cfg.path("supervisor.stop"), "w").close()
+
+    monkeypatch.setattr(s, "daily", broken_daily)
+    monkeypatch.setattr(s, "check_nodes", tick)
+    s.state["last_report_date"] = "2000-01-01"
+    s.cfg.report_hour = 0
+    with caplog.at_level("INFO", logger="supervisor"):
+        s.run()
+    assert len(attempts) == 1 and "daily report failed" in caplog.text
+    assert s.state["last_report_date"] == dt.date.today().isoformat()

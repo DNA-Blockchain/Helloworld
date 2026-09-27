@@ -74,6 +74,7 @@ from crypto_layer import (
 from chain_store import ChainStore
 from token_ledger import TokenLedger
 from digital_dna import DigitalDNA
+from atomic_io import replace_with_retry
 
 HANDSHAKE_CONTEXT = b"dna-chain-project/node-session/v1"
 HANDSHAKE_SIG_CONTEXT = b"dna-chain-project/handshake-sig/v1|"
@@ -221,7 +222,7 @@ class NetworkNode:
         tmp_path = self.known_peers_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({str(k): v for k, v in sorted(self.peer_signing_keys.items())}, f, indent=2)
-        os.replace(tmp_path, self.known_peers_path)
+        replace_with_retry(tmp_path, self.known_peers_path)
 
     def trust_peer(self, node_id: int, signing_pub_hex: str, replace: bool = False) -> None:
         """Pin a peer's Ed25519 public key ahead of time (out-of-band).
