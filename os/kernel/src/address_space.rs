@@ -201,6 +201,10 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
 
     let result = (|| {
         activate(&space)?;
+        if !kernel_mapping_is_supervisor(&space)? {
+            return Err("ring-3 fault test requires a supervisor-only kernel mapping");
+        }
+
         let code: [u8; 14] = [
             0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x2a, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
         ];
@@ -208,7 +212,30 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             core::ptr::copy_nonoverlapping(code.as_ptr(), user_code as *mut u8, code.len());
         }
         let user_stack_top = (user_stack + PAGE_SIZE - 16) as usize;
-        super::syscall::verify_user_exit(user_code as usize, user_stack_top)
+        let exit_code = super::syscall::verify_user_exit(user_code as usize, user_stack_top)?;
+        if exit_code != 42 {
+            return Err("ring-3 test program returned an unexpected syscall exit value");
+        }
+
+        let protected_address = verify_isolation as *const () as u64;
+        let mut fault_code = [
+            0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x8b, 0x00, 0xb8, 0x2a, 0x00, 0x00, 0x00,
+            0xcd, 0x80, 0x0f, 0x0b,
+        ];
+        fault_code[2..10].copy_from_slice(&protected_address.to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                fault_code.as_ptr(),
+                user_code as *mut u8,
+                fault_code.len(),
+            );
+        }
+        super::syscall::verify_user_page_fault(
+            user_code as usize,
+            user_stack_top,
+            protected_address,
+        )?;
+        Ok(exit_code)
     })();
 
     let restore_result = activate_root(kernel_root);
@@ -218,9 +245,6 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
     destroy(&mut space)?;
     release_kernel_stack(kernel_stack_base, kernel_stack_pages)?;
     let exit_code = result?;
-    if exit_code != 42 {
-        return Err("ring-3 test program returned an unexpected syscall exit value");
-    }
     Ok(exit_code)
 }
 

@@ -46,14 +46,19 @@ confident-looking file imply more than it's actually verified.
   that exits through one `int 0x80` syscall, and a kernel
   heap verified growing from 64 KiB for a large `Vec` allocation, then
   allocating and releasing `Box` values; it is capped at 512 KiB.
-  A bounded cooperative round-robin test schedules two kernel tasks across
-  separate stacks, but there is not yet preemptive scheduling or a general
-  process model. A QEMU-only secondary IDE driver verifies a checksummed sector
+  A bounded cooperative context-switch test suspends and resumes two kernel
+  tasks across separate saved stacks, but there is not yet preemptive scheduling
+  or a general process model. A QEMU-tested ring-3 read of a supervisor-only mapping now
+  triggers and recovers from the expected page-protection fault; general
+  exception containment, process teardown, and fault recovery remain missing.
+  A QEMU-only secondary IDE driver verifies a checksummed sector
   counter across emulator restarts; there is still no filesystem, block cache,
   partition support, or user-facing storage API. It lacks general syscall
-  services, recovery from user faults, and broad hardware support.
-  The page-permission test confirms user/supervisor bits but does not yet
-  verify controlled protection-fault handling. The driver only supports the
+  services and broad hardware support. User-mode networking sockets are not
+  implemented. The Python research agent remains a host application; running
+  it on this OS requires an isolated user-space runtime, executable loader,
+  filesystem, and network syscalls. It must not run as privileged kernel code.
+  The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
   general-purpose or installable operating system. The HTTP service is a

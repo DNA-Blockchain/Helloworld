@@ -7,6 +7,7 @@ use core::{
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const SYSCALL_EXIT: u64 = 1;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
+const EXPECTED_USER_READ_PROTECTION_FAULT: u64 = 0b101;
 
 struct StaticGdt(UnsafeCell<[u64; 7]>);
 struct StaticTss(UnsafeCell<[u8; 104]>);
@@ -23,6 +24,9 @@ struct DescriptorTablePointer {
 static GDT: StaticGdt = StaticGdt(UnsafeCell::new([0; 7]));
 static TSS: StaticTss = StaticTss(UnsafeCell::new([0; 104]));
 static EXIT_CODE: AtomicU64 = AtomicU64::new(EXIT_NOT_CALLED);
+static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
+static OBSERVED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
+static OBSERVED_PAGE_FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
@@ -74,6 +78,9 @@ core::arch::global_asm!(
     "mov rdi, rax",
     "and rsp, -16",
     "call syscall_dispatch",
+    "jmp user_test_resume",
+    ".global user_test_resume",
+    "user_test_resume:",
     "mov rsp, [rip + USER_TEST_RESUME_RSP]",
     "pop rbx",
     "sti",
@@ -84,6 +91,7 @@ unsafe extern "C" {
     fn load_kernel_gdt(pointer: *const DescriptorTablePointer);
     fn enter_user_mode(entry: usize, user_stack: usize);
     fn syscall_interrupt_stub();
+    fn user_test_resume() -> !;
 }
 
 pub(crate) fn initialize(kernel_stack_top: usize) -> Result<(), &'static str> {
@@ -150,6 +158,34 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
     Ok(exit_code)
 }
 
+pub(crate) fn verify_user_page_fault(
+    entry: usize,
+    user_stack: usize,
+    protected_address: u64,
+) -> Result<(), &'static str> {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        return Err("user syscall support has not been initialized");
+    }
+    if entry == 0 || user_stack == 0 || user_stack % 16 != 0 || protected_address == 0 {
+        return Err("user fault test entry, stack, and protected address must be valid");
+    }
+
+    OBSERVED_PAGE_FAULT_ADDRESS.store(0, Ordering::Relaxed);
+    OBSERVED_PAGE_FAULT_ERROR.store(0, Ordering::Relaxed);
+    EXPECTED_PAGE_FAULT_ADDRESS.store(protected_address, Ordering::Release);
+    unsafe {
+        enter_user_mode(entry, user_stack);
+    }
+    EXPECTED_PAGE_FAULT_ADDRESS.store(0, Ordering::Release);
+
+    if OBSERVED_PAGE_FAULT_ADDRESS.load(Ordering::Acquire) != protected_address
+        || OBSERVED_PAGE_FAULT_ERROR.load(Ordering::Acquire) != EXPECTED_USER_READ_PROTECTION_FAULT
+    {
+        return Err("ring-3 protected-memory access did not produce the expected page fault");
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn syscall_dispatch(number: u64, argument: u64) -> u64 {
     if number == SYSCALL_EXIT {
@@ -158,4 +194,21 @@ extern "C" fn syscall_dispatch(number: u64, argument: u64) -> u64 {
         EXIT_CODE.store(u64::MAX - 1, Ordering::Release);
     }
     0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn page_fault_dispatch(error_code: u64, address: u64, code_segment: u64) -> ! {
+    let expected_address = EXPECTED_PAGE_FAULT_ADDRESS.load(Ordering::Acquire);
+    if expected_address != 0
+        && code_segment & 0b11 == 0b11
+        && address == expected_address
+        && error_code == EXPECTED_USER_READ_PROTECTION_FAULT
+    {
+        OBSERVED_PAGE_FAULT_ADDRESS.store(address, Ordering::Release);
+        OBSERVED_PAGE_FAULT_ERROR.store(error_code, Ordering::Release);
+        unsafe {
+            user_test_resume();
+        }
+    }
+    super::timer::unexpected_page_fault_handler(error_code, address, code_segment)
 }

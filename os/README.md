@@ -28,9 +28,11 @@ this kernel.
   separation.
 - Enters ring 3 for a tiny machine-code test program, services its DPL-3
   `int 0x80` exit syscall on a TSS-provided ring-0 stack, and verifies the
-  program returns exit code 42. This is a single test syscall, not a general
-  syscall ABI or a complete process loader; protection-fault recovery is not
-  implemented.
+  program returns exit code 42. It also attempts to read a supervisor-only
+  kernel address from ring 3, verifies the expected page-protection fault, and
+  returns to the test harness on the TSS stack. These are bounded smoke tests,
+  not a general syscall ABI, process loader, or general user-fault recovery
+  mechanism.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
@@ -38,10 +40,10 @@ this kernel.
 - Runs a one-shot kernel task on a separate 16-KiB stack and verifies that it
   can allocate from the kernel heap. This is a stack-switching test, not a
   process or preemptive scheduler.
-- Includes a bounded cooperative round-robin scheduler check: two kernel
-  tasks take five timer-paced steps in the expected A/B/A/B/A order, each on
-  its own 16-KiB stack. It is not preemptive and does not schedule ring-3
-  processes.
+- Includes a bounded cooperative context-switch check: two kernel tasks
+  suspend and resume across five timer-paced A/B/A/B/A steps, preserving their
+  saved stack contexts on separate 16-KiB stacks. It is not preemptive and does
+  not schedule ring-3 processes.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an

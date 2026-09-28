@@ -87,12 +87,44 @@ extern "C" fn unexpected_interrupt_handler() -> ! {
     }
 }
 
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn unexpected_page_fault_handler(
+    error_code: u64,
+    address: u64,
+    code_segment: u64,
+) -> ! {
+    use core::fmt::Write;
+
+    let _ = writeln!(
+        crate::Serial,
+        "UNHANDLED PAGE FAULT: address={address:#018x} error={error_code:#x} cs={code_segment:#x}"
+    );
+    loop {
+        unsafe {
+            core::arch::asm!("cli", "hlt", options(nomem, nostack));
+        }
+    }
+}
+
 core::arch::global_asm!(
     ".global unexpected_interrupt_stub",
     "unexpected_interrupt_stub:",
     "cli",
     "and rsp, -16",
     "call unexpected_interrupt_handler",
+    "ud2",
+);
+
+core::arch::global_asm!(
+    ".global page_fault_interrupt_stub",
+    "page_fault_interrupt_stub:",
+    "cli",
+    "cld",
+    "mov rdi, [rsp]",
+    "mov rsi, cr2",
+    "mov rdx, [rsp + 16]",
+    "and rsp, -16",
+    "call page_fault_dispatch",
     "ud2",
 );
 
@@ -139,6 +171,7 @@ core::arch::global_asm!(
 
 unsafe extern "C" {
     fn unexpected_interrupt_stub();
+    fn page_fault_interrupt_stub();
     fn timer_interrupt_stub();
 }
 
@@ -188,6 +221,10 @@ pub(crate) fn install_syscall_gate(handler: usize, kernel_code_selector: u16) {
         }
         idt[0x80] = IdtEntry::interrupt_gate(handler, kernel_code_selector);
         idt[0x80].attributes = 0xee;
+        idt[14] = IdtEntry::interrupt_gate(
+            page_fault_interrupt_stub as *const () as usize,
+            kernel_code_selector,
+        );
     }
 }
 

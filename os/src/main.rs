@@ -218,9 +218,14 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         || !output
             .iter()
             .any(|line| line.contains("Ring-3 syscall verified: test program exited with code 42"))
-        || !output
-            .iter()
-            .any(|line| line.contains("Cooperative scheduler verified: 5 round-robin steps"))
+        || !output.iter().any(|line| {
+            line.contains(
+                "Ring-3 protection boundary verified: supervisor-memory read fault recovered",
+            )
+        })
+        || !output.iter().any(|line| {
+            line.contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions")
+        })
         || !output.iter().any(|line| {
             line.contains("Persistent block storage verified: sector record generation ")
         })
@@ -318,6 +323,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
     let mut saw_kernel_task = false;
     let mut saw_address_spaces = false;
     let mut saw_user_syscall = false;
+    let mut saw_user_fault_recovery = false;
     let mut saw_scheduler = false;
     let mut saw_storage = false;
     let mut saw_ipv4_echo = false;
@@ -339,8 +345,11 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     line.contains("Address spaces verified: private user mappings");
                 saw_user_syscall |=
                     line.contains("Ring-3 syscall verified: test program exited with code 42");
-                saw_scheduler |=
-                    line.contains("Cooperative scheduler verified: 5 round-robin steps");
+                saw_user_fault_recovery |= line.contains(
+                    "Ring-3 protection boundary verified: supervisor-memory read fault recovered",
+                );
+                saw_scheduler |= line
+                    .contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions");
                 saw_storage |=
                     line.contains("Persistent block storage verified: sector record generation ");
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
@@ -356,6 +365,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     && saw_kernel_task
                     && saw_address_spaces
                     && saw_user_syscall
+                    && saw_user_fault_recovery
                     && saw_scheduler
                     && saw_storage
                     && saw_dhcp
@@ -405,6 +415,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_kernel_task
         && saw_address_spaces
         && saw_user_syscall
+        && saw_user_fault_recovery
         && saw_scheduler
         && saw_storage
         && saw_dhcp
@@ -415,7 +426,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ring-3 syscall: {saw_user_syscall}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ring-3 syscall: {saw_user_syscall}, user protection-fault recovery: {saw_user_fault_recovery}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

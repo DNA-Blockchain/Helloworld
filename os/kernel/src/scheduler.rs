@@ -1,22 +1,54 @@
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{
+    cell::UnsafeCell,
+    mem::size_of,
+    ptr,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 const TASK_COUNT: usize = 2;
+const CONTEXT_COUNT: usize = TASK_COUNT + 1;
+const ROOT_CONTEXT: usize = 0;
+const TASK_A_CONTEXT: usize = 1;
+const TASK_B_CONTEXT: usize = 2;
 const STACK_PAGES: usize = 4;
 const PAGE_SIZE: usize = 4096;
 const EXPECTED_TRACE: [usize; 5] = [1, 2, 1, 2, 1];
 
-static CURRENT_STACK_BASE: AtomicUsize = AtomicUsize::new(0);
-static CURRENT_STACK_LIMIT: AtomicUsize = AtomicUsize::new(0);
+struct TaskContexts(UnsafeCell<[usize; CONTEXT_COUNT]>);
+
+unsafe impl Sync for TaskContexts {}
+
+static CONTEXTS: TaskContexts = TaskContexts(UnsafeCell::new([0; CONTEXT_COUNT]));
+static ACTIVE_CONTEXT: AtomicUsize = AtomicUsize::new(ROOT_CONTEXT);
+static STACK_BASES: [AtomicUsize; TASK_COUNT] = [const { AtomicUsize::new(0) }; TASK_COUNT];
+static STACK_LIMITS: [AtomicUsize; TASK_COUNT] = [const { AtomicUsize::new(0) }; TASK_COUNT];
 static TRACE_LENGTH: AtomicUsize = AtomicUsize::new(0);
 static TRACE: [AtomicUsize; EXPECTED_TRACE.len()] =
     [const { AtomicUsize::new(0) }; EXPECTED_TRACE.len()];
-static STACK_CHECKS_PASSED: AtomicBool = AtomicBool::new(true);
+static CHECKS_PASSED: AtomicBool = AtomicBool::new(true);
 
-struct Task {
-    stack_base: usize,
-    stack_top: usize,
-    remaining_steps: usize,
-    step: extern "C" fn(),
+core::arch::global_asm!(
+    ".global task_context_switch",
+    "task_context_switch:",
+    "push rbx",
+    "push rbp",
+    "push r12",
+    "push r13",
+    "push r14",
+    "push r15",
+    "mov [rdi], rsp",
+    "mov rsp, rsi",
+    "pop r15",
+    "pop r14",
+    "pop r13",
+    "pop r12",
+    "pop rbp",
+    "pop rbx",
+    "ret",
+);
+
+unsafe extern "C" {
+    fn task_context_switch(current_stack: *mut usize, next_stack: usize);
 }
 
 pub(crate) fn verify_cooperative_round_robin() -> Result<usize, &'static str> {
@@ -34,35 +66,20 @@ pub(crate) fn verify_cooperative_round_robin() -> Result<usize, &'static str> {
     }
 
     TRACE_LENGTH.store(0, Ordering::Relaxed);
-    STACK_CHECKS_PASSED.store(true, Ordering::Relaxed);
-    let mut tasks = [
-        Task {
-            stack_base: stacks[0].expect("first scheduler stack is allocated"),
-            stack_top: stacks[0].expect("first scheduler stack is allocated")
-                + STACK_PAGES * PAGE_SIZE,
-            remaining_steps: 3,
-            step: task_a_step,
-        },
-        Task {
-            stack_base: stacks[1].expect("second scheduler stack is allocated"),
-            stack_top: stacks[1].expect("second scheduler stack is allocated")
-                + STACK_PAGES * PAGE_SIZE,
-            remaining_steps: 2,
-            step: task_b_step,
-        },
-    ];
+    CHECKS_PASSED.store(true, Ordering::Relaxed);
+    ACTIVE_CONTEXT.store(ROOT_CONTEXT, Ordering::Relaxed);
 
-    let mut cursor = 0;
-    while tasks.iter().any(|task| task.remaining_steps > 0) {
-        let task = &mut tasks[cursor];
-        if task.remaining_steps > 0 {
-            CURRENT_STACK_BASE.store(task.stack_base, Ordering::Relaxed);
-            CURRENT_STACK_LIMIT.store(task.stack_top, Ordering::Relaxed);
-            super::task::run_on_stack(task.stack_top, task.step);
-            task.remaining_steps -= 1;
-            super::timer::wait_for_ticks(super::timer::ticks().saturating_add(1));
-        }
-        cursor = (cursor + 1) % TASK_COUNT;
+    let stack_a = stacks[0].ok_or("task A stack is missing")?;
+    let stack_b = stacks[1].ok_or("task B stack is missing")?;
+    STACK_BASES[0].store(stack_a, Ordering::Relaxed);
+    STACK_LIMITS[0].store(stack_a + STACK_PAGES * PAGE_SIZE, Ordering::Relaxed);
+    STACK_BASES[1].store(stack_b, Ordering::Relaxed);
+    STACK_LIMITS[1].store(stack_b + STACK_PAGES * PAGE_SIZE, Ordering::Relaxed);
+
+    unsafe {
+        initialize_context(TASK_A_CONTEXT, stack_a, task_bootstrap);
+        initialize_context(TASK_B_CONTEXT, stack_b, task_bootstrap);
+        switch_to(TASK_A_CONTEXT);
     }
 
     let trace_length = TRACE_LENGTH.load(Ordering::Acquire);
@@ -71,17 +88,32 @@ pub(crate) fn verify_cooperative_round_robin() -> Result<usize, &'static str> {
             .iter()
             .enumerate()
             .all(|(index, expected)| TRACE[index].load(Ordering::Relaxed) == *expected);
-    let stack_checks = STACK_CHECKS_PASSED.load(Ordering::Acquire);
+    let checks_passed = CHECKS_PASSED.load(Ordering::Acquire);
     for base in stacks.into_iter().flatten() {
         release_stack(base)?;
     }
     if !valid_trace {
-        return Err("cooperative scheduler did not execute the expected round-robin trace");
+        return Err("cooperative context switch did not produce the expected A/B/A/B/A trace");
     }
-    if !stack_checks {
-        return Err("a scheduled task did not run on its own kernel stack");
+    if !checks_passed {
+        return Err("a resumed task failed its stack or continuation check");
     }
     Ok(trace_length)
+}
+
+unsafe fn initialize_context(context_index: usize, stack_base: usize, entry: extern "C" fn() -> !) {
+    let stack_top = (stack_base + STACK_PAGES * PAGE_SIZE) & !0xf;
+    let saved_stack = stack_top - 8 - 7 * size_of::<usize>();
+    let frame = saved_stack as *mut usize;
+    for index in 0..6 {
+        unsafe {
+            frame.add(index).write(0);
+        }
+    }
+    unsafe {
+        frame.add(6).write(entry as *const () as usize);
+        context_slot(context_index).write(saved_stack);
+    }
 }
 
 fn allocate_stack() -> Result<usize, &'static str> {
@@ -123,6 +155,63 @@ fn release_stack(base: usize) -> Result<(), &'static str> {
     release_partial_stack(Some(base), STACK_PAGES)
 }
 
+fn context_slot(index: usize) -> *mut usize {
+    unsafe { ptr::addr_of_mut!((*CONTEXTS.0.get())[index]) }
+}
+
+unsafe fn switch_to(next_context: usize) {
+    let current_context = ACTIVE_CONTEXT.load(Ordering::Relaxed);
+    ACTIVE_CONTEXT.store(next_context, Ordering::Relaxed);
+    let next_stack = unsafe { context_slot(next_context).read() };
+    unsafe {
+        task_context_switch(context_slot(current_context), next_stack);
+    }
+}
+
+extern "C" fn task_bootstrap() -> ! {
+    match ACTIVE_CONTEXT.load(Ordering::Acquire) {
+        TASK_A_CONTEXT => task_a(),
+        TASK_B_CONTEXT => task_b(),
+        _ => {
+            CHECKS_PASSED.store(false, Ordering::Release);
+            loop {
+                unsafe {
+                    core::arch::asm!("cli", "hlt", options(nomem, nostack));
+                }
+            }
+        }
+    }
+}
+
+extern "C" fn task_a() -> ! {
+    loop {
+        record_step(1);
+        wait_one_tick();
+        let next = if TRACE_LENGTH.load(Ordering::Acquire) == EXPECTED_TRACE.len() {
+            ROOT_CONTEXT
+        } else {
+            TASK_B_CONTEXT
+        };
+        unsafe {
+            switch_to(next);
+        }
+    }
+}
+
+extern "C" fn task_b() -> ! {
+    loop {
+        record_step(2);
+        wait_one_tick();
+        unsafe {
+            switch_to(TASK_A_CONTEXT);
+        }
+    }
+}
+
+fn wait_one_tick() {
+    super::timer::wait_for_ticks(super::timer::ticks().saturating_add(1));
+}
+
 fn record_step(task_id: usize) {
     let stack_pointer: usize;
     unsafe {
@@ -132,23 +221,19 @@ fn record_step(task_id: usize) {
             options(nomem, nostack, preserves_flags)
         );
     }
-    if stack_pointer < CURRENT_STACK_BASE.load(Ordering::Relaxed)
-        || stack_pointer >= CURRENT_STACK_LIMIT.load(Ordering::Relaxed)
+    let context_index = ACTIVE_CONTEXT.load(Ordering::Relaxed);
+    let task_index = context_index.saturating_sub(1);
+    if task_index >= TASK_COUNT
+        || stack_pointer < STACK_BASES[task_index].load(Ordering::Relaxed)
+        || stack_pointer >= STACK_LIMITS[task_index].load(Ordering::Relaxed)
     {
-        STACK_CHECKS_PASSED.store(false, Ordering::Relaxed);
+        CHECKS_PASSED.store(false, Ordering::Relaxed);
     }
+
     let index = TRACE_LENGTH.fetch_add(1, Ordering::AcqRel);
     if let Some(entry) = TRACE.get(index) {
         entry.store(task_id, Ordering::Relaxed);
     } else {
-        STACK_CHECKS_PASSED.store(false, Ordering::Relaxed);
+        CHECKS_PASSED.store(false, Ordering::Relaxed);
     }
-}
-
-extern "C" fn task_a_step() {
-    record_step(1);
-}
-
-extern "C" fn task_b_step() {
-    record_step(2);
 }
