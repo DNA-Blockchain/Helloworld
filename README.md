@@ -613,11 +613,17 @@ they match. Uploads never overwrite an existing object, and anything that
 fails (offline, AWS down) is retried on the next run, before local
 pruning. AWS only ever receives ciphertext; the passphrase stays here.
 
-`aws_backup_setup.ps1` creates the AWS side after you sign in with
-`aws login`: a private, versioned, TLS-only bucket whose backups expire
-after 35 days, and an IAM user that can put/get/list under `network-os/`
-but cannot delete -- so a compromised PC can't erase the off-site copies.
-Review its header for the exact resources and expected cost first.
+`aws_backup_setup.ps1` prepares a private, versioned, TLS-only S3 bucket
+with a lifecycle policy. It does not create IAM users or long-lived access
+keys and does not upload data by default. Use separate short-lived AWS IAM
+Identity Center profiles for administration and backup access; the backup
+role's narrowly scoped permissions must be granted separately. S3 versioning
+is a recovery window, not immutable retention, and this setup does not yet
+configure CloudTrail or Object Lock. The script requires exact bucket-name
+confirmation, reports the resource/cost categories, and requires a second
+confirmation before enabling local upload configuration. Review the script
+and current regional pricing before running it. No AWS resources are
+provisioned by the repository's tests.
 
 ```powershell
 python offsite_s3.py status
@@ -642,6 +648,50 @@ and appear in the supervisor's daily report; results go to
 python backup_health.py check          # [ALERT] lines, exit 1 if any
 python backup_health.py test-restore   # run a test restore now
 ```
+
+### Cloud networking, audit, and contribution trail
+
+The guest's QEMU network checks prove DHCP, DNS, TCP/HTTP, and ICMP in the
+emulator; they do not provide a guest application socket ABI or TLS. A cloud
+endpoint will not fix those missing guest interfaces. Start cloud connectivity
+from the existing host supervisor, which can keep outbound local research and
+backup work running while the guest remains isolated. The proposed sequence is:
+
+1. Keep the guest private and add host-side connection diagnostics and a
+   bounded encrypted retry queue. Cloud unavailability must not stop OS boot
+   or local research.
+2. For multi-host access, use a private WireGuard tunnel from an explicitly
+   enrolled host to a small AWS relay/VPC. Do not expose QEMU, SSH, the local
+   node ports, or guest control endpoints publicly. Require peer identity,
+   task IDs, idempotency, leases, rate limits, and a revoke path before more
+   than one worker can act.
+3. Upload only client-encrypted backup archives to S3 using a separate
+   short-lived backup role. Verify remote checksums and restore from a clean
+   machine before calling disaster recovery ready. Add an external-drive copy
+   for a 3-2-1 recovery plan; S3 alone is not the only backup.
+4. Keep CloudTrail as the AWS account/control-plane audit, and add narrowly
+   scoped S3 data-event logging only if needed after reviewing its additional
+   event/storage charges. Separately ship redacted, schema-versioned OS and
+   supervisor events with event IDs, timestamps, component/version, status,
+   and content digest. Exclude prompts, research payloads, credentials,
+   personal data, and raw network contents by default. Buffer locally with a
+   strict size/age cap and visible drop/queue alerts.
+5. Keep the local signed chain and token ledger as the current source of
+   truth. The existing token balances are non-transferable contribution
+   scores, not currency and not OS permissions. A future cross-host trail
+   should use signed, idempotent contribution attestations with explicit
+   verification rules; anchor only a reviewed digest/checkpoint to the
+   permissioned project chain. Never put raw logs or research records on-chain.
+   Training data is a separate, opt-in, human-reviewed export—not an automatic
+   consequence of logging or earning points.
+
+These are implementation boundaries and a rollout plan, not a live cloud
+connection. AWS setup, cloud networking, event upload, and chain anchoring
+remain disabled until the exact account/region, resource names, retention,
+costs, data fields, and network exposure are presented and explicitly
+approved. An offline queue must replay events idempotently after reconnect;
+cloud/chain failures must be visible and must not create duplicate token
+credits or block local operation.
 
 ### JSON interface and interpreter
 

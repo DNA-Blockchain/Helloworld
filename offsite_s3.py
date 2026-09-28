@@ -12,8 +12,9 @@ so AWS stores data it cannot read.
 
 HOW
 --------
-Through the AWS CLI (`aws s3api`), already installed -- no extra Python
-dependency. Each upload:
+through the AWS CLI (`aws s3api`) using the configured AWS profile. Prefer an
+IAM Identity Center profile with short-lived credentials; do not put access
+keys in this project's config. Each upload:
 - sends a SHA-256 checksum that S3 verifies on arrival,
 - uses If-None-Match: * so an existing backup is never overwritten,
 - is then checked with head-object: S3's stored SHA-256 must equal ours.
@@ -21,15 +22,16 @@ A backup only counts as off-site after that check, and is recorded in
 <dest>/offsite_s3.jsonl. Anything not yet confirmed -- no internet, AWS
 down, PC asleep -- is simply retried on the next sync.
 
-The AWS side (see aws_backup_setup.ps1) is designed so this PC can add
-backups but not delete or replace them: its IAM user has no delete
-permission and the bucket is versioned, so ransomware or a mistake on
-this PC can't wipe the off-site copies. S3 itself expires them by
-lifecycle rule. Nothing here needs, stores or prints the AWS account ID.
+The setup script creates a versioned private bucket but deliberately does
+not create identities or grant permissions. The operator must configure a
+separate least-privilege SSO role that can put/get objects under the backup
+prefix and list that prefix. Versioning provides a recovery window for
+overwritten objects; it is not immutable retention. S3 lifecycle rules expire
+old data. Nothing here needs, stores or prints the AWS account ID.
 
 Usage
 -----
-    python offsite_s3.py configure --bucket NAME --region us-east-2 --profile network-os-backup
+    python offsite_s3.py configure --bucket NAME --region us-east-2 --profile network-os-backup-sso
     python offsite_s3.py sync                  # upload + verify everything not yet off-site
     python offsite_s3.py status
     python offsite_s3.py pull all-missing      # disaster recovery: download into the local vault
@@ -228,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("configure")
     c.add_argument("--bucket", required=True)
     c.add_argument("--region", required=True)
-    c.add_argument("--profile", help="AWS CLI profile holding the backup user's keys")
+    c.add_argument("--profile", help="AWS CLI profile using short-lived, least-privilege credentials")
     c.add_argument("--prefix", default="network-os/")
     sub.add_parser("sync")
     sub.add_parser("status")

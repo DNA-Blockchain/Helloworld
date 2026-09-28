@@ -1,116 +1,166 @@
 # aws_backup_setup.ps1
 # =====================
-# Creates the AWS side of offsite_s3.py -- and nothing else. Review before
-# running; it creates billable resources (see "Cost" below).
+# Provisions a private S3 bucket for already-encrypted backups. It does not
+# create IAM users or access keys. Use separate AWS IAM Identity Center (SSO)
+# profiles for administration and narrowly scoped backup access.
 #
-# WHAT IT CREATES
-#   1. One private S3 bucket (default name network-os-backups-<random>):
-#      - Block Public Access: all four settings on
-#      - Versioning on, so an overwrite or delete keeps the previous copy
-#      - Default encryption SSE-S3 (the backups are already client-side
-#        encrypted; this is a second layer AWS manages)
-#      - Bucket policy: refuse any request not over TLS
-#      - Lifecycle: backups expire 35 days after upload (5 more than the
-#        local 30), replaced/deleted versions 7 days later, stale delete
-#        markers and incomplete uploads cleaned up
-#   2. One IAM user, network-os-backup, allowed ONLY to put, get and list
-#      objects under network-os/ in that bucket. No delete, no other
-#      bucket, no other AWS service. Even if this PC is compromised, its
-#      key can add backups but can't erase the off-site ones.
-#   3. One access key for that user, written straight into the AWS CLI
-#      profile "network-os-backup" on this PC (never printed).
-#   Then it points offsite_s3.py at the bucket and runs a first sync.
+# Creates, only after exact-name confirmation:
+#   - one private, versioned S3 bucket
+#   - S3-managed encryption and a TLS-only bucket policy
+#   - a lifecycle rule for the configured retention period
 #
-# COST (S3 Standard, us-east-2, at today's ~2 MB per backup)
-#   ~35 backups kept + a few days of old versions = well under 100 MB:
-#   storage ~$0.002/month, requests (~3 per night) ~$0.001/month.
-#   Uploads are free; restores download free within AWS's monthly free
-#   data-transfer allowance. Grows with backup size: at 1 GB per backup,
-#   roughly $0.80/month. IAM is free. Check current prices at
-#   https://aws.amazon.com/s3/pricing/ before running.
+# It never uploads data unless -EnableOffsite is supplied and confirmed in a
+# second prompt. It never stores AWS credentials in project files.
 #
-# NEEDS
-#   An AWS login with rights to create S3 buckets and IAM users (your
-#   admin/root session). Sign in first:  aws login   (or aws configure sso)
-#   The account ID is read only to display it; it isn't stored anywhere.
+# Before running, configure:
+#   - AdminProfile: short-lived SSO role allowed to create/configure this bucket
+#   - BackupProfile: a different short-lived SSO role granted only
+#     s3:PutObject/s3:GetObject under the prefix and s3:ListBucket for that
+#     prefix. This script does not grant or broaden that role's permissions.
 #
 # Usage:
-#   .\aws_backup_setup.ps1                                   # us-east-2 (Ohio), random bucket name
-#   .\aws_backup_setup.ps1 -Region us-east-1 -BucketName my-name -AdminProfile default
+#   .\aws_backup_setup.ps1 -AdminProfile aws-admin -BackupProfile network-os-backup
+#   .\aws_backup_setup.ps1 -AdminProfile aws-admin -BackupProfile network-os-backup -EnableOffsite
+#
+# This creates billable AWS resources when confirmed. Check current S3 pricing:
+# https://aws.amazon.com/s3/pricing/
 
 param(
     [string]$Region = "us-east-2",
     [string]$BucketName = "network-os-backups-" + -join ((1..8) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) }),
-    [string]$AdminProfile = "",
-    [string]$BackupProfile = "network-os-backup",
-    [string]$UserName = "network-os-backup",
+    [Parameter(Mandatory = $true)]
+    [string]$AdminProfile,
+    [Parameter(Mandatory = $true)]
+    [string]$BackupProfile,
     [string]$Prefix = "network-os/",
-    [int]$ExpireDays = 35
+    [ValidateRange(7, 365)]
+    [int]$ExpireDays = 35,
+    [switch]$EnableOffsite
 )
 
 $ErrorActionPreference = "Stop"
-$Admin = @(); if ($AdminProfile) { $Admin = @("--profile", $AdminProfile) }
-function Invoke-Aws { & aws.exe @args; if ($LASTEXITCODE -ne 0) { throw "aws $($args[0..1] -join ' ') failed" } }
-$tmp = New-Item -ItemType Directory -Force (Join-Path $env:TEMP "network-os-aws-setup")
 
-$who = Invoke-Aws sts get-caller-identity @Admin --output json | ConvertFrom-Json
-Write-Host "Signed in as: $($who.Arn)"
-Write-Host "Will create bucket '$BucketName' in $Region and IAM user '$UserName'."
-if ((Read-Host "Type YES to continue") -ne "YES") { Write-Host "Cancelled; nothing created."; exit 1 }
+function Get-SsoRoleIdentity([string]$Profile) {
+    $output = & aws.exe sts get-caller-identity --profile $Profile --output json
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not resolve AWS SSO identity for profile '$Profile'. Run aws sso login --profile $Profile first."
+    }
+    $identity = ($output -join "`n") | ConvertFrom-Json
+    if ($identity.Arn -notmatch ":assumed-role/") {
+        throw "Profile '$Profile' is not using a short-lived assumed role; refusing static IAM-user credentials."
+    }
+    return $identity
+}
 
-# 1. bucket
-if ($Region -eq "us-east-1") { Invoke-Aws s3api create-bucket --bucket $BucketName --region $Region @Admin | Out-Null }
-else { Invoke-Aws s3api create-bucket --bucket $BucketName --region $Region --create-bucket-configuration "LocationConstraint=$Region" @Admin | Out-Null }
-Invoke-Aws s3api put-public-access-block --bucket $BucketName --region $Region @Admin `
-    --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-Invoke-Aws s3api put-bucket-versioning --bucket $BucketName --region $Region @Admin --versioning-configuration Status=Enabled
-@{ Rules = @(@{ ApplyServerSideEncryptionByDefault = @{ SSEAlgorithm = "AES256" } }) } |
-    ConvertTo-Json -Depth 8 | Set-Content "$tmp\encryption.json" -Encoding ascii
-Invoke-Aws s3api put-bucket-encryption --bucket $BucketName --region $Region @Admin `
-    --server-side-encryption-configuration "file://$tmp\encryption.json"
+if (-not (Get-Command aws.exe -ErrorAction SilentlyContinue)) {
+    throw "AWS CLI v2 was not found on PATH."
+}
+if ($AdminProfile -eq $BackupProfile) {
+    throw "Use distinct admin and backup SSO profiles."
+}
 
-@{ Version = "2012-10-17"; Statement = @(@{
-    Sid = "DenyInsecureTransport"; Effect = "Deny"; Principal = "*"; Action = "s3:*"
-    Resource = @("arn:aws:s3:::$BucketName", "arn:aws:s3:::$BucketName/*")
-    Condition = @{ Bool = @{ "aws:SecureTransport" = "false" } } }) } |
-    ConvertTo-Json -Depth 8 | Set-Content "$tmp\bucket-policy.json" -Encoding ascii
-Invoke-Aws s3api put-bucket-policy --bucket $BucketName --region $Region @Admin --policy "file://$tmp\bucket-policy.json"
+$adminIdentity = Get-SsoRoleIdentity $AdminProfile
+$backupIdentity = Get-SsoRoleIdentity $BackupProfile
+if ($adminIdentity.Arn -eq $backupIdentity.Arn) {
+    throw "Admin and backup profiles resolved to the same role identity."
+}
+$Prefix = $Prefix.Trim("/") + "/"
+$bucketArn = "arn:aws:s3:::$BucketName"
+$objectsArn = "$bucketArn/*"
+$prefixObjectsArn = "$bucketArn/$Prefix*"
+$tempRoot = Join-Path $env:TEMP ("network-os-aws-setup-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $tempRoot | Out-Null
 
-@{ Rules = @(
-    @{ ID = "expire-backups"; Status = "Enabled"; Filter = @{ Prefix = "${Prefix}vault/" }
-       Expiration = @{ Days = $ExpireDays } },
-    @{ ID = "clean-old-versions"; Status = "Enabled"; Filter = @{ Prefix = $Prefix }
-       NoncurrentVersionExpiration = @{ NoncurrentDays = 7 }
-       AbortIncompleteMultipartUpload = @{ DaysAfterInitiation = 1 }
-       Expiration = @{ ExpiredObjectDeleteMarker = $true } }) } |
-    ConvertTo-Json -Depth 8 | Set-Content "$tmp\lifecycle.json" -Encoding ascii
-Invoke-Aws s3api put-bucket-lifecycle-configuration --bucket $BucketName --region $Region @Admin `
-    --lifecycle-configuration "file://$tmp\lifecycle.json"
-Write-Host "[1/3] bucket $BucketName ready"
+try {
+    Write-Host "AWS backup resources to be created:"
+    Write-Host "  Bucket:       $BucketName"
+    Write-Host "  Region:       $Region"
+    Write-Host "  Prefix:       $Prefix"
+    Write-Host "  Expiration:   $ExpireDays days (including old versions per lifecycle)"
+    Write-Host "  Admin role:   $($adminIdentity.Arn)"
+    Write-Host "  Backup role:  $($backupIdentity.Arn)"
+    Write-Host "  Credentials:  short-lived SSO; no IAM user/access key will be created"
+    Write-Host "  Data upload:  $(if ($EnableOffsite) { 'only after a separate confirmation' } else { 'disabled by this run' })"
+    Write-Host "  Cost:         S3 storage, requests, and data transfer are billable; estimate from your actual backup size and current regional prices."
+    if ((Read-Host "Type the exact bucket name '$BucketName' to create these resources") -cne $BucketName) {
+        Write-Host "Cancelled; no AWS resources created."
+        exit 1
+    }
 
-# 2. least-privilege IAM user (no delete)
-Invoke-Aws iam create-user --user-name $UserName @Admin | Out-Null
-@{ Version = "2012-10-17"; Statement = @(
-    @{ Sid = "PutGetBackups"; Effect = "Allow"; Action = @("s3:PutObject", "s3:GetObject")
-       Resource = "arn:aws:s3:::$BucketName/$Prefix*" },
-    @{ Sid = "ListBackups"; Effect = "Allow"; Action = "s3:ListBucket"; Resource = "arn:aws:s3:::$BucketName"
-       Condition = @{ StringLike = @{ "s3:prefix" = @("$Prefix*") } } }) } |
-    ConvertTo-Json -Depth 8 | Set-Content "$tmp\user-policy.json" -Encoding ascii
-Invoke-Aws iam put-user-policy --user-name $UserName --policy-name network-os-backup-put-get-list @Admin `
-    --policy-document "file://$tmp\user-policy.json"
-Write-Host "[2/3] IAM user $UserName ready (put/get/list only)"
+    $adminArgs = @("--profile", $AdminProfile)
+    if ($Region -eq "us-east-1") {
+        & aws.exe s3api create-bucket --bucket $BucketName --region $Region @adminArgs | Out-Null
+    } else {
+        & aws.exe s3api create-bucket --bucket $BucketName --region $Region `
+            --create-bucket-configuration "LocationConstraint=$Region" @adminArgs | Out-Null
+    }
+    if ($LASTEXITCODE -ne 0) { throw "S3 bucket creation failed." }
 
-# 3. its access key, straight into a local CLI profile
-$key = Invoke-Aws iam create-access-key --user-name $UserName @Admin --output json | ConvertFrom-Json
-& aws.exe configure set aws_access_key_id $key.AccessKey.AccessKeyId --profile $BackupProfile
-& aws.exe configure set aws_secret_access_key $key.AccessKey.SecretAccessKey --profile $BackupProfile
-& aws.exe configure set region $Region --profile $BackupProfile
-$key = $null
-Remove-Item $tmp -Recurse -Force
-Write-Host "[3/3] access key stored in AWS CLI profile '$BackupProfile'"
+    & aws.exe s3api put-public-access-block --bucket $BucketName --region $Region @adminArgs `
+        --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+    if ($LASTEXITCODE -ne 0) { throw "Could not enable S3 Block Public Access." }
+    & aws.exe s3api put-bucket-versioning --bucket $BucketName --region $Region @adminArgs `
+        --versioning-configuration Status=Enabled
+    if ($LASTEXITCODE -ne 0) { throw "Could not enable S3 versioning." }
 
-python "$PSScriptRoot\offsite_s3.py" configure --bucket $BucketName --region $Region --profile $BackupProfile
-Write-Host "Waiting 15s for the new key to become active in IAM..."
-Start-Sleep 15
-python "$PSScriptRoot\offsite_s3.py" sync
-Write-Host "Done. Nightly backups now also go to s3://$BucketName/$Prefix"
+    @{
+        Rules = @(@{
+            ApplyServerSideEncryptionByDefault = @{ SSEAlgorithm = "AES256" }
+        })
+    } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $tempRoot "encryption.json") -Encoding ascii
+    & aws.exe s3api put-bucket-encryption --bucket $BucketName --region $Region @adminArgs `
+        --server-side-encryption-configuration "file://$(Join-Path $tempRoot 'encryption.json')"
+    if ($LASTEXITCODE -ne 0) { throw "Could not configure default bucket encryption." }
+
+    @{
+        Version = "2012-10-17"
+        Statement = @(@{
+            Sid = "DenyInsecureTransport"
+            Effect = "Deny"
+            Principal = "*"
+            Action = "s3:*"
+            Resource = @($bucketArn, $objectsArn)
+            Condition = @{ Bool = @{ "aws:SecureTransport" = "false" } }
+        })
+    } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $tempRoot "bucket-policy.json") -Encoding ascii
+    & aws.exe s3api put-bucket-policy --bucket $BucketName --region $Region @adminArgs `
+        --policy "file://$(Join-Path $tempRoot 'bucket-policy.json')"
+    if ($LASTEXITCODE -ne 0) { throw "Could not configure the TLS-only bucket policy." }
+
+    @{
+        Rules = @(
+            @{
+                ID = "expire-current-backups"
+                Status = "Enabled"
+                Filter = @{ Prefix = "${Prefix}vault/" }
+                Expiration = @{ Days = $ExpireDays }
+            },
+            @{
+                ID = "expire-old-versions"
+                Status = "Enabled"
+                Filter = @{ Prefix = $Prefix }
+                NoncurrentVersionExpiration = @{ NoncurrentDays = 7 }
+                AbortIncompleteMultipartUpload = @{ DaysAfterInitiation = 1 }
+                Expiration = @{ ExpiredObjectDeleteMarker = $true }
+            }
+        )
+    } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $tempRoot "lifecycle.json") -Encoding ascii
+    & aws.exe s3api put-bucket-lifecycle-configuration --bucket $BucketName --region $Region @adminArgs `
+        --lifecycle-configuration "file://$(Join-Path $tempRoot 'lifecycle.json')"
+    if ($LASTEXITCODE -ne 0) { throw "Could not configure S3 lifecycle retention." }
+
+    Write-Host "Bucket configuration completed. No IAM permissions were changed."
+    Write-Host "The backup SSO role must be separately granted access only to $prefixObjectsArn and list access under $Prefix."
+    if ($EnableOffsite) {
+        if ((Read-Host "Type UPLOAD-ENCRYPTED-BACKUPS to enable off-site backup uploads") -cne "UPLOAD-ENCRYPTED-BACKUPS") {
+            Write-Host "Bucket created; local off-site configuration was not changed and no backup data was uploaded."
+            exit 0
+        }
+        python "$PSScriptRoot\offsite_s3.py" configure --bucket $BucketName --region $Region `
+            --profile $BackupProfile --prefix $Prefix
+        if ($LASTEXITCODE -ne 0) { throw "Could not configure the local S3 backup destination." }
+        Write-Host "Off-site destination configured. This setup did not upload a backup; run backup.py run only after reviewing the destination."
+    }
+} finally {
+    Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
