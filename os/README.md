@@ -141,6 +141,42 @@ execution, the OS needs a stable process ABI, a user-space runtime, bounded
 data handoff, and enforced per-task capabilities. Only approved code may be
 executable; downloaded research records remain data, not code.
 
+### MicroPython host soft launch
+
+`examples/micropython/soft_launch.py` is a harmless host-side smoke task. It
+round-trips a small JSON object and checks its fields using MicroPython. It was
+run with the official MicroPython Unix port in an isolated Ubuntu 24.04 WSL
+distribution, built from upstream revision
+`09f5bb447504a058376c62fe991b3613531837e6`. `mpy-cross` also compiled the
+sample to `.mpy` bytecode, and the same host runtime loaded that module
+successfully. The standard Unix port was used because the minimal variant
+omits the JSON module.
+
+The WSL build is a development tool, not part of the kernel or guest image.
+To reproduce it in Ubuntu/WSL, install `build-essential`, `git`, `python3`,
+`pkg-config`, and `libffi-dev`, then run:
+
+```sh
+git clone https://github.com/micropython/micropython.git
+cd micropython
+git checkout 09f5bb447504a058376c62fe991b3613531837e6
+make -C mpy-cross -j2
+make -C ports/unix submodules
+make -C ports/unix VARIANT=standard -j2
+ports/unix/build-standard/micropython /mnt/c/Users/odaat/network-os-project/os/examples/micropython/soft_launch.py
+mpy-cross/build/mpy-cross -o /tmp/soft_launch.mpy /mnt/c/Users/odaat/network-os-project/os/examples/micropython/soft_launch.py
+MICROPYPATH=/tmp ports/unix/build-standard/micropython -m soft_launch
+```
+
+This validates task syntax and MicroPython behavior on the host only; WSL
+MicroPython has the host user's permissions and is not a security sandbox. Run
+only reviewed, approved scripts, never untrusted research records or downloaded
+code. The built host executable is about 875 KB and is a dynamically linked
+Linux PIE; it is not a guest executable. The current guest loader accepts at
+most 256-KiB static ELF images, rejects dynamic linking, and has only a small
+process/syscall surface. Porting MicroPython into ring 3 still requires a
+dedicated bare-metal port, an appropriate memory plan, and console/file APIs.
+
 Blockchain is not required to run the research agent. The recommended data
 path is authorized, encrypted off-chain storage with provenance and access
 controls. If a later, separately reviewed integration uses a chain, prefer a
