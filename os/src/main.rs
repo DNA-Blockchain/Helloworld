@@ -223,7 +223,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .iter()
             .any(|line| {
                 line.contains(
-                    "ELF process verified: dedicated CR3, exit 42, NX/write rejection, user-fault teardown, and page reclamation",
+                    "ELF process verified: dedicated CR3, exit 42, page-fault and invalid-opcode recovery, and page reclamation",
                 )
             })
         || !output.iter().any(|line| {
@@ -369,7 +369,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 );
                 saw_user_syscall |=
                     line.contains(
-                        "ELF process verified: dedicated CR3, exit 42, NX/write rejection, user-fault teardown, and page reclamation",
+                        "ELF process verified: dedicated CR3, exit 42, page-fault and invalid-opcode recovery, and page reclamation",
                     );
                 saw_user_filesystem_read |= line.contains(
                     "Ring-3 syscalls verified: named BOOT.JSON read into validated user memory; supervisor output pointer rejected",

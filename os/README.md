@@ -36,11 +36,13 @@ this kernel.
   address space, rejects a malformed ELF, verifies that execution from the NX
   stack and a write to read-only executable text both fault and return to the
   harness, and verifies that an unhandled user page fault terminates the test
-  process. The test harness reclaims the user pages after these checks. The
-  ring-3 program calls `int 0x80` to exit with status 42.
+  process. An invalid-opcode exception in ring 3 also returns to the harness,
+  which then reclaims the process address space. The ring-3 program calls
+  `int 0x80` to exit with status 42.
   This is a bounded lifecycle smoke test, not a general process manager: there
   is no dynamic linker, relocations, arguments/environment, complete syscall
-  ABI, or teardown after non-page-fault exceptions.
+  ABI, or recovery from user exceptions other than invalid-opcode and page
+  faults.
 - Also exercises a separate ring-3 machine-code test program that reads a
   NUL-terminated filename through the read-only user-copy path, requests that
   file from `NOSFS v2`, and receives it into a fully validated writable user

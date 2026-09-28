@@ -33,6 +33,7 @@ static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_PAGE_FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_PAGE_FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
+static USER_EXCEPTION_VECTOR: AtomicU64 = AtomicU64::new(0);
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
@@ -105,7 +106,12 @@ unsafe extern "C" {
     fn load_kernel_gdt(pointer: *const DescriptorTablePointer);
     fn enter_user_mode(entry: usize, user_stack: usize);
     fn syscall_interrupt_stub();
+    fn invalid_opcode_interrupt_stub();
     fn user_test_resume() -> !;
+}
+
+pub(crate) fn invalid_opcode_stub_address() -> usize {
+    invalid_opcode_interrupt_stub as *const () as usize
 }
 
 pub(crate) fn initialize(kernel_stack_top: usize) -> Result<(), &'static str> {
@@ -205,6 +211,7 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
 
     EXIT_CODE.store(EXIT_NOT_CALLED, Ordering::Relaxed);
     USER_PAGE_FAULTED.store(false, Ordering::Relaxed);
+    USER_EXCEPTION_VECTOR.store(0, Ordering::Relaxed);
     USER_MODE_ACTIVE.store(true, Ordering::Release);
     unsafe {
         enter_user_mode(entry, user_stack);
@@ -213,11 +220,40 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
     if USER_PAGE_FAULTED.swap(false, Ordering::AcqRel) {
         return Err("ring-3 process terminated after an unhandled user page fault");
     }
+    let exception_vector = USER_EXCEPTION_VECTOR.swap(0, Ordering::AcqRel);
+    if exception_vector != 0 {
+        return Err("ring-3 process terminated after an unhandled user exception");
+    }
     let exit_code = EXIT_CODE.load(Ordering::Acquire);
     if exit_code == EXIT_NOT_CALLED {
         return Err("user test returned without invoking the exit syscall");
     }
     Ok(exit_code)
+}
+
+pub(crate) fn verify_user_exception(
+    entry: usize,
+    user_stack: usize,
+    expected_vector: u64,
+) -> Result<(), &'static str> {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        return Err("user syscall support has not been initialized");
+    }
+    if entry == 0 || user_stack == 0 || user_stack % 16 != 0 || expected_vector != 6 {
+        return Err("user exception test requires valid addresses and the supported vector");
+    }
+
+    USER_EXCEPTION_VECTOR.store(0, Ordering::Relaxed);
+    USER_MODE_ACTIVE.store(true, Ordering::Release);
+    unsafe {
+        enter_user_mode(entry, user_stack);
+    }
+    USER_MODE_ACTIVE.store(false, Ordering::Release);
+
+    if USER_EXCEPTION_VECTOR.swap(0, Ordering::AcqRel) != expected_vector {
+        return Err("ring-3 invalid-opcode exception did not return to the harness");
+    }
+    Ok(())
 }
 
 pub(crate) fn verify_user_page_fault(
@@ -252,6 +288,18 @@ pub(crate) fn verify_user_page_fault(
         return Err("ring-3 protected-memory access did not produce the expected page fault");
     }
     Ok(())
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn user_exception_dispatch(vector: u64, code_segment: u64) -> ! {
+    if vector == 6 && code_segment & 0b11 == 0b11 && USER_MODE_ACTIVE.swap(false, Ordering::AcqRel)
+    {
+        USER_EXCEPTION_VECTOR.store(vector, Ordering::Release);
+        unsafe {
+            user_test_resume();
+        }
+    }
+    super::timer::unexpected_interrupt_handler()
 }
 
 #[unsafe(no_mangle)]

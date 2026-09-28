@@ -76,7 +76,7 @@ extern "C" fn timer_interrupt_handler() {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn unexpected_interrupt_handler() -> ! {
+pub(crate) extern "C" fn unexpected_interrupt_handler() -> ! {
     for byte in b"UNHANDLED EXCEPTION OR INTERRUPT\n" {
         crate::Serial::write_byte(*byte);
     }
@@ -112,6 +112,18 @@ core::arch::global_asm!(
     "cli",
     "and rsp, -16",
     "call unexpected_interrupt_handler",
+    "ud2",
+);
+
+core::arch::global_asm!(
+    ".global invalid_opcode_interrupt_stub",
+    "invalid_opcode_interrupt_stub:",
+    "cli",
+    "cld",
+    "mov rdi, 6",
+    "mov rsi, [rsp + 8]",
+    "and rsp, -16",
+    "call user_exception_dispatch",
     "ud2",
 );
 
@@ -221,6 +233,10 @@ pub(crate) fn install_syscall_gate(handler: usize, kernel_code_selector: u16) {
         }
         idt[0x80] = IdtEntry::interrupt_gate(handler, kernel_code_selector);
         idt[0x80].attributes = 0xee;
+        idt[6] = IdtEntry::interrupt_gate(
+            super::syscall::invalid_opcode_stub_address(),
+            kernel_code_selector,
+        );
         idt[14] = IdtEntry::interrupt_gate(
             page_fault_interrupt_stub as *const () as usize,
             kernel_code_selector,

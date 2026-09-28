@@ -475,6 +475,10 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             {
                 return Err("unexpected ring-3 page fault did not terminate the process");
             }
+            set_user_page_permissions(loaded.entry, true, true)?;
+            copy_to_user(loaded.entry, &[0x0f, 0x0b])?;
+            set_user_page_permissions(loaded.entry, false, true)?;
+            super::syscall::verify_user_exception(loaded.entry as usize, process_stack_top, 6)?;
             Ok(process_exit)
         })();
         let restore_process_root = activate(&space);

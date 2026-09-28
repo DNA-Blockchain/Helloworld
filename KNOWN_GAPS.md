@@ -55,8 +55,10 @@ confident-looking file imply more than it's actually verified.
   or a general process model. QEMU verifies a ring-3 read of a supervisor-only
   mapping faults and returns to the harness. Normal exit, expected NX/write
   faults, and an unexpected user page fault all reach test-harness cleanup.
-  General process lifecycle and recovery from other user exceptions remain
-  missing.
+  The harness also recovers from a ring-3 invalid-opcode exception and
+  reclaims that process address space. This remains test-harness exception
+  handling: there is no general process manager or recovery for other user
+  exception vectors.
   A QEMU-only secondary IDE driver now sits behind a bounded sector-level
   block-device interface and verifies a checksummed sector counter across
   emulator restarts. An experimental `NOSFS v2` filesystem now mounts that
