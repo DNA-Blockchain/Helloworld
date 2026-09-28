@@ -52,11 +52,11 @@ confident-looking file imply more than it's actually verified.
   allocating and releasing `Box` values; it is capped at 512 KiB.
   A bounded cooperative context-switch test suspends and resumes two kernel
   tasks across separate saved stacks, but there is not yet preemptive scheduling
-  or a general process model. A QEMU-tested ring-3 read of a supervisor-only mapping now
-  triggers and recovers from the expected page-protection fault. The harness
-  tests user-page reclamation after normal exit and the expected NX/write
-  faults, but arbitrary process-fault teardown and general exception
-  containment remain missing.
+  or a general process model. QEMU verifies a ring-3 read of a supervisor-only
+  mapping faults and returns to the harness. Normal exit, expected NX/write
+  faults, and an unexpected user page fault all reach test-harness cleanup.
+  General process lifecycle and recovery from other user exceptions remain
+  missing.
   A QEMU-only secondary IDE driver now sits behind a bounded sector-level
   block-device interface and verifies a checksummed sector counter across
   emulator restarts. An experimental `NOSFS v2` filesystem now mounts that
@@ -68,14 +68,15 @@ confident-looking file imply more than it's actually verified.
   recovery. There is no block cache, partition support, or user-facing write
   syscall. It lacks general syscall
   services and broad hardware support. The ELF loader does not support
-  relocations, dynamic linking, process arguments, general ELF binaries,
-  preemptive scheduling, or process-specific fault teardown. User-mode
-  networking sockets are not implemented. A ring-3 syscall can read a named
-  flat file using bounded, validated user pointers; user-mode writes,
-  directories, and file permissions are absent. QEMU verifies that neither the
-  filename nor output pointer can address supervisor memory. The Python research agent
-  remains a host application; running it on this OS requires an isolated
-  user-space runtime, broader filesystem API, and network syscalls. It must not run as privileged
+  relocations, dynamic linking, process arguments, general ELF binaries, or
+  preemptive scheduling. A bounded kernel-side UDP DNS query to QEMU's resolver
+  is tested, but user-mode networking sockets, DNS, and TLS are not
+  implemented. A ring-3 syscall can read a named flat file using bounded,
+  validated user pointers; user-mode writes, directories, and file permissions
+  are absent. QEMU verifies that neither the filename nor output pointer can
+  address supervisor memory. The Python research agent remains a host
+  application; running it on this OS requires an isolated user-space runtime,
+  broader filesystem API, and network syscalls. It must not run as privileged
   kernel code. MicroPython has not yet been ported or run in the guest.
   The driver only supports the
   QEMU 82540EM model; the

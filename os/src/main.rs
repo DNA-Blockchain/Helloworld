@@ -223,7 +223,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .iter()
             .any(|line| {
                 line.contains(
-                    "ELF process isolation verified: dedicated CR3, TEST.ELF exit 42, NX/write fault recovery, and harness page reclamation",
+                    "ELF process verified: dedicated CR3, exit 42, NX/write rejection, user-fault teardown, and page reclamation",
                 )
             })
         || !output.iter().any(|line| {
@@ -253,6 +253,9 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         || !output
             .iter()
             .any(|line| line.contains("ICMP echo reply from 10.0.2.2"))
+        || !output
+            .iter()
+            .any(|line| line.contains("DNS verified: example.com resolved to "))
         || !output
             .iter()
             .any(|line| line.contains("ICMPv6 echo reply from fd00::2"))
@@ -366,7 +369,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 );
                 saw_user_syscall |=
                     line.contains(
-                        "ELF process isolation verified: dedicated CR3, TEST.ELF exit 42, NX/write fault recovery, and harness page reclamation",
+                        "ELF process verified: dedicated CR3, exit 42, NX/write rejection, user-fault teardown, and page reclamation",
                     );
                 saw_user_filesystem_read |= line.contains(
                     "Ring-3 syscalls verified: named BOOT.JSON read into validated user memory; supervisor output pointer rejected",

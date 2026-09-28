@@ -27,6 +27,8 @@ struct DescriptorTablePointer {
 static GDT: StaticGdt = StaticGdt(UnsafeCell::new([0; 7]));
 static TSS: StaticTss = StaticTss(UnsafeCell::new([0; 104]));
 static EXIT_CODE: AtomicU64 = AtomicU64::new(EXIT_NOT_CALLED);
+static USER_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static USER_PAGE_FAULTED: AtomicBool = AtomicBool::new(false);
 static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_PAGE_FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
@@ -202,8 +204,14 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
     }
 
     EXIT_CODE.store(EXIT_NOT_CALLED, Ordering::Relaxed);
+    USER_PAGE_FAULTED.store(false, Ordering::Relaxed);
+    USER_MODE_ACTIVE.store(true, Ordering::Release);
     unsafe {
         enter_user_mode(entry, user_stack);
+    }
+    USER_MODE_ACTIVE.store(false, Ordering::Release);
+    if USER_PAGE_FAULTED.swap(false, Ordering::AcqRel) {
+        return Err("ring-3 process terminated after an unhandled user page fault");
     }
     let exit_code = EXIT_CODE.load(Ordering::Acquire);
     if exit_code == EXIT_NOT_CALLED {
@@ -229,9 +237,12 @@ pub(crate) fn verify_user_page_fault(
     OBSERVED_PAGE_FAULT_ERROR.store(0, Ordering::Relaxed);
     EXPECTED_PAGE_FAULT_ADDRESS.store(protected_address, Ordering::Release);
     EXPECTED_PAGE_FAULT_ERROR.store(expected_error, Ordering::Release);
+    USER_PAGE_FAULTED.store(false, Ordering::Relaxed);
+    USER_MODE_ACTIVE.store(true, Ordering::Release);
     unsafe {
         enter_user_mode(entry, user_stack);
     }
+    USER_MODE_ACTIVE.store(false, Ordering::Release);
     EXPECTED_PAGE_FAULT_ADDRESS.store(0, Ordering::Release);
     EXPECTED_PAGE_FAULT_ERROR.store(0, Ordering::Release);
 
@@ -307,6 +318,12 @@ extern "C" fn page_fault_dispatch(error_code: u64, address: u64, code_segment: u
     {
         OBSERVED_PAGE_FAULT_ADDRESS.store(address, Ordering::Release);
         OBSERVED_PAGE_FAULT_ERROR.store(error_code, Ordering::Release);
+        unsafe {
+            user_test_resume();
+        }
+    }
+    if code_segment & 0b11 == 0b11 && USER_MODE_ACTIVE.swap(false, Ordering::AcqRel) {
+        USER_PAGE_FAULTED.store(true, Ordering::Release);
         unsafe {
             user_test_resume();
         }

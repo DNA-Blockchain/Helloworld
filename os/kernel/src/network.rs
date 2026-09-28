@@ -4,7 +4,7 @@ use core::fmt::Write;
 use smoltcp::{
     iface::{Config, Interface, SocketSet, SocketStorage},
     phy::Device,
-    socket::{dhcpv4, icmp, tcp},
+    socket::{dhcpv4, icmp, tcp, udp},
     time::Instant,
     wire::{
         EthernetAddress, Icmpv4Packet, Icmpv4Repr, Icmpv6Packet, Icmpv6Repr, IpAddress, IpCidr,
@@ -15,9 +15,14 @@ use smoltcp::{
 const DHCP_WAIT_MS: i64 = 15_000;
 const SLAAC_WAIT_MS: i64 = 5_000;
 const PING_WAIT_MS: i64 = 3_000;
+const DNS_WAIT_MS: i64 = 3_000;
 const HTTP_PORT: u16 = 8080;
 const HTTP_REQUEST_CAPACITY: usize = 512;
 const IPV6_TEST_GATEWAY: Ipv6Address = Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+const DNS_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 3);
+const DNS_TEST_NAME: &[u8] = b"example.com";
+const DNS_TEST_ID: u16 = 0x4e4f;
+const DNS_LOCAL_PORT: u16 = 53053;
 
 pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> {
     let mut device = E1000::initialize(boot_info)?;
@@ -58,7 +63,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     let user_exit_code = crate::address_space::verify_user_syscall()?;
     let _ = writeln!(
         Serial,
-        "ELF process isolation verified: dedicated CR3, TEST.ELF exit {}, NX/write fault recovery, and harness page reclamation.",
+        "ELF process verified: dedicated CR3, exit {}, NX/write rejection, user-fault teardown, and page reclamation.",
         user_exit_code
     );
     let _ = writeln!(
@@ -109,12 +114,21 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         tcp::SocketBuffer::new(&mut tcp_rx_data[..]),
         tcp::SocketBuffer::new(&mut tcp_tx_data[..]),
     );
+    let mut dns_rx_metadata = [udp::PacketMetadata::EMPTY; 2];
+    let mut dns_rx_data = [0; 1024];
+    let mut dns_tx_metadata = [udp::PacketMetadata::EMPTY; 2];
+    let mut dns_tx_data = [0; 1024];
+    let dns_socket = udp::Socket::new(
+        udp::PacketBuffer::new(&mut dns_rx_metadata[..], &mut dns_rx_data[..]),
+        udp::PacketBuffer::new(&mut dns_tx_metadata[..], &mut dns_tx_data[..]),
+    );
 
-    let mut storage = [SocketStorage::EMPTY; 3];
+    let mut storage = [SocketStorage::EMPTY; 4];
     let mut sockets = SocketSet::new(&mut storage[..]);
     let dhcp_handle = sockets.add(dhcp_socket);
     let icmp_handle = sockets.add(icmp_socket);
     let tcp_handle = sockets.add(tcp_socket);
+    let dns_handle = sockets.add(dns_socket);
 
     let dhcp_deadline = now_ms().saturating_add(DHCP_WAIT_MS);
     let mut dhcp_config = None;
@@ -219,6 +233,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         icmp_handle,
         ipv6_gateway,
     )?;
+    verify_dns_resolution(&mut interface, &mut device, &mut sockets, dns_handle)?;
     if device.take_tx_error() {
         return Err("E1000 transmit descriptor did not complete");
     }
@@ -231,6 +246,254 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         tcp_handle,
         HTTP_PORT,
     )
+}
+
+fn verify_dns_resolution(
+    interface: &mut Interface,
+    device: &mut E1000,
+    sockets: &mut SocketSet<'_>,
+    handle: smoltcp::iface::SocketHandle,
+) -> Result<(), &'static str> {
+    verify_dns_codec()?;
+    let mut query = [0; 64];
+    let query_length = build_dns_query(&mut query, DNS_TEST_ID, DNS_TEST_NAME)?;
+    {
+        let socket = sockets.get_mut::<udp::Socket>(handle);
+        socket
+            .bind(DNS_LOCAL_PORT)
+            .map_err(|_| "could not bind the DNS UDP socket")?;
+        socket
+            .send_slice(&query[..query_length], (IpAddress::Ipv4(DNS_SERVER), 53))
+            .map_err(|_| "could not queue the DNS query")?;
+    }
+
+    let deadline = now_ms().saturating_add(DNS_WAIT_MS);
+    let mut response = [0; 1024];
+    loop {
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
+        let received = sockets
+            .get_mut::<udp::Socket>(handle)
+            .recv_slice(&mut response);
+        if let Ok((length, metadata)) = received {
+            if metadata.endpoint.addr == IpAddress::Ipv4(DNS_SERVER) && metadata.endpoint.port == 53
+            {
+                let address =
+                    parse_dns_a_response(&response[..length], DNS_TEST_ID, DNS_TEST_NAME)?
+                        .ok_or("DNS response did not contain an IPv4 address")?;
+                let _ = writeln!(
+                    Serial,
+                    "DNS verified: {} resolved to {} through QEMU's UDP resolver.",
+                    core::str::from_utf8(DNS_TEST_NAME)
+                        .map_err(|_| "DNS test name is not valid UTF-8")?,
+                    address
+                );
+                return Ok(());
+            }
+        }
+        if device.take_tx_error() {
+            return Err("E1000 transmit descriptor did not complete");
+        }
+        if now_ms() >= deadline {
+            let _ = writeln!(
+                Serial,
+                "DNS unavailable: configured network did not provide a response within the timeout."
+            );
+            return Ok(());
+        }
+        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
+    }
+}
+
+fn verify_dns_codec() -> Result<(), &'static str> {
+    const EXPECTED_ADDRESS: Ipv4Address = Ipv4Address::new(203, 0, 113, 7);
+    let mut query = [0; 64];
+    let query_length = build_dns_query(&mut query, DNS_TEST_ID, DNS_TEST_NAME)?;
+    let mut response = [0; 128];
+    response[..query_length].copy_from_slice(&query[..query_length]);
+    response[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+    response[6..8].copy_from_slice(&1u16.to_be_bytes());
+    let answer_offset = query_length;
+    response[answer_offset..answer_offset + 2].copy_from_slice(&[0xc0, 0x0c]);
+    response[answer_offset + 2..answer_offset + 4].copy_from_slice(&1u16.to_be_bytes());
+    response[answer_offset + 4..answer_offset + 6].copy_from_slice(&1u16.to_be_bytes());
+    response[answer_offset + 6..answer_offset + 10].copy_from_slice(&60u32.to_be_bytes());
+    response[answer_offset + 10..answer_offset + 12].copy_from_slice(&4u16.to_be_bytes());
+    response[answer_offset + 12..answer_offset + 16].copy_from_slice(&[203, 0, 113, 7]);
+    let response_length = answer_offset + 16;
+    if parse_dns_a_response(&response[..response_length], DNS_TEST_ID, DNS_TEST_NAME)?
+        != Some(EXPECTED_ADDRESS)
+    {
+        return Err("DNS parser failed its bounded synthetic A-record check");
+    }
+    if parse_dns_a_response(
+        &response[..response_length],
+        DNS_TEST_ID.wrapping_add(1),
+        DNS_TEST_NAME,
+    )
+    .is_ok()
+    {
+        return Err("DNS parser accepted a response with an unexpected transaction ID");
+    }
+    if parse_dns_a_response(&response[..answer_offset + 13], DNS_TEST_ID, DNS_TEST_NAME).is_ok() {
+        return Err("DNS parser accepted a truncated A-record payload");
+    }
+    Ok(())
+}
+
+fn build_dns_query(
+    output: &mut [u8],
+    identifier: u16,
+    hostname: &[u8],
+) -> Result<usize, &'static str> {
+    if hostname.is_empty() || output.len() < 17 {
+        return Err("DNS query name or output buffer is empty");
+    }
+    output.fill(0);
+    output[..2].copy_from_slice(&identifier.to_be_bytes());
+    output[5] = 1;
+    let mut offset: usize = 12;
+    for label in hostname.split(|byte| *byte == b'.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err("DNS hostname contains an invalid label");
+        }
+        let length = offset
+            .checked_add(label.len() + 1)
+            .ok_or("DNS query length overflow")?;
+        if length + 5 > output.len() {
+            return Err("DNS query does not fit in its bounded output buffer");
+        }
+        output[offset] = label.len() as u8;
+        output[offset + 1..length].copy_from_slice(label);
+        offset = length;
+    }
+    output[offset] = 0;
+    offset += 1;
+    output[offset..offset + 2].copy_from_slice(&1u16.to_be_bytes());
+    output[offset + 2..offset + 4].copy_from_slice(&1u16.to_be_bytes());
+    Ok(offset + 4)
+}
+
+fn parse_dns_a_response(
+    response: &[u8],
+    expected_identifier: u16,
+    expected_hostname: &[u8],
+) -> Result<Option<Ipv4Address>, &'static str> {
+    if response.len() < 12 {
+        return Err("DNS response is shorter than its header");
+    }
+    let identifier = u16::from_be_bytes([response[0], response[1]]);
+    let flags = u16::from_be_bytes([response[2], response[3]]);
+    let questions = u16::from_be_bytes([response[4], response[5]]);
+    let answers = u16::from_be_bytes([response[6], response[7]]);
+    if identifier != expected_identifier || flags & 0x8000 == 0 || flags & 0x7800 != 0 {
+        return Err("DNS response identifier, direction, or opcode is invalid");
+    }
+    if flags & 0x000f != 0 || questions != 1 {
+        return Err("DNS response reports an error or unexpected question count");
+    }
+    let mut offset = skip_dns_name(response, 12)?;
+    if offset + 4 > response.len() {
+        return Err("DNS question extends beyond the response");
+    }
+    let (question_name, name_length) = encode_dns_name_at(response, 12)?;
+    if &question_name[..name_length] != expected_hostname
+        || response[offset..offset + 2] != 1u16.to_be_bytes()
+        || response[offset + 2..offset + 4] != 1u16.to_be_bytes()
+    {
+        return Err("DNS response question does not match the requested A record");
+    }
+    offset += 4;
+
+    for _ in 0..answers {
+        offset = skip_dns_name(response, offset)?;
+        if offset + 10 > response.len() {
+            return Err("DNS answer header extends beyond the response");
+        }
+        let record_type = u16::from_be_bytes([response[offset], response[offset + 1]]);
+        let record_class = u16::from_be_bytes([response[offset + 2], response[offset + 3]]);
+        let data_length = u16::from_be_bytes([response[offset + 8], response[offset + 9]]) as usize;
+        offset += 10;
+        let data_end = offset
+            .checked_add(data_length)
+            .ok_or("DNS answer data length overflow")?;
+        if data_end > response.len() {
+            return Err("DNS answer data extends beyond the response");
+        }
+        if record_type == 1 && record_class == 1 && data_length == 4 {
+            return Ok(Some(Ipv4Address::new(
+                response[offset],
+                response[offset + 1],
+                response[offset + 2],
+                response[offset + 3],
+            )));
+        }
+        offset = data_end;
+    }
+    Ok(None)
+}
+
+fn skip_dns_name(packet: &[u8], mut offset: usize) -> Result<usize, &'static str> {
+    loop {
+        let length = *packet
+            .get(offset)
+            .ok_or("DNS name extends beyond the packet")?;
+        if length & 0xc0 == 0xc0 {
+            if offset + 2 > packet.len() {
+                return Err("DNS compressed name pointer is truncated");
+            }
+            return Ok(offset + 2);
+        }
+        if length & 0xc0 != 0 {
+            return Err("DNS name uses a reserved label encoding");
+        }
+        offset += 1;
+        if length == 0 {
+            return Ok(offset);
+        }
+        if length > 63 {
+            return Err("DNS name label exceeds the protocol limit");
+        }
+        offset = offset
+            .checked_add(length as usize)
+            .ok_or("DNS name length overflow")?;
+        if offset > packet.len() {
+            return Err("DNS name label extends beyond the packet");
+        }
+    }
+}
+
+fn encode_dns_name_at(
+    packet: &[u8],
+    mut offset: usize,
+) -> Result<([u8; 255], usize), &'static str> {
+    let mut output = [0; 255];
+    let mut output_length = 0;
+    loop {
+        let label_length = *packet
+            .get(offset)
+            .ok_or("DNS question name extends beyond the packet")?
+            as usize;
+        if label_length == 0 {
+            return Ok((output, output_length));
+        }
+        if label_length & 0xc0 != 0 || label_length > 63 {
+            return Err("DNS question name must use bounded uncompressed labels");
+        }
+        offset += 1;
+        let end = offset
+            .checked_add(label_length)
+            .ok_or("DNS question label length overflow")?;
+        if end > packet.len() || output_length + label_length + 1 > output.len() {
+            return Err("DNS question label is truncated or too large");
+        }
+        if output_length > 0 {
+            output[output_length] = b'.';
+            output_length += 1;
+        }
+        output[output_length..output_length + label_length].copy_from_slice(&packet[offset..end]);
+        output_length += label_length;
+        offset = end;
+    }
 }
 
 fn unique_local_address(mac: [u8; 6]) -> Ipv6Address {

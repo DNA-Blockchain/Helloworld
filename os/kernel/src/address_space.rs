@@ -462,6 +462,19 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
                 loaded.entry,
                 0b111,
             )?;
+            let mut process_fault_code = [
+                0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x8b, 0x00, 0x0f, 0x0b,
+            ];
+            let unmapped_address = process_stack + PAGE_SIZE * 2;
+            process_fault_code[2..10].copy_from_slice(&unmapped_address.to_le_bytes());
+            set_user_page_permissions(loaded.entry, true, true)?;
+            copy_to_user(loaded.entry, &process_fault_code)?;
+            set_user_page_permissions(loaded.entry, false, true)?;
+            if super::syscall::verify_user_exit(loaded.entry as usize, process_stack_top)
+                != Err("ring-3 process terminated after an unhandled user page fault")
+            {
+                return Err("unexpected ring-3 page fault did not terminate the process");
+            }
             Ok(process_exit)
         })();
         let restore_process_root = activate(&space);

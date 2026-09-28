@@ -35,11 +35,12 @@ this kernel.
   permissions. The test maps the executable and stack into a dedicated CR3
   address space, rejects a malformed ELF, verifies that execution from the NX
   stack and a write to read-only executable text both fault and return to the
-  harness; the test harness reclaims the user pages after the exit and
-  protection checks. The ring-3 program calls `int 0x80` to exit with status 42.
+  harness, and verifies that an unhandled user page fault terminates the test
+  process. The test harness reclaims the user pages after these checks. The
+  ring-3 program calls `int 0x80` to exit with status 42.
   This is a bounded lifecycle smoke test, not a general process manager: there
   is no dynamic linker, relocations, arguments/environment, complete syscall
-  ABI, or teardown after arbitrary process faults.
+  ABI, or teardown after non-page-fault exceptions.
 - Also exercises a separate ring-3 machine-code test program that reads a
   NUL-terminated filename through the read-only user-copy path, requests that
   file from `NOSFS v2`, and receives it into a fully validated writable user
@@ -66,6 +67,13 @@ this kernel.
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an
   ICMP echo request to the IPv4 gateway.
+- Uses a bounded UDP DNS client to query QEMU's resolver at `10.0.2.3` for
+  `example.com`. The boot check validates the transaction ID, response flags,
+  question, answer bounds, and IPv4 record before reporting the result. This
+  exercises kernel networking only; user processes do not yet have DNS or
+  socket syscalls. Networks without QEMU's resolver report DNS as unavailable;
+  the standard `check` mode requires resolution, while the loopback-only
+  `check-slaac` mode does not provide an upstream resolver.
 - Enables IPv6 SLAAC and waits for an address and default route from a router
   advertisement. QEMU's built-in user network sends no router
   advertisements, so the standard network check reports SLAAC as unavailable
