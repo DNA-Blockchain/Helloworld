@@ -10,6 +10,306 @@ use serde_json::Value;
 const MAX_MANIFEST_SIZE: usize = 4096;
 const MAX_TASK_FILES: usize = 14;
 const MAX_WORKFLOW_BLOCKS: usize = 8;
+const MAX_WORKFLOW_EVENTS: usize = MAX_WORKFLOW_BLOCKS * 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BlockStatus {
+    Waiting,
+    Ready,
+    Succeeded,
+    Failed,
+    Skipped,
+}
+
+#[derive(Clone, Copy)]
+struct WorkflowEvent {
+    block_index: usize,
+    status: BlockStatus,
+}
+
+pub(crate) struct WorkflowDispatcher {
+    manifest: Value,
+    block_count: usize,
+    plan_order: [usize; MAX_WORKFLOW_BLOCKS],
+    statuses: [BlockStatus; MAX_WORKFLOW_BLOCKS],
+    events: [Option<WorkflowEvent>; MAX_WORKFLOW_EVENTS],
+    event_count: usize,
+    stop_on_failure: bool,
+}
+
+impl WorkflowDispatcher {
+    pub(crate) fn prepare(
+        input: &[u8],
+        available_task_manifests: &[&str],
+        available_files: &[&str],
+    ) -> Result<Self, &'static str> {
+        validate_workflow_manifest(input, available_task_manifests, available_files)?;
+        let manifest = parse_manifest(input)?;
+        let blocks = manifest
+            .get("blocks")
+            .and_then(Value::as_array)
+            .ok_or("workflow blocks must be an array")?;
+        let block_count = blocks.len();
+        let mut plan_order = [0; MAX_WORKFLOW_BLOCKS];
+        let mut statuses = [BlockStatus::Waiting; MAX_WORKFLOW_BLOCKS];
+        let mut planned = [false; MAX_WORKFLOW_BLOCKS];
+        let mut plan_length = 0;
+
+        while plan_length < block_count {
+            let mut made_progress = false;
+            for index in 0..block_count {
+                if planned[index] {
+                    continue;
+                }
+                let dependencies = blocks[index]
+                    .get("dependsOn")
+                    .and_then(Value::as_array)
+                    .ok_or("workflow dependencies must be an array")?;
+                let ready = dependencies.iter().all(|dependency| {
+                    let Some(dependency) = dependency.as_str() else {
+                        return false;
+                    };
+                    blocks
+                        .iter()
+                        .position(|block| {
+                            block.get("blockId").and_then(Value::as_str) == Some(dependency)
+                        })
+                        .is_some_and(|dependency_index| planned[dependency_index])
+                });
+                if ready {
+                    planned[index] = true;
+                    plan_order[plan_length] = index;
+                    plan_length += 1;
+                    made_progress = true;
+                }
+            }
+            if !made_progress {
+                return Err("workflow plan could not resolve its dependency order");
+            }
+        }
+
+        for index in 0..block_count {
+            let dependencies = blocks[index]
+                .get("dependsOn")
+                .and_then(Value::as_array)
+                .ok_or("workflow dependencies must be an array")?;
+            statuses[index] = if dependencies.is_empty() {
+                BlockStatus::Ready
+            } else {
+                BlockStatus::Waiting
+            };
+        }
+        let stop_on_failure = manifest
+            .get("failurePolicy")
+            .and_then(Value::as_str)
+            .ok_or("workflow failure policy must be a string")?
+            == "stop";
+        let mut dispatcher = Self {
+            manifest,
+            block_count,
+            plan_order,
+            statuses,
+            events: [None; MAX_WORKFLOW_EVENTS],
+            event_count: 0,
+            stop_on_failure,
+        };
+        for index in 0..block_count {
+            dispatcher.record_event(index)?;
+        }
+        Ok(dispatcher)
+    }
+
+    pub(crate) fn block_id(&self, index: usize) -> Option<&str> {
+        self.manifest
+            .get("blocks")?
+            .as_array()?
+            .get(index)?
+            .get("blockId")?
+            .as_str()
+    }
+
+    pub(crate) fn planned_block_id(&self, position: usize) -> Option<&str> {
+        let index = *self.plan_order.get(position)?;
+        self.block_id(index)
+    }
+
+    pub(crate) fn next_ready_block(&self) -> Option<&str> {
+        (0..self.block_count)
+            .map(|position| self.plan_order[position])
+            .find(|index| self.statuses[*index] == BlockStatus::Ready)
+            .and_then(|index| self.block_id(index))
+    }
+
+    pub(crate) fn status(&self, block_id: &str) -> Option<BlockStatus> {
+        (0..self.block_count)
+            .find(|index| self.block_id(*index) == Some(block_id))
+            .map(|index| self.statuses[index])
+    }
+
+    pub(crate) fn event_count(&self) -> usize {
+        self.event_count
+    }
+
+    pub(crate) fn event_at(&self, position: usize) -> Option<(&str, BlockStatus)> {
+        let event = self.events.get(position)?.as_ref()?;
+        Some((self.block_id(event.block_index)?, event.status))
+    }
+
+    pub(crate) fn record_runtime_result(
+        &mut self,
+        block_id: &str,
+        succeeded: bool,
+    ) -> Result<(), &'static str> {
+        let index = (0..self.block_count)
+            .find(|index| self.block_id(*index) == Some(block_id))
+            .ok_or("workflow result references an unknown block")?;
+        if self.statuses[index] != BlockStatus::Ready {
+            return Err("workflow result references a block that is not ready");
+        }
+
+        self.statuses[index] = if succeeded {
+            BlockStatus::Succeeded
+        } else {
+            BlockStatus::Failed
+        };
+        self.record_event(index)?;
+        if !succeeded && self.stop_on_failure {
+            for pending in 0..self.block_count {
+                if matches!(
+                    self.statuses[pending],
+                    BlockStatus::Ready | BlockStatus::Waiting
+                ) {
+                    self.statuses[pending] = BlockStatus::Skipped;
+                    self.record_event(pending)?;
+                }
+            }
+            return Ok(());
+        }
+        self.refresh_waiting()
+    }
+
+    fn refresh_waiting(&mut self) -> Result<(), &'static str> {
+        loop {
+            let mut changed = false;
+            for index in 0..self.block_count {
+                if self.statuses[index] != BlockStatus::Waiting {
+                    continue;
+                }
+                let block = self
+                    .manifest
+                    .get("blocks")
+                    .and_then(Value::as_array)
+                    .and_then(|blocks| blocks.get(index))
+                    .ok_or("workflow block state is invalid")?;
+                let dependencies = block
+                    .get("dependsOn")
+                    .and_then(Value::as_array)
+                    .ok_or("workflow dependencies must be an array")?;
+                let mut dependency_failed = false;
+                let mut dependencies_succeeded = true;
+                for dependency in dependencies {
+                    let dependency = dependency
+                        .as_str()
+                        .ok_or("workflow dependency must be a block ID")?;
+                    let dependency_index = (0..self.block_count)
+                        .find(|dependency_index| {
+                            self.block_id(*dependency_index) == Some(dependency)
+                        })
+                        .ok_or("workflow dependency references an unknown block")?;
+                    dependency_failed |= matches!(
+                        self.statuses[dependency_index],
+                        BlockStatus::Failed | BlockStatus::Skipped
+                    );
+                    dependencies_succeeded &=
+                        self.statuses[dependency_index] == BlockStatus::Succeeded;
+                }
+                if dependency_failed {
+                    self.statuses[index] = BlockStatus::Skipped;
+                    self.record_event(index)?;
+                    changed = true;
+                } else if dependencies_succeeded {
+                    self.statuses[index] = BlockStatus::Ready;
+                    self.record_event(index)?;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return Ok(());
+            }
+        }
+    }
+
+    fn record_event(&mut self, index: usize) -> Result<(), &'static str> {
+        let event = WorkflowEvent {
+            block_index: index,
+            status: self.statuses[index],
+        };
+        let slot = self
+            .events
+            .get_mut(self.event_count)
+            .ok_or("workflow event log capacity was exceeded")?;
+        *slot = Some(event);
+        self.event_count += 1;
+        Ok(())
+    }
+}
+
+pub(crate) fn verify_dispatcher_smoke(
+    workflow_manifest: &[u8],
+    available_task_manifests: &[&str],
+    available_files: &[&str],
+) -> Result<usize, &'static str> {
+    let mut dispatcher =
+        WorkflowDispatcher::prepare(workflow_manifest, available_task_manifests, available_files)?;
+    if dispatcher.planned_block_id(0) != Some("inspect-input")
+        || dispatcher.planned_block_id(1) != Some("summarize-input")
+        || dispatcher.status("inspect-input") != Some(BlockStatus::Ready)
+        || dispatcher.status("summarize-input") != Some(BlockStatus::Waiting)
+        || dispatcher.event_at(0) != Some(("inspect-input", BlockStatus::Ready))
+        || dispatcher.event_at(1) != Some(("summarize-input", BlockStatus::Waiting))
+        || dispatcher.next_ready_block() != Some("inspect-input")
+    {
+        return Err("workflow dispatcher produced an unexpected initial plan");
+    }
+    dispatcher.record_runtime_result("inspect-input", true)?;
+    if dispatcher.status("summarize-input") != Some(BlockStatus::Ready)
+        || dispatcher.next_ready_block() != Some("summarize-input")
+    {
+        return Err("workflow dispatcher did not unblock a dependent task");
+    }
+    dispatcher.record_runtime_result("summarize-input", true)?;
+    if dispatcher.status("inspect-input") != Some(BlockStatus::Succeeded)
+        || dispatcher.status("summarize-input") != Some(BlockStatus::Succeeded)
+    {
+        return Err("workflow dispatcher did not record simulated successful outcomes");
+    }
+    let success_events = dispatcher.event_count();
+
+    const STOP_ON_FAILURE: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"stop-check","failurePolicy":"stop","blocks":[{"blockId":"first","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]},{"blockId":"second","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}]}"#;
+    let mut stop_dispatcher =
+        WorkflowDispatcher::prepare(STOP_ON_FAILURE, available_task_manifests, available_files)?;
+    stop_dispatcher.record_runtime_result("first", false)?;
+    if stop_dispatcher.status("second") != Some(BlockStatus::Skipped)
+        || stop_dispatcher.next_ready_block().is_some()
+    {
+        return Err("stop-on-failure policy did not skip remaining ready tasks");
+    }
+
+    const CONTINUE_ON_FAILURE: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"continue-check","failurePolicy":"continue","blocks":[{"blockId":"first","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]},{"blockId":"dependent","taskManifest":"TASK.MF","dependsOn":["first"],"inputFiles":[],"outputFiles":[]},{"blockId":"independent","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}]}"#;
+    let mut continue_dispatcher = WorkflowDispatcher::prepare(
+        CONTINUE_ON_FAILURE,
+        available_task_manifests,
+        available_files,
+    )?;
+    continue_dispatcher.record_runtime_result("first", false)?;
+    if continue_dispatcher.status("dependent") != Some(BlockStatus::Skipped)
+        || continue_dispatcher.status("independent") != Some(BlockStatus::Ready)
+        || continue_dispatcher.next_ready_block() != Some("independent")
+    {
+        return Err("continue-on-failure policy did not preserve independent work");
+    }
+    Ok(success_events)
+}
 
 struct UniqueValue(Value);
 

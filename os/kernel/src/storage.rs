@@ -30,7 +30,7 @@ const RUNTIME_TEST_SIZE: usize = 24 * 1024;
 const TASK_MANIFEST_NAME: &str = "TASK.MF";
 const TASK_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.task-bundle.v1","taskId":"offline-smoke","runtime":"micropython","entrypoint":"TASK.PY","files":[{"name":"TASK.PY","role":"python","sizeBytes":32,"sha256":"eb6cbf91a38220fe9ab3bcb02dd0ae95b938e08ee1b7a54686244b9ddeb2d94c"},{"name":"INPUT.JSON","role":"json","sizeBytes":20,"sha256":"1ae0badf27f751acdba98773e30e45d08351ee156bdf97c99e888add3fd5e790"}],"capabilities":{"network":{"dns":false,"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}},"limits":{"memoryBytes":65536,"runtimeSeconds":5}}"#;
 const WORKFLOW_MANIFEST_NAME: &str = "FLOW.MF";
-const WORKFLOW_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"offline-smoke","failurePolicy":"stop","blocks":[{"blockId":"inspect-input","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":["INPUT.JSON"],"outputFiles":["OUTPUT.JSON"]}]}"#;
+const WORKFLOW_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"offline-smoke","failurePolicy":"stop","blocks":[{"blockId":"inspect-input","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":["INPUT.JSON"],"outputFiles":["OUTPUT.JSON"]},{"blockId":"summarize-input","taskManifest":"TASK.MF","dependsOn":["inspect-input"],"inputFiles":["INPUT.JSON"],"outputFiles":["SUMMARY.JSON"]}]}"#;
 const TASK_PYTHON_NAME: &str = "TASK.PY";
 const TASK_PYTHON: &[u8] = b"print(\"task bundle smoke test\")\n";
 const TASK_INPUT_NAME: &str = "INPUT.JSON";
@@ -189,6 +189,14 @@ pub(crate) fn verify_task_bundle() -> Result<(), &'static str> {
     )?;
 
     super::task_bundle::verify_rejected_manifests()?;
+    let planned_events = super::task_bundle::verify_dispatcher_smoke(
+        &workflow_manifest[..workflow_manifest_length],
+        &[TASK_MANIFEST_NAME],
+        &[TASK_PYTHON_NAME, TASK_INPUT_NAME],
+    )?;
+    if planned_events != 5 {
+        return Err("workflow dispatcher returned an unexpected bounded event count");
+    }
     Ok(())
 }
 

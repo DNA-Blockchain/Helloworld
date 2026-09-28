@@ -238,7 +238,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         })
         || !output.iter().any(|line| {
             line.contains(
-                "NOSFS task bundle verified: task/workflow manifests, dependency references, file SHA-256, and readback.",
+                "NOSFS workflow dispatcher verified: topological plan, bounded status events, dependency wakeup, and failure policies; tasks not executed.",
             )
         })
         || !output.iter().any(|line| {
@@ -384,7 +384,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",
                 );
                 saw_task_bundle |= line.contains(
-                    "NOSFS task bundle verified: task/workflow manifests, dependency references, file SHA-256, and readback.",
+                    "NOSFS workflow dispatcher verified: topological plan, bounded status events, dependency wakeup, and failure policies; tasks not executed.",
                 );
                 saw_scheduler |= line.contains("Cooperative scheduler verified: 5 A/B/A/B/A steps");
                 saw_storage |= line.contains(

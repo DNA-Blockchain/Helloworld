@@ -52,7 +52,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     crate::storage::verify_task_bundle()?;
     let _ = writeln!(
         Serial,
-        "NOSFS task bundle verified: task/workflow manifests, dependency references, file SHA-256, and readback."
+        "NOSFS workflow dispatcher verified: topological plan, bounded status events, dependency wakeup, and failure policies; tasks not executed."
     );
     crate::task::verify_separate_kernel_stack()?;
     let _ = writeln!(

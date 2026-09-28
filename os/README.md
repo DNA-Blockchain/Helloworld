@@ -106,8 +106,12 @@ this kernel.
   reads back a sample bundle, validates its task and workflow manifests in the
   guest, verifies each declared file's SHA-256 and size, and rejects malformed
   JSON, a bad digest, and a cyclic workflow. The bounded validator checks
-  required/allowed fields and cross-references; it is not a workflow
-  dispatcher, MicroPython runtime, or task-level filesystem/network capability
+  required/allowed fields and cross-references. A non-executing dispatcher
+  builds a topological plan, tracks `Ready`, `Waiting`, `Succeeded`, `Failed`,
+  and `Skipped` states, and records transitions in a fixed-size in-memory
+  event log. Boot tests simulate runtime outcomes to check dependency wake-up
+  and both failure policies; no MicroPython task is launched. This is not a
+  persistent run history or task-level filesystem/network capability
   enforcement.
   The names reflect current NOSFS constraints (15-byte flat filenames and
   256-KiB maximum file size); the 16-entry root directory is too small for a
@@ -129,13 +133,13 @@ in QEMU, not on physical hardware or a production network.
 The Python research agent is still not executable in this kernel. The intended
 direction is a workflow dispatcher that loads approved task manifests and
 launches MicroPython in a separate ring-3 ELF process, never inside the kernel.
-The guest can validate the initial task-bundle and workflow formats, but this
-does not execute them. The current loader, process lifecycle, 256-KiB per-file
-limit, and minimal read-only file syscall are not sufficient to load MicroPython
-or dispatch these workflows. Before execution, the OS needs a stable process
-ABI, a user-space runtime, bounded data handoff, and enforced per-task
-capabilities. Only approved code may be executable; downloaded research
-records remain data, not code.
+The guest can validate and plan the initial task-bundle and workflow formats,
+but this does not execute them or persist run status. The current loader,
+process lifecycle, 256-KiB per-file limit, and minimal read-only file syscall
+are not sufficient to load MicroPython or dispatch these workflows. Before
+execution, the OS needs a stable process ABI, a user-space runtime, bounded
+data handoff, and enforced per-task capabilities. Only approved code may be
+executable; downloaded research records remain data, not code.
 
 Blockchain is not required to run the research agent. The recommended data
 path is authorized, encrypted off-chain storage with provenance and access
