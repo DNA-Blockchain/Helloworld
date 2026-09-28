@@ -3,8 +3,8 @@ use super::address_space::AddressSpace;
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 4;
-const MAX_IMAGE_SIZE: usize = 8192;
-const MAX_LOAD_PAGES: usize = 16;
+const MAX_IMAGE_SIZE: usize = 256 * 1024;
+const MAX_LOAD_PAGES: usize = 511;
 const PAGE_SIZE: u64 = 4096;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
@@ -258,3 +258,18 @@ fn read_u64(image: &[u8], offset: usize) -> Result<u64, &'static str> {
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]))
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */

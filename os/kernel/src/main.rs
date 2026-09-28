@@ -95,7 +95,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         Ok(()) => {
             let _ = writeln!(
                 Serial,
-                "Filesystem verified: mounted NOSFS v2 and read persistent BOOT.JSON."
+                "Filesystem verified: NOSFS v2 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file."
             );
         }
         Err(error) => {
@@ -197,3 +197,18 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     let _ = writeln!(Serial, "KERNEL PANIC: {info}");
     exit_qemu(0x11)
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */

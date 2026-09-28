@@ -29,8 +29,9 @@ this kernel.
 - Loads a small static x86_64 ELF64 `ET_DYN` executable from `TEST.ELF` on
   `NOSFS v2`. The bounded loader validates the ELF header and program-header
   ranges, accepts only static `PT_LOAD` segments, applies a page-aligned load
-  bias, rejects writable-executable segments, caps image/file/segment sizes,
-  maps private user pages, zeroes BSS, and applies read/write/NX page
+  bias, rejects writable-executable segments, caps the ELF image at 256 KiB
+  and the process at 512 user pages, maps private user pages, zeroes BSS, and
+  applies read/write/NX page
   permissions. The test maps the executable and stack into a dedicated CR3
   address space, rejects a malformed ELF, verifies that execution from the NX
   stack and a write to read-only executable text both fault and return to the
@@ -79,9 +80,9 @@ this kernel.
   bounded 512-byte `BlockDevice` sector interface with capacity checks and
   explicit flush. A small `NOSFS v2` filesystem on that image provides a
   checksummed allocation bitmap, fixed root directory with 16 entries,
-  contiguous extents up to 8 KiB per file, and read/write support. The boot
-  check creates and then reads back `BOOT.JSON` across emulator restarts. This
-  experimental filesystem has no journaling, directories, permissions, or
+  contiguous extents up to 256 KiB per file, and read/write support. The boot
+  check reads back `BOOT.JSON` and a 24-KiB `RUNTIME.TEST` file across boots.
+  This experimental filesystem has no journaling, directories, permissions, or
   general crash recovery; malformed or unknown metadata is rejected rather
   than reformatted. The image is generated under ignored build output and is
   never a host physical disk.
@@ -96,12 +97,24 @@ loopback-only forward, and stops QEMU. `cargo run -- check-slaac` runs the
 controlled RA test described above. This validates the stack and driver only
 in QEMU, not on physical hardware or a production network.
 
-The Python research agent is still not executable in this kernel. The ELF
-loader supports only a small static x86_64 executable, and `NOSFS v2` still has
-only a bounded kernel-side API and one fixed-file user syscall. Python support
-requires a suitable user-space runtime port plus general process, filesystem,
-and network interfaces. Those components must remain isolated in ring 3; the
-kernel does not execute research or downloaded code.
+The Python research agent is still not executable in this kernel. The chosen
+next runtime direction is MicroPython in a separate ring-3 ELF process, not
+Python embedded in the kernel. This is a target architecture, not an implemented
+runtime: the current loader, process memory limits, 256-KiB filesystem file
+limit, and fixed-file syscall are not yet sufficient to load and run
+MicroPython. Work must first provide a bounded user-process lifecycle,
+appropriate runtime storage, and validated JSON/filesystem/network interfaces.
+Only a reviewed research client should be allowed to access configured public
+metadata APIs; web content and research records remain data, never executable
+code.
+
+Blockchain is not required to run the research agent. The recommended data
+path is authorized, encrypted off-chain storage with provenance and access
+controls. If a later, separately reviewed integration uses a chain, prefer a
+permissioned network and write only a minimal, non-identifying integrity digest
+and provenance reference. Never write patient records, genomic sequences, API
+credentials, or identifying metadata to an immutable chain; hashes and metadata
+can still reveal sensitive information and require a privacy review.
 
 ## Requirements
 

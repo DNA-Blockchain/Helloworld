@@ -1,5 +1,6 @@
 use super::block_device::{BlockDevice, SECTOR_SIZE, Sector};
 use crate::{port_read, port_read_u16, port_write, port_write_u16};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 const IO_BASE: u16 = 0x170;
 const CONTROL_PORT: u16 = 0x376;
@@ -25,9 +26,28 @@ const BOOT_JSON_CONTENT: &[u8] =
     br#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#;
 const TEST_ELF_NAME: &str = "TEST.ELF";
 const TEST_ELF_SIZE: usize = 134;
+const RUNTIME_TEST_SIZE: usize = 24 * 1024;
 const TEST_ELF_CODE: [u8; 14] = [
     0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x2a, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
 ];
+
+// The atomic lock below provides exclusive access to this boot-time test buffer.
+struct RuntimeTestReadback(core::cell::UnsafeCell<[u8; RUNTIME_TEST_SIZE]>);
+
+unsafe impl Sync for RuntimeTestReadback {}
+
+struct RuntimeTestGuard;
+
+impl Drop for RuntimeTestGuard {
+    fn drop(&mut self) {
+        RUNTIME_TEST_LOCK.store(false, Ordering::Release);
+    }
+}
+
+static RUNTIME_TEST_PAYLOAD: [u8; RUNTIME_TEST_SIZE] = create_runtime_test_payload();
+static RUNTIME_TEST_READBACK: RuntimeTestReadback =
+    RuntimeTestReadback(core::cell::UnsafeCell::new([0; RUNTIME_TEST_SIZE]));
+static RUNTIME_TEST_LOCK: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
@@ -107,6 +127,18 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
         return Err("filesystem replacement write did not persist the updated file");
     }
 
+    const RUNTIME_TEST_NAME: &str = "RUNTIME.TEST";
+    RUNTIME_TEST_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map_err(|_| "filesystem runtime-size test buffer is already in use")?;
+    let _runtime_test_guard = RuntimeTestGuard;
+    filesystem.write_file(&mut device, RUNTIME_TEST_NAME, &RUNTIME_TEST_PAYLOAD)?;
+    let runtime_readback = unsafe { &mut *RUNTIME_TEST_READBACK.0.get() };
+    let runtime_length = filesystem.read_file(&mut device, RUNTIME_TEST_NAME, runtime_readback)?;
+    if runtime_length != RUNTIME_TEST_SIZE || runtime_readback != &RUNTIME_TEST_PAYLOAD {
+        return Err("filesystem runtime-sized file failed read-after-write verification");
+    }
+
     let test_elf = create_test_elf();
     filesystem.write_file(&mut device, TEST_ELF_NAME, &test_elf)?;
     let mut stored_elf = [0; TEST_ELF_SIZE];
@@ -144,6 +176,16 @@ fn create_test_elf() -> [u8; TEST_ELF_SIZE] {
     write_u64(&mut image, 112, 1);
     image[120..].copy_from_slice(&TEST_ELF_CODE);
     image
+}
+
+const fn create_runtime_test_payload() -> [u8; RUNTIME_TEST_SIZE] {
+    let mut payload = [0; RUNTIME_TEST_SIZE];
+    let mut index = 0;
+    while index < RUNTIME_TEST_SIZE {
+        payload[index] = (index.wrapping_mul(37) ^ (index >> 3)) as u8;
+        index += 1;
+    }
+    payload
 }
 
 fn write_u16(output: &mut [u8], offset: usize, value: u16) {
@@ -334,3 +376,18 @@ fn record_hash(data: &[u8]) -> u64 {
         (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
     })
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */

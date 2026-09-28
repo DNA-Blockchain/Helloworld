@@ -13,7 +13,7 @@ const ENTRY_NO_EXECUTE: u64 = 1 << 63;
 const ENTRY_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const USER_PML4_LIMIT: usize = 256;
 const USER_TEST_OFFSET: u64 = 0x0040_0000;
-const MAX_USER_PAGES: usize = 4;
+const MAX_USER_PAGES: usize = 512;
 const KERNEL_SYSCALL_STACK_PAGES: usize = 4;
 const PAGE_SIZE_BYTES: usize = PAGE_SIZE as usize;
 
@@ -179,6 +179,12 @@ pub(crate) fn verify_isolation() -> Result<(), &'static str> {
 
     let kernel_root = read_cr3() & ENTRY_ADDRESS_MASK;
     let verification = (|| {
+        for page_index in 1..16 {
+            let address = user_address
+                .checked_add((page_index as u64) * PAGE_SIZE)
+                .ok_or("user mapping stress-test address overflow")?;
+            map_user_page(&mut first, address)?;
+        }
         activate(&first)?;
         unsafe {
             write_volatile(user_address as *mut u64, 0x4652_4f4d_5f41_0001);
@@ -190,6 +196,15 @@ pub(crate) fn verify_isolation() -> Result<(), &'static str> {
         activate(&first)?;
         if unsafe { read_volatile(user_address as *const u64) } != 0x4652_4f4d_5f41_0001 {
             return Err("first address space did not retain its private user mapping");
+        }
+        let mapped_user_pages = unsafe { &(*USER_PAGES.0.get())[first.record_index] };
+        if mapped_user_pages
+            .iter()
+            .filter(|page| page.physical_address != 0)
+            .count()
+            != 16
+        {
+            return Err("address space did not track all mapped user pages");
         }
 
         activate(&second)?;
@@ -842,3 +857,18 @@ fn read_cr3() -> u64 {
     }
     value
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */

@@ -276,3 +276,18 @@ extern "C" fn page_fault_dispatch(error_code: u64, address: u64, code_segment: u
     }
     super::timer::unexpected_page_fault_handler(error_code, address, code_segment)
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */

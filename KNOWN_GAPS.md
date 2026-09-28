@@ -44,7 +44,8 @@ confident-looking file imply more than it's actually verified.
   4-KiB virtual-page arena tested for map/read/write/unmap/reuse, two CR3
   address spaces with private user-marked pages, a QEMU-tested bounded ELF64
   static x86_64 `ET_DYN` loader that loads `TEST.ELF` from the virtual disk,
-  maps it into a dedicated CR3 address space, validates its permissions,
+  maps it into a dedicated CR3 address space with capacity for 512 user pages,
+  validates its permissions,
   verifies write/fetch protection faults, exits through one `int 0x80` syscall,
   and lets the test harness reclaim its user pages, and a kernel
   heap verified growing from 64 KiB for a large `Vec` allocation, then
@@ -60,7 +61,8 @@ confident-looking file imply more than it's actually verified.
   block-device interface and verifies a checksummed sector counter across
   emulator restarts. An experimental `NOSFS v2` filesystem now mounts that
   image, validates its superblock and allocation bitmap, and stores up to 16
-  flat files of at most 8 KiB each with content checksums. It has no journal,
+  flat files of at most 256 KiB each with content checksums. A QEMU test
+  round-trips a 24-KiB runtime-sized file. It has no journal,
   directories, permissions, safe concurrent writers, or general crash recovery;
   allocation leaks or an interrupted metadata update can require manual
   recovery. There is no block cache, partition support, or user-facing storage
@@ -73,7 +75,7 @@ confident-looking file imply more than it's actually verified.
   general user filesystem API. The Python research agent remains a host
   application; running it on this OS requires an isolated user-space runtime,
   broader filesystem API, and network syscalls. It must not run as privileged
-  kernel code.
+  kernel code. MicroPython has not yet been ported or run in the guest.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a

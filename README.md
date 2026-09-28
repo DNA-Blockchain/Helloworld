@@ -15,6 +15,9 @@ runs on plain Python. It does
 not require Claude, an internet account, a subscription, or GitHub to
 run — see [Owning your copy](#owning-your-copy).
 
+See [NOTICE.md](NOTICE.md) for the author's authorship and ownership
+declaration. It does not replace or narrow the existing CC0 license.
+
 ---
 
 ## What it actually does

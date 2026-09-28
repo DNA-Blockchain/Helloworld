@@ -214,7 +214,11 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .any(|line| line.contains("Kernel task verified: separate 16-KiB stack"))
         || !output
             .iter()
-            .any(|line| line.contains("Address spaces verified: private user mappings"))
+            .any(|line| {
+                line.contains(
+                    "Address spaces verified: separate roots, 16 private user pages, and supervisor kernel mappings",
+                )
+            })
         || !output
             .iter()
             .any(|line| {
@@ -239,7 +243,9 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             line.contains("Block device verified: 4096 sectors; persistent test record generation ")
         })
         || !output.iter().any(|line| {
-            line.contains("Filesystem verified: mounted NOSFS v2 and read persistent BOOT.JSON")
+            line.contains(
+                "Filesystem verified: NOSFS v2 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file",
+            )
         })
         || !output
             .iter()
@@ -355,8 +361,9 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 saw_virtual_memory |= line.contains("Virtual memory verified: ");
                 saw_heap |= line.contains("Kernel heap verified: Vec/Box allocation");
                 saw_kernel_task |= line.contains("Kernel task verified: separate 16-KiB stack");
-                saw_address_spaces |=
-                    line.contains("Address spaces verified: private user mappings");
+                saw_address_spaces |= line.contains(
+                    "Address spaces verified: separate roots, 16 private user pages, and supervisor kernel mappings",
+                );
                 saw_user_syscall |=
                     line.contains(
                         "ELF process isolation verified: dedicated CR3, TEST.ELF exit 42, NX/write fault recovery, and harness page reclamation",
@@ -373,7 +380,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     "Block device verified: 4096 sectors; persistent test record generation ",
                 );
                 saw_filesystem |= line.contains(
-                    "Filesystem verified: mounted NOSFS v2 and read persistent BOOT.JSON",
+                    "Filesystem verified: NOSFS v2 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file",
                 );
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");
@@ -607,3 +614,18 @@ fn report_qemu_start_error(error: std::io::Error) {
     eprintln!("Could not start qemu-system-x86_64: {error}");
     eprintln!("Install QEMU and ensure qemu-system-x86_64 is on PATH.");
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */

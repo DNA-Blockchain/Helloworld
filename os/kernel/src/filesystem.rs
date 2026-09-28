@@ -5,7 +5,7 @@ const BITMAP_LBA: u32 = 9;
 const ROOT_DIRECTORY_LBA: u32 = 10;
 const FIRST_DATA_LBA: u32 = 11;
 const DIRECTORY_ENTRY_SIZE: usize = 32;
-const MAX_FILE_SECTORS: usize = 16;
+const MAX_FILE_SECTORS: usize = 512;
 const SUPERBLOCK_MAGIC: &[u8; 8] = b"NOSFS001";
 const FILESYSTEM_VERSION: u32 = 2;
 const ENTRY_NAME_SIZE: usize = 16;
@@ -356,7 +356,7 @@ fn validate_name(name: &str) -> Result<(), &'static str> {
 
 fn sectors_for_length(length: usize) -> Result<usize, &'static str> {
     if length == 0 || length > MAX_FILE_SECTORS * SECTOR_SIZE {
-        return Err("filesystem file length is outside the supported 1-8192 byte range");
+        return Err("filesystem file length is outside the supported 1-262144 byte range");
     }
     length
         .checked_add(SECTOR_SIZE - 1)
@@ -466,3 +466,18 @@ fn hash(data: &[u8]) -> u64 {
         (value ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
     })
 }
+/*
+ * Copyright (c) 2026 Chase Allen Ringquist. All rights reserved.
+ *
+ * This file is part of an operating system, software, and network Work
+ * conceived and authored by Chase Allen Ringquist. It is the intellectual and
+ * digital property of the Author, except where an open-source license
+ * accompanying this file expressly grants other rights.
+ *
+ * Do not remove or alter this notice or any record of origin.
+ * See NOTICE.md in the project root for full terms.
+ * See LICENSE for the applicable license.
+ *
+ * Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ */
