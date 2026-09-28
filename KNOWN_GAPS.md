@@ -41,13 +41,20 @@ confident-looking file imply more than it's actually verified.
   RA-installed default route, and ICMPv6 echo in QEMU. This does not establish
   behavior on physical networks. The kernel has a QEMU-verified 100 Hz PIT
   clock, a fixed-metadata physical frame allocator below 4 GiB, a kernel-only
-  4-KiB virtual-page arena tested for map/read/write/unmap/reuse, and a fixed
-  kernel heap verified growing from 64 KiB for a large `Vec` allocation, then
+  4-KiB virtual-page arena tested for map/read/write/unmap/reuse, two CR3
+  address spaces with private user-marked pages, a QEMU-tested ring-3 program
+  that exits through one `int 0x80` syscall, and a kernel
+  heap verified growing from 64 KiB for a large `Vec` allocation, then
   allocating and releasing `Box` values; it is capped at 512 KiB.
-  A one-shot kernel task also runs on a separately allocated stack, but there
-  is not yet a scheduler or process model. It still lacks multiple address
-  spaces, user mappings and privilege isolation, syscalls, storage/filesystems,
-  and broad hardware support. The driver only supports the QEMU 82540EM model; the
+  A bounded cooperative round-robin test schedules two kernel tasks across
+  separate stacks, but there is not yet preemptive scheduling or a general
+  process model. A QEMU-only secondary IDE driver verifies a checksummed sector
+  counter across emulator restarts; there is still no filesystem, block cache,
+  partition support, or user-facing storage API. It lacks general syscall
+  services, recovery from user faults, and broad hardware support.
+  The page-permission test confirms user/supervisor bits but does not yet
+  verify controlled protection-fault handling. The driver only supports the
+  QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
   general-purpose or installable operating system. The HTTP service is a
   small test endpoint, not a hardened production server.

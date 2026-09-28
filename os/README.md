@@ -20,15 +20,28 @@ this kernel.
 - Adds a kernel-only virtual-page arena in an unused PML4 slot. The boot check
   maps a zeroed 4-KiB frame, verifies read/write access, unmaps it, checks the
   page-table entry was cleared, rejects a repeated free, and reuses the
-  virtual slot. Empty page-table levels are reclaimed. This does not yet
-  implement process address spaces, user mappings, or large pages.
+  virtual slot. Empty page-table levels are reclaimed.
+- Creates two independent page-table roots with shared supervisor-only
+  kernel-half mappings and private user-marked pages at the same virtual
+  address. The QEMU check switches CR3 and verifies each space retains its
+  own data, then releases its page tables and frames. This exercises page-table
+  separation.
+- Enters ring 3 for a tiny machine-code test program, services its DPL-3
+  `int 0x80` exit syscall on a TSS-provided ring-0 stack, and verifies the
+  program returns exit code 42. This is a single test syscall, not a general
+  syscall ABI or a complete process loader; protection-fault recovery is not
+  implemented.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
   allocation and release. The heap is not available to user-mode programs.
 - Runs a one-shot kernel task on a separate 16-KiB stack and verifies that it
   can allocate from the kernel heap. This is a stack-switching test, not a
-  scheduler, process, privilege boundary, or user-mode execution.
+  process or preemptive scheduler.
+- Includes a bounded cooperative round-robin scheduler check: two kernel
+  tasks take five timer-paced steps in the expected A/B/A/B/A order, each on
+  its own 16-KiB stack. It is not preemptive and does not schedule ring-3
+  processes.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an
@@ -43,6 +56,13 @@ this kernel.
 - Verifies an ICMPv6 echo reply from the QEMU IPv6 gateway.
 - Runs a small in-kernel HTTP health service on guest TCP port 8080. `GET
   /health` returns `200 OK` with `ok`; other paths return `404`.
+- Uses a QEMU-only secondary IDE disk image at
+  `os/target/network-os-persistent.img`. The kernel reads and updates one
+  reserved sector with a generation counter and checksum, flushes the write,
+  and verifies it by reading the sector back. Repeated boots increment the
+  counter, demonstrating persistence across emulator restarts. This is a
+  block-I/O test, not a filesystem; the image is generated under ignored
+  build output and is never a host physical disk.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
 it is not a general PCI NIC driver. The runner uses QEMU user-mode networking

@@ -179,6 +179,18 @@ pub(crate) fn initialize() {
     }
 }
 
+pub(crate) fn install_syscall_gate(handler: usize, kernel_code_selector: u16) {
+    let _guard = disable_interrupts();
+    unsafe {
+        let idt = &mut *IDT.0.get();
+        for entry in idt.iter_mut() {
+            entry.selector = kernel_code_selector;
+        }
+        idt[0x80] = IdtEntry::interrupt_gate(handler, kernel_code_selector);
+        idt[0x80].attributes = 0xee;
+    }
+}
+
 pub(crate) fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
@@ -191,6 +203,36 @@ pub(crate) fn wait_for_ticks(target: u64) {
     while ticks() < target {
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack));
+        }
+    }
+}
+
+fn disable_interrupts() -> InterruptGuard {
+    let flags: usize;
+    unsafe {
+        core::arch::asm!(
+            "pushfq",
+            "pop {flags}",
+            "cli",
+            flags = out(reg) flags,
+            options(nomem)
+        );
+    }
+    InterruptGuard {
+        interrupts_were_enabled: flags & (1 << 9) != 0,
+    }
+}
+
+struct InterruptGuard {
+    interrupts_were_enabled: bool,
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        if self.interrupts_were_enabled {
+            unsafe {
+                core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+            }
         }
     }
 }

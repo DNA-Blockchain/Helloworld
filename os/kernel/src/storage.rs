@@ -1,0 +1,185 @@
+use crate::{port_read, port_read_u16, port_write, port_write_u16};
+
+const IO_BASE: u16 = 0x170;
+const CONTROL_PORT: u16 = 0x376;
+const DATA_PORT: u16 = IO_BASE;
+const ERROR_FEATURES_PORT: u16 = IO_BASE + 1;
+const SECTOR_COUNT_PORT: u16 = IO_BASE + 2;
+const LBA_LOW_PORT: u16 = IO_BASE + 3;
+const LBA_MID_PORT: u16 = IO_BASE + 4;
+const LBA_HIGH_PORT: u16 = IO_BASE + 5;
+const DRIVE_PORT: u16 = IO_BASE + 6;
+const STATUS_COMMAND_PORT: u16 = IO_BASE + 7;
+const STATUS_ERROR: u8 = 1;
+const STATUS_DATA_READY: u8 = 1 << 3;
+const STATUS_BUSY: u8 = 1 << 7;
+const READ_SECTORS: u8 = 0x20;
+const WRITE_SECTORS: u8 = 0x30;
+const FLUSH_CACHE: u8 = 0xe7;
+const TEST_LBA: u32 = 1;
+const SECTOR_SIZE: usize = 512;
+const MAGIC: &[u8; 8] = b"NOSDISK1";
+
+pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
+    select_test_disk()?;
+    let mut sector = [0u8; SECTOR_SIZE];
+    read_sector(TEST_LBA, &mut sector)?;
+
+    let generation = if sector.iter().all(|byte| *byte == 0) {
+        1
+    } else {
+        if &sector[..MAGIC.len()] != MAGIC {
+            return Err(
+                "reserved test sector contains an unknown record; refusing to overwrite it",
+            );
+        }
+        let previous = u64::from_le_bytes(
+            sector[8..16]
+                .try_into()
+                .map_err(|_| "persistent record has an invalid generation field")?,
+        );
+        let stored_hash = u64::from_le_bytes(
+            sector[16..24]
+                .try_into()
+                .map_err(|_| "persistent record has an invalid checksum field")?,
+        );
+        if record_hash(&sector[..16]) != stored_hash {
+            return Err("persistent storage record checksum did not match");
+        }
+        previous
+            .checked_add(1)
+            .ok_or("persistent storage generation counter overflow")?
+    };
+
+    sector.fill(0);
+    sector[..MAGIC.len()].copy_from_slice(MAGIC);
+    sector[8..16].copy_from_slice(&generation.to_le_bytes());
+    let checksum = record_hash(&sector[..16]);
+    sector[16..24].copy_from_slice(&checksum.to_le_bytes());
+    write_sector(TEST_LBA, &sector)?;
+
+    let mut verified = [0u8; SECTOR_SIZE];
+    read_sector(TEST_LBA, &mut verified)?;
+    if verified[..24] != sector[..24] {
+        return Err("persistent storage read-after-write verification failed");
+    }
+    Ok(generation)
+}
+
+fn select_test_disk() -> Result<(), &'static str> {
+    unsafe {
+        port_write(CONTROL_PORT, 0x02);
+        port_write(DRIVE_PORT, 0xe0);
+        port_write(SECTOR_COUNT_PORT, 0);
+        port_write(LBA_LOW_PORT, 0);
+        port_write(LBA_MID_PORT, 0);
+        port_write(LBA_HIGH_PORT, 0);
+    }
+    delay_400ns();
+    wait_not_busy()
+}
+
+fn read_sector(lba: u32, sector: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    issue_sector_command(lba, READ_SECTORS)?;
+    wait_data_ready()?;
+    for word_index in 0..SECTOR_SIZE / 2 {
+        let word = unsafe { port_read_u16(DATA_PORT) }.to_le_bytes();
+        sector[word_index * 2] = word[0];
+        sector[word_index * 2 + 1] = word[1];
+    }
+    wait_not_busy()
+}
+
+fn write_sector(lba: u32, sector: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    issue_sector_command(lba, WRITE_SECTORS)?;
+    wait_data_ready()?;
+    for word_index in 0..SECTOR_SIZE / 2 {
+        let word = u16::from_le_bytes([sector[word_index * 2], sector[word_index * 2 + 1]]);
+        unsafe {
+            port_write_u16(DATA_PORT, word);
+        }
+    }
+    wait_not_busy()?;
+    unsafe {
+        port_write(STATUS_COMMAND_PORT, FLUSH_CACHE);
+    }
+    delay_400ns();
+    wait_not_busy()
+}
+
+fn issue_sector_command(lba: u32, command: u8) -> Result<(), &'static str> {
+    if lba >= 1 << 28 {
+        return Err("test LBA is outside ATA 28-bit addressing");
+    }
+    wait_not_busy()?;
+    unsafe {
+        port_write(DRIVE_PORT, 0xe0 | ((lba >> 24) as u8 & 0x0f));
+        port_write(SECTOR_COUNT_PORT, 1);
+        port_write(LBA_LOW_PORT, lba as u8);
+        port_write(LBA_MID_PORT, (lba >> 8) as u8);
+        port_write(LBA_HIGH_PORT, (lba >> 16) as u8);
+        port_write(STATUS_COMMAND_PORT, command);
+    }
+    delay_400ns();
+    Ok(())
+}
+
+fn wait_data_ready() -> Result<(), &'static str> {
+    for _ in 0..1_000_000 {
+        let status = unsafe { port_read(STATUS_COMMAND_PORT) };
+        if status == 0xff {
+            return Err("QEMU test disk is not present on the secondary IDE channel");
+        }
+        if status & STATUS_BUSY == 0 {
+            if status & STATUS_ERROR != 0 {
+                let error = unsafe { port_read(ERROR_FEATURES_PORT) };
+                return if error & (1 << 2) != 0 {
+                    Err("ATA test disk reported an aborted command")
+                } else {
+                    Err("ATA test disk reported an I/O error")
+                };
+            }
+            if status & STATUS_DATA_READY != 0 {
+                return Ok(());
+            }
+        }
+        core::hint::spin_loop();
+    }
+    Err("timed out waiting for ATA data")
+}
+
+fn wait_not_busy() -> Result<(), &'static str> {
+    for _ in 0..1_000_000 {
+        let status = unsafe { port_read(STATUS_COMMAND_PORT) };
+        if status == 0xff {
+            return Err("QEMU test disk is not present on the secondary IDE channel");
+        }
+        if status & STATUS_BUSY == 0 {
+            if status & STATUS_ERROR != 0 {
+                let error = unsafe { port_read(ERROR_FEATURES_PORT) };
+                return if error & (1 << 2) != 0 {
+                    Err("ATA test disk reported an aborted command")
+                } else {
+                    Err("ATA test disk reported an I/O error")
+                };
+            }
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    Err("timed out waiting for ATA test disk")
+}
+
+fn delay_400ns() {
+    unsafe {
+        for _ in 0..4 {
+            let _ = port_read(CONTROL_PORT);
+        }
+    }
+}
+
+fn record_hash(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+    })
+}

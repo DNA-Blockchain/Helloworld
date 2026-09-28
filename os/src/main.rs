@@ -1,5 +1,6 @@
 use std::{
     env,
+    fs::OpenOptions,
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpStream, UdpSocket},
     path::Path,
@@ -27,8 +28,15 @@ fn main() -> ExitCode {
     }
 
     let image = env!("BIOS_IMAGE");
+    let data_disk = match prepare_data_disk() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(1);
+        }
+    };
     if mode == "check-slaac" {
-        return match run_slaac_integration_check(image) {
+        return match run_slaac_integration_check(image, &data_disk) {
             Ok(()) => {
                 println!("QEMU SLAAC router-advertisement check passed.");
                 ExitCode::SUCCESS
@@ -41,7 +49,7 @@ fn main() -> ExitCode {
     }
 
     let network = "user,id=net0,ipv4=on,ipv6=on,ipv6-net=fd00::/64,ipv6-host=fd00::2,hostfwd=tcp:127.0.0.1:18080-:8080";
-    let mut qemu = qemu_command(image, network);
+    let mut qemu = qemu_command(image, network, &data_disk);
 
     if mode == "check" {
         match run_integration_check(&mut qemu) {
@@ -68,7 +76,37 @@ fn main() -> ExitCode {
     }
 }
 
-fn qemu_command(image: &str, network: &str) -> Command {
+fn prepare_data_disk() -> Result<std::path::PathBuf, String> {
+    const DATA_DISK_SIZE: u64 = 2 * 1024 * 1024;
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&target)
+        .map_err(|error| format!("Could not create OS target directory: {error}"))?;
+    let path = target.join("network-os-persistent.img");
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file
+            .set_len(DATA_DISK_SIZE)
+            .map_err(|error| format!("Could not initialize QEMU test disk: {error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::metadata(&path)
+                .map_err(|error| format!("Could not inspect QEMU test disk: {error}"))?;
+            if metadata.len() < DATA_DISK_SIZE {
+                return Err(format!(
+                    "Existing QEMU test disk is too small ({} bytes); refusing to resize it.",
+                    metadata.len()
+                ));
+            }
+        }
+        Err(error) => return Err(format!("Could not create QEMU test disk: {error}")),
+    }
+    Ok(path)
+}
+
+fn qemu_command(image: &str, network: &str, data_disk: &Path) -> Command {
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.args([
         "-machine",
@@ -84,6 +122,8 @@ fn qemu_command(image: &str, network: &str) -> Command {
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-drive",
         &format!("format=raw,file={image}"),
+        "-drive",
+        &format!("format=raw,file={},if=ide,index=2", data_disk.display()),
         "-netdev",
         network,
         "-device",
@@ -174,6 +214,18 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .any(|line| line.contains("Kernel task verified: separate 16-KiB stack"))
         || !output
             .iter()
+            .any(|line| line.contains("Address spaces verified: private user mappings"))
+        || !output
+            .iter()
+            .any(|line| line.contains("Ring-3 syscall verified: test program exited with code 42"))
+        || !output
+            .iter()
+            .any(|line| line.contains("Cooperative scheduler verified: 5 round-robin steps"))
+        || !output.iter().any(|line| {
+            line.contains("Persistent block storage verified: sector record generation ")
+        })
+        || !output
+            .iter()
             .any(|line| line.contains("DHCP configured: IPv4 "))
         || !output
             .iter()
@@ -188,7 +240,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
     Ok(())
 }
 
-fn run_slaac_integration_check(image: &str) -> Result<(), String> {
+fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), String> {
     let router_port = reserve_udp_port()?;
     let guest_port = reserve_udp_port()?;
     if router_port == guest_port {
@@ -236,7 +288,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
 
     let network =
         format!("socket,id=net0,udp=127.0.0.1:{router_port},localaddr=127.0.0.1:{guest_port}");
-    let mut qemu = qemu_command(image, &network);
+    let mut qemu = qemu_command(image, &network, data_disk);
     qemu.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match qemu.spawn() {
         Ok(child) => child,
@@ -264,6 +316,10 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
     let mut saw_virtual_memory = false;
     let mut saw_heap = false;
     let mut saw_kernel_task = false;
+    let mut saw_address_spaces = false;
+    let mut saw_user_syscall = false;
+    let mut saw_scheduler = false;
+    let mut saw_storage = false;
     let mut saw_ipv4_echo = false;
     let mut saw_slaac = false;
     let mut saw_default_route = false;
@@ -279,6 +335,14 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
                 saw_virtual_memory |= line.contains("Virtual memory verified: ");
                 saw_heap |= line.contains("Kernel heap verified: Vec/Box allocation");
                 saw_kernel_task |= line.contains("Kernel task verified: separate 16-KiB stack");
+                saw_address_spaces |=
+                    line.contains("Address spaces verified: private user mappings");
+                saw_user_syscall |=
+                    line.contains("Ring-3 syscall verified: test program exited with code 42");
+                saw_scheduler |=
+                    line.contains("Cooperative scheduler verified: 5 round-robin steps");
+                saw_storage |=
+                    line.contains("Persistent block storage verified: sector record generation ");
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");
                 saw_default_route |= line.contains("IPv6 default gateway: fe80::1");
@@ -290,6 +354,10 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
                     && saw_virtual_memory
                     && saw_heap
                     && saw_kernel_task
+                    && saw_address_spaces
+                    && saw_user_syscall
+                    && saw_scheduler
+                    && saw_storage
                     && saw_dhcp
                     && saw_ipv4_echo
                     && saw_slaac
@@ -335,6 +403,10 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
         && saw_virtual_memory
         && saw_heap
         && saw_kernel_task
+        && saw_address_spaces
+        && saw_user_syscall
+        && saw_scheduler
+        && saw_storage
         && saw_dhcp
         && saw_ipv4_echo
         && saw_slaac
@@ -343,7 +415,7 @@ fn run_slaac_integration_check(image: &str) -> Result<(), String> {
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ring-3 syscall: {saw_user_syscall}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

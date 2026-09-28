@@ -1,0 +1,161 @@
+use core::{
+    cell::UnsafeCell,
+    mem::size_of,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
+const KERNEL_CODE_SELECTOR: u16 = 0x08;
+const SYSCALL_EXIT: u64 = 1;
+const EXIT_NOT_CALLED: u64 = u64::MAX;
+
+struct StaticGdt(UnsafeCell<[u64; 7]>);
+struct StaticTss(UnsafeCell<[u8; 104]>);
+
+unsafe impl Sync for StaticGdt {}
+unsafe impl Sync for StaticTss {}
+
+#[repr(C, packed)]
+struct DescriptorTablePointer {
+    limit: u16,
+    base: u64,
+}
+
+static GDT: StaticGdt = StaticGdt(UnsafeCell::new([0; 7]));
+static TSS: StaticTss = StaticTss(UnsafeCell::new([0; 104]));
+static EXIT_CODE: AtomicU64 = AtomicU64::new(EXIT_NOT_CALLED);
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+#[unsafe(no_mangle)]
+static mut USER_TEST_RESUME_RSP: usize = 0;
+
+core::arch::global_asm!(
+    ".global load_kernel_gdt",
+    "load_kernel_gdt:",
+    "lgdt [rdi]",
+    "push 0x08",
+    "lea rax, [rip + 2f]",
+    "push rax",
+    "retfq",
+    "2:",
+    "mov ax, 0x10",
+    "mov ds, ax",
+    "mov es, ax",
+    "mov ss, ax",
+    "mov ax, 0x28",
+    "ltr ax",
+    "ret",
+);
+
+core::arch::global_asm!(
+    ".global enter_user_mode",
+    "enter_user_mode:",
+    "push rbx",
+    "mov rbx, rsp",
+    "mov [rip + USER_TEST_RESUME_RSP], rsp",
+    "mov rax, 0x1b",
+    "push rax",
+    "push rsi",
+    "pushfq",
+    "pop rax",
+    "and rax, 0xffffffffffffcfff",
+    "or rax, 0x202",
+    "push rax",
+    "mov rax, 0x23",
+    "push rax",
+    "push rdi",
+    "iretq",
+);
+
+core::arch::global_asm!(
+    ".global syscall_interrupt_stub",
+    "syscall_interrupt_stub:",
+    "cld",
+    "mov rsi, rdi",
+    "mov rdi, rax",
+    "and rsp, -16",
+    "call syscall_dispatch",
+    "mov rsp, [rip + USER_TEST_RESUME_RSP]",
+    "pop rbx",
+    "sti",
+    "ret",
+);
+
+unsafe extern "C" {
+    fn load_kernel_gdt(pointer: *const DescriptorTablePointer);
+    fn enter_user_mode(entry: usize, user_stack: usize);
+    fn syscall_interrupt_stub();
+}
+
+pub(crate) fn initialize(kernel_stack_top: usize) -> Result<(), &'static str> {
+    if INITIALIZED.load(Ordering::Acquire) {
+        return Err("user syscall support was initialized more than once");
+    }
+    if kernel_stack_top == 0 || kernel_stack_top % 16 != 0 {
+        return Err("ring-0 syscall stack must be nonzero and 16-byte aligned");
+    }
+
+    let tss = unsafe { &mut *TSS.0.get() };
+    unsafe {
+        core::ptr::write_bytes(tss.as_mut_ptr(), 0, tss.len());
+        core::ptr::write_unaligned(tss.as_mut_ptr().add(4) as *mut u64, kernel_stack_top as u64);
+        core::ptr::write_unaligned(tss.as_mut_ptr().add(102) as *mut u16, 104);
+    }
+
+    let gdt = unsafe { &mut *GDT.0.get() };
+    gdt[0] = 0;
+    gdt[1] = 0x00af_9a00_0000_ffff;
+    gdt[2] = 0x00cf_9200_0000_ffff;
+    gdt[3] = 0x00cf_f200_0000_ffff;
+    gdt[4] = 0x00af_fa00_0000_ffff;
+    let tss_base = tss.as_ptr() as u64;
+    let tss_limit = (size_of::<[u8; 104]>() - 1) as u64;
+    gdt[5] = (tss_limit & 0xffff)
+        | ((tss_base & 0x00ff_ffff) << 16)
+        | (0x89 << 40)
+        | (((tss_limit >> 16) & 0x0f) << 48)
+        | (((tss_base >> 24) & 0xff) << 56);
+    gdt[6] = tss_base >> 32;
+
+    let pointer = DescriptorTablePointer {
+        limit: (size_of::<[u64; 7]>() - 1) as u16,
+        base: gdt.as_ptr() as u64,
+    };
+    unsafe {
+        load_kernel_gdt(&pointer);
+    }
+    super::timer::install_syscall_gate(
+        syscall_interrupt_stub as *const () as usize,
+        KERNEL_CODE_SELECTOR,
+    );
+    INITIALIZED.store(true, Ordering::Release);
+    Ok(())
+}
+
+pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &'static str> {
+    if !INITIALIZED.load(Ordering::Acquire) {
+        return Err("user syscall support has not been initialized");
+    }
+    if entry == 0 || user_stack == 0 || user_stack % 16 != 0 {
+        return Err("user program entry and stack must be valid and aligned");
+    }
+
+    EXIT_CODE.store(EXIT_NOT_CALLED, Ordering::Relaxed);
+    unsafe {
+        enter_user_mode(entry, user_stack);
+    }
+    let exit_code = EXIT_CODE.load(Ordering::Acquire);
+    if exit_code == EXIT_NOT_CALLED {
+        return Err("user test returned without invoking the exit syscall");
+    }
+    Ok(exit_code)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn syscall_dispatch(number: u64, argument: u64) -> u64 {
+    if number == SYSCALL_EXIT {
+        EXIT_CODE.store(argument, Ordering::Release);
+    } else {
+        EXIT_CODE.store(u64::MAX - 1, Ordering::Release);
+    }
+    0
+}

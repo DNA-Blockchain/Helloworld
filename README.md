@@ -23,7 +23,7 @@ run — see [Owning your copy](#owning-your-copy).
 |---|---|---|
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
-| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; E1000, dual-stack networking, HTTP health service, PIT timer, frame/page allocators, and fixed test-verified kernel heap |
+| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; E1000, dual-stack networking, HTTP health service, PIT timer, frame/page allocators, growing kernel heap, separate address spaces, minimal ring-3 `int 0x80` exit, and cooperative task scheduling |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
 | Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
 | Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |

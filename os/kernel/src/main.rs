@@ -3,10 +3,14 @@
 
 extern crate alloc;
 
+mod address_space;
 mod e1000;
 mod heap;
 mod memory;
 mod network;
+mod scheduler;
+mod storage;
+mod syscall;
 mod task;
 mod timer;
 mod virtual_memory;
@@ -16,6 +20,7 @@ use core::fmt::{self, Write};
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
+    config.mappings.kernel_base = Mapping::FixedAddress(0xffff_8000_0000_0000);
     config.mappings.physical_memory = Some(Mapping::Dynamic);
     config
 };
@@ -70,6 +75,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         timer::ticks(),
         timer::milliseconds()
     );
+    match storage::verify_persistent_record() {
+        Ok(generation) => {
+            let _ = writeln!(
+                Serial,
+                "Persistent block storage verified: sector record generation {}.",
+                generation
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(Serial, "Storage initialization failed: {error}");
+            exit_qemu(0x11);
+        }
+    }
     match network::run(boot_info) {
         Ok(()) => exit_qemu(0x10),
         Err(error) => {
@@ -104,6 +122,30 @@ pub(crate) unsafe fn port_read(port: u16) -> u8 {
             "in al, dx",
             in("dx") port,
             out("al") value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    value
+}
+
+pub(crate) unsafe fn port_write_u16(port: u16, value: u16) {
+    unsafe {
+        core::arch::asm!(
+            "out dx, ax",
+            in("dx") port,
+            in("ax") value,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
+pub(crate) unsafe fn port_read_u16(port: u16) -> u16 {
+    let value: u16;
+    unsafe {
+        core::arch::asm!(
+            "in ax, dx",
+            in("dx") port,
+            out("ax") value,
             options(nomem, nostack, preserves_flags)
         );
     }

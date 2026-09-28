@@ -53,9 +53,7 @@ pub(crate) fn verify_separate_kernel_stack() -> Result<(), &'static str> {
     TASK_STACK_LIMIT.store(limit, Ordering::Relaxed);
     TASK_CHECK_PASSED.store(false, Ordering::Relaxed);
 
-    unsafe {
-        kernel_stack_switch(limit, task_stack_entry);
-    }
+    run_on_stack(limit, task_stack_entry);
 
     let result = if TASK_CHECK_PASSED.load(Ordering::Acquire) {
         Ok(())
@@ -64,6 +62,12 @@ pub(crate) fn verify_separate_kernel_stack() -> Result<(), &'static str> {
     };
     release_stack(stack_base, allocated_pages)?;
     result
+}
+
+pub(crate) fn run_on_stack(stack_top: usize, entry: extern "C" fn()) {
+    unsafe {
+        kernel_stack_switch(stack_top, entry);
+    }
 }
 
 extern "C" fn task_stack_entry() {

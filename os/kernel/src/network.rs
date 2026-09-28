@@ -49,6 +49,24 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         Serial,
         "Kernel task verified: separate 16-KiB stack and heap allocation."
     );
+    crate::address_space::initialize(physical_memory_offset)?;
+    crate::address_space::verify_isolation()?;
+    let _ = writeln!(
+        Serial,
+        "Address spaces verified: private user mappings and supervisor kernel mappings (CPL0 test)."
+    );
+    let user_exit_code = crate::address_space::verify_user_syscall()?;
+    let _ = writeln!(
+        Serial,
+        "Ring-3 syscall verified: test program exited with code {} via int 0x80.",
+        user_exit_code
+    );
+    let scheduled_steps = crate::scheduler::verify_cooperative_round_robin()?;
+    let _ = writeln!(
+        Serial,
+        "Cooperative scheduler verified: {} round-robin steps on separate task stacks.",
+        scheduled_steps
+    );
     let mut config = Config::new(EthernetAddress(device.mac()).into());
     config.random_seed = 0x4e45_5457;
     config.slaac = true;
