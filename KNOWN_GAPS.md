@@ -61,10 +61,12 @@ confident-looking file imply more than it's actually verified.
   recovery. There is no block cache, partition support, or user-facing storage
   syscall. It lacks general syscall
   services and broad hardware support. User-mode networking sockets are not
-  implemented. The Python research agent remains a host application; running
-  it on this OS requires an isolated user-space runtime, executable loader,
-  broader filesystem API, and network syscalls. It must not run as privileged
-  kernel code.
+  implemented. A ring-3 smoke program can read only the fixed `BOOT.JSON` file
+  through a pointer-validated syscall; there is no general user filesystem API
+  or ELF process loader yet. The Python research agent remains a host
+  application; running it on this OS requires an isolated user-space runtime,
+  executable loader, broader filesystem API, and network syscalls. It must not
+  run as privileged kernel code.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a

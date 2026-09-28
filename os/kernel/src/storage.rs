@@ -20,6 +20,9 @@ const FLUSH_CACHE: u8 = 0xe7;
 const TEST_LBA: u32 = 1;
 const DEVICE_SECTORS: u32 = 4096;
 const MAGIC: &[u8; 8] = b"NOSDISK1";
+const BOOT_JSON_NAME: &str = "BOOT.JSON";
+const BOOT_JSON_CONTENT: &[u8] =
+    br#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#;
 
 pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
@@ -72,21 +75,18 @@ pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
 pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
     let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
-    const NAME: &str = "BOOT.JSON";
-    const CONTENT: &[u8] =
-        br#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#;
     let mut stored = [0; 512];
-    match filesystem.read_file(&mut device, NAME, &mut stored) {
+    match filesystem.read_file(&mut device, BOOT_JSON_NAME, &mut stored) {
         Ok(length) => {
-            if &stored[..length] != CONTENT {
+            if &stored[..length] != BOOT_JSON_CONTENT {
                 return Err("filesystem BOOT.JSON contains unexpected data");
             }
         }
         Err("filesystem file does not exist") => {
-            filesystem.write_file(&mut device, NAME, CONTENT)?;
+            filesystem.write_file(&mut device, BOOT_JSON_NAME, BOOT_JSON_CONTENT)?;
             let mut verified = [0; 512];
-            let length = filesystem.read_file(&mut device, NAME, &mut verified)?;
-            if &verified[..length] != CONTENT {
+            let length = filesystem.read_file(&mut device, BOOT_JSON_NAME, &mut verified)?;
+            if &verified[..length] != BOOT_JSON_CONTENT {
                 return Err("filesystem BOOT.JSON read-after-write verification failed");
             }
         }
@@ -102,6 +102,16 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
         return Err("filesystem replacement write did not persist the updated file");
     }
     Ok(())
+}
+
+pub(crate) fn read_boot_json(output: &mut [u8]) -> Result<usize, &'static str> {
+    let mut device = QemuAtaDevice::initialize()?;
+    let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    filesystem.read_file(&mut device, BOOT_JSON_NAME, output)
+}
+
+pub(crate) fn expected_boot_json() -> &'static [u8] {
+    BOOT_JSON_CONTENT
 }
 
 struct QemuAtaDevice {

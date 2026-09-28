@@ -63,6 +63,10 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     );
     let _ = writeln!(
         Serial,
+        "Ring-3 filesystem read verified: BOOT.JSON copied to a validated user buffer."
+    );
+    let _ = writeln!(
+        Serial,
         "Ring-3 protection boundary verified: supervisor-memory read fault recovered."
     );
     let scheduled_steps = crate::scheduler::verify_cooperative_round_robin()?;

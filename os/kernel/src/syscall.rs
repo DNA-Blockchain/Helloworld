@@ -6,7 +6,9 @@ use core::{
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const SYSCALL_EXIT: u64 = 1;
+const SYSCALL_READ_BOOT_JSON: u64 = 2;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
+const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
 const EXPECTED_USER_READ_PROTECTION_FAULT: u64 = 0b101;
 
 struct StaticGdt(UnsafeCell<[u64; 7]>);
@@ -74,11 +76,17 @@ core::arch::global_asm!(
     ".global syscall_interrupt_stub",
     "syscall_interrupt_stub:",
     "cld",
+    "push r12",
+    "mov r12, rsp",
     "mov rsi, rdi",
     "mov rdi, rax",
     "and rsp, -16",
     "call syscall_dispatch",
-    "jmp user_test_resume",
+    "cmp rax, -1",
+    "je user_test_resume",
+    "mov rsp, r12",
+    "pop r12",
+    "iretq",
     ".global user_test_resume",
     "user_test_resume:",
     "mov rsp, [rip + USER_TEST_RESUME_RSP]",
@@ -190,10 +198,20 @@ pub(crate) fn verify_user_page_fault(
 extern "C" fn syscall_dispatch(number: u64, argument: u64) -> u64 {
     if number == SYSCALL_EXIT {
         EXIT_CODE.store(argument, Ordering::Release);
-    } else {
-        EXIT_CODE.store(u64::MAX - 1, Ordering::Release);
+        return EXIT_SYSCALL_RETURN;
     }
-    0
+    if number == SYSCALL_READ_BOOT_JSON {
+        let mut file = [0; 512];
+        let length = match super::storage::read_boot_json(&mut file) {
+            Ok(length) => length,
+            Err(_) => return u64::MAX - 1,
+        };
+        if super::address_space::copy_to_user(argument, &file[..length]).is_err() {
+            return u64::MAX - 1;
+        }
+        return length as u64;
+    }
+    u64::MAX - 1
 }
 
 #[unsafe(no_mangle)]

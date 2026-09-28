@@ -33,6 +33,12 @@ this kernel.
   returns to the test harness on the TSS stack. These are bounded smoke tests,
   not a general syscall ABI, process loader, or general user-fault recovery
   mechanism.
+- Provides one additional test syscall that reads only the fixed `BOOT.JSON`
+  test file from `NOSFS v2` into a user buffer after validating that every
+  destination page is present, user-accessible, and writable. The ring-3 smoke
+  program verifies the returned bytes and exits with their length. This is not
+  a general filesystem API; arbitrary file paths, user-provided lengths, and
+  filesystem writes from user mode are not exposed.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`

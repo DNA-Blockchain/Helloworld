@@ -45,6 +45,50 @@ pub(crate) struct AddressSpace {
     record_index: usize,
 }
 
+pub(crate) fn copy_to_user(destination: u64, source: &[u8]) -> Result<(), &'static str> {
+    if source.is_empty() || destination >= (1 << 47) {
+        return Err("user destination range is empty or outside the lower canonical address space");
+    }
+    let end = destination
+        .checked_add(source.len() as u64)
+        .ok_or("user destination range overflow")?;
+    if end > (1 << 47) {
+        return Err("user destination range crosses the lower canonical address-space limit");
+    }
+
+    let root = read_cr3() & ENTRY_ADDRESS_MASK;
+    let first_page = destination & !(PAGE_SIZE - 1);
+    let last_page = (end - 1) & !(PAGE_SIZE - 1);
+    let mut page = first_page;
+    loop {
+        let mut table_physical = root;
+        for (level, index) in page_table_indices(page).into_iter().enumerate() {
+            let entry = unsafe { read_volatile(table_entry_pointer(table_physical, index)?) };
+            if entry & ENTRY_PRESENT == 0 || entry & ENTRY_USER == 0 {
+                return Err("user destination is not mapped with user permissions");
+            }
+            if entry & ENTRY_WRITABLE == 0 {
+                return Err("user destination mapping is not writable");
+            }
+            if level < 3 && entry & ENTRY_HUGE != 0 {
+                return Err("user destination uses an unsupported huge-page mapping");
+            }
+            table_physical = entry & ENTRY_ADDRESS_MASK;
+        }
+        if page == last_page {
+            break;
+        }
+        page = page
+            .checked_add(PAGE_SIZE)
+            .ok_or("user destination page range overflow")?;
+    }
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(source.as_ptr(), destination as *mut u8, source.len());
+    }
+    Ok(())
+}
+
 struct InterruptGuard {
     restore_interrupts: bool,
 }
@@ -149,6 +193,9 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
     let user_stack = user_code
         .checked_add(PAGE_SIZE)
         .ok_or("user stack address overflow")?;
+    let user_buffer = user_code
+        .checked_add(PAGE_SIZE * 2)
+        .ok_or("user data buffer address overflow")?;
     let kernel_root = read_cr3() & ENTRY_ADDRESS_MASK;
     let mut kernel_stack_base = None;
     let mut kernel_stack_pages = 0;
@@ -185,8 +232,9 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             return Err(error);
         }
     };
-    if let Err(error) =
-        map_user_page(&mut space, user_code).and_then(|()| map_user_page(&mut space, user_stack))
+    if let Err(error) = map_user_page(&mut space, user_code)
+        .and_then(|()| map_user_page(&mut space, user_stack))
+        .and_then(|()| map_user_page(&mut space, user_buffer))
     {
         destroy(&mut space)?;
         release_kernel_stack(kernel_stack_base, kernel_stack_pages)?;
@@ -215,6 +263,29 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         let exit_code = super::syscall::verify_user_exit(user_code as usize, user_stack_top)?;
         if exit_code != 42 {
             return Err("ring-3 test program returned an unexpected syscall exit value");
+        }
+
+        let mut file_read_code = [
+            0xb8, 0x02, 0x00, 0x00, 0x00, 0x48, 0xbf, 0, 0, 0, 0, 0, 0, 0, 0, 0xcd, 0x80, 0x48,
+            0x89, 0xc7, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
+        ];
+        file_read_code[7..15].copy_from_slice(&user_buffer.to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                file_read_code.as_ptr(),
+                user_code as *mut u8,
+                file_read_code.len(),
+            );
+        }
+        let file_length = super::storage::expected_boot_json().len() as u64;
+        let read_exit_code = super::syscall::verify_user_exit(user_code as usize, user_stack_top)?;
+        if read_exit_code != file_length {
+            return Err("ring-3 filesystem syscall returned an unexpected file length");
+        }
+        let user_file =
+            unsafe { core::slice::from_raw_parts(user_buffer as *const u8, file_length as usize) };
+        if user_file != super::storage::expected_boot_json() {
+            return Err("ring-3 filesystem syscall returned unexpected file contents");
         }
 
         let protected_address = verify_isolation as *const () as u64;
