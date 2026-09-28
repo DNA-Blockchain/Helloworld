@@ -23,6 +23,11 @@ const MAGIC: &[u8; 8] = b"NOSDISK1";
 const BOOT_JSON_NAME: &str = "BOOT.JSON";
 const BOOT_JSON_CONTENT: &[u8] =
     br#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#;
+const TEST_ELF_NAME: &str = "TEST.ELF";
+const TEST_ELF_SIZE: usize = 134;
+const TEST_ELF_CODE: [u8; 14] = [
+    0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x2a, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
+];
 
 pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
@@ -101,7 +106,56 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
     if &updated[..length] != UPDATE_CONTENT {
         return Err("filesystem replacement write did not persist the updated file");
     }
+
+    let test_elf = create_test_elf();
+    filesystem.write_file(&mut device, TEST_ELF_NAME, &test_elf)?;
+    let mut stored_elf = [0; TEST_ELF_SIZE];
+    let elf_length = filesystem.read_file(&mut device, TEST_ELF_NAME, &mut stored_elf)?;
+    if elf_length != TEST_ELF_SIZE || stored_elf != test_elf {
+        return Err("filesystem TEST.ELF read-after-write verification failed");
+    }
     Ok(())
+}
+
+pub(crate) fn read_test_elf(output: &mut [u8]) -> Result<usize, &'static str> {
+    let mut device = QemuAtaDevice::initialize()?;
+    let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    filesystem.read_file(&mut device, TEST_ELF_NAME, output)
+}
+
+fn create_test_elf() -> [u8; TEST_ELF_SIZE] {
+    let mut image = [0; TEST_ELF_SIZE];
+    image[..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
+    write_u16(&mut image, 16, 3);
+    write_u16(&mut image, 18, 62);
+    write_u32(&mut image, 20, 1);
+    write_u64(&mut image, 24, 0);
+    write_u64(&mut image, 32, 64);
+    write_u16(&mut image, 52, 64);
+    write_u16(&mut image, 54, 56);
+    write_u16(&mut image, 56, 1);
+
+    write_u32(&mut image, 64, 1);
+    write_u32(&mut image, 68, 5);
+    write_u64(&mut image, 72, 120);
+    write_u64(&mut image, 80, 0);
+    write_u64(&mut image, 96, TEST_ELF_CODE.len() as u64);
+    write_u64(&mut image, 104, SECTOR_SIZE as u64);
+    write_u64(&mut image, 112, 1);
+    image[120..].copy_from_slice(&TEST_ELF_CODE);
+    image
+}
+
+fn write_u16(output: &mut [u8], offset: usize, value: u16) {
+    output[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u32(output: &mut [u8], offset: usize, value: u32) {
+    output[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_u64(output: &mut [u8], offset: usize, value: u64) {
+    output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 pub(crate) fn read_boot_json(output: &mut [u8]) -> Result<usize, &'static str> {

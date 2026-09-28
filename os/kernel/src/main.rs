@@ -6,6 +6,7 @@ extern crate alloc;
 mod address_space;
 mod block_device;
 mod e1000;
+mod elf;
 mod filesystem;
 mod heap;
 mod memory;

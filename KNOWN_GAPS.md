@@ -42,8 +42,10 @@ confident-looking file imply more than it's actually verified.
   behavior on physical networks. The kernel has a QEMU-verified 100 Hz PIT
   clock, a fixed-metadata physical frame allocator below 4 GiB, a kernel-only
   4-KiB virtual-page arena tested for map/read/write/unmap/reuse, two CR3
-  address spaces with private user-marked pages, a QEMU-tested ring-3 program
-  that exits through one `int 0x80` syscall, and a kernel
+  address spaces   with private user-marked pages, a QEMU-tested bounded ELF64 static
+  x86_64 `ET_DYN` loader that loads `TEST.ELF` from the virtual disk, maps its
+  executable segment read-only and other mapped pages NX, verifies write/fetch
+  protection faults, and exits through one `int 0x80` syscall, and a kernel
   heap verified growing from 64 KiB for a large `Vec` allocation, then
   allocating and releasing `Box` values; it is capped at 512 KiB.
   A bounded cooperative context-switch test suspends and resumes two kernel
@@ -60,13 +62,15 @@ confident-looking file imply more than it's actually verified.
   allocation leaks or an interrupted metadata update can require manual
   recovery. There is no block cache, partition support, or user-facing storage
   syscall. It lacks general syscall
-  services and broad hardware support. User-mode networking sockets are not
-  implemented. A ring-3 smoke program can read only the fixed `BOOT.JSON` file
-  through a pointer-validated syscall; there is no general user filesystem API
-  or ELF process loader yet. The Python research agent remains a host
+  services and broad hardware support. The ELF loader does not support
+  relocations, dynamic linking, process arguments, general ELF binaries,
+  preemptive scheduling, or process-specific fault teardown. User-mode
+  networking sockets are not implemented. A ring-3 smoke program can read only
+  the fixed `BOOT.JSON` file through a pointer-validated syscall; there is no
+  general user filesystem API. The Python research agent remains a host
   application; running it on this OS requires an isolated user-space runtime,
-  executable loader, broader filesystem API, and network syscalls. It must not
-  run as privileged kernel code.
+  broader filesystem API, and network syscalls. It must not run as privileged
+  kernel code.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a

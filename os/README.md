@@ -26,13 +26,21 @@ this kernel.
   address. The QEMU check switches CR3 and verifies each space retains its
   own data, then releases its page tables and frames. This exercises page-table
   separation.
-- Enters ring 3 for a tiny machine-code test program, services its DPL-3
-  `int 0x80` exit syscall on a TSS-provided ring-0 stack, and verifies the
-  program returns exit code 42. It also attempts to read a supervisor-only
-  kernel address from ring 3, verifies the expected page-protection fault, and
-  returns to the test harness on the TSS stack. These are bounded smoke tests,
-  not a general syscall ABI, process loader, or general user-fault recovery
-  mechanism.
+- Loads a small static x86_64 ELF64 `ET_DYN` executable from `TEST.ELF` on
+  `NOSFS v2`. The bounded loader validates the ELF header and program-header
+  ranges, accepts only static `PT_LOAD` segments, applies a page-aligned load
+  bias, rejects writable-executable segments, caps image/file/segment sizes,
+  maps private user pages, zeroes BSS, and applies read/write/NX page
+  permissions. QEMU tests verify that user execution from the NX stack and a
+  write to read-only executable text both fault and return to the harness. The
+  ring-3 program calls `int 0x80` to exit with status 42.
+  This is a loader smoke test, not a general process manager: there is no
+  dynamic linker, relocations, arguments/environment, complete syscall ABI,
+  or fault-to-process teardown.
+- Also exercises a separate ring-3 machine-code test program that reads the
+  fixed `BOOT.JSON` file through a page-validated syscall and attempts to read
+  a supervisor-only kernel address. Only the expected protection fault is
+  recovered; other faults halt the kernel.
 - Provides one additional test syscall that reads only the fixed `BOOT.JSON`
   test file from `NOSFS v2` into a user buffer after validating that every
   destination page is present, user-accessible, and writable. The ring-3 smoke
@@ -86,11 +94,12 @@ loopback-only forward, and stops QEMU. `cargo run -- check-slaac` runs the
 controlled RA test described above. This validates the stack and driver only
 in QEMU, not on physical hardware or a production network.
 
-The Python research agent is still not executable in this kernel. `NOSFS v2`
-provides an initial persistent file API, but Python support requires a
-user-mode executable loader and a runtime port (including its memory,
-filesystem, and network interfaces). Those components must remain isolated in
-ring 3; the kernel does not execute research or downloaded code.
+The Python research agent is still not executable in this kernel. The ELF
+loader supports only a small static x86_64 executable, and `NOSFS v2` still has
+only a bounded kernel-side API and one fixed-file user syscall. Python support
+requires a suitable user-space runtime port plus general process, filesystem,
+and network interfaces. Those components must remain isolated in ring 3; the
+kernel does not execute research or downloaded code.
 
 ## Requirements
 

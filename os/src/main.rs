@@ -217,15 +217,19 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .any(|line| line.contains("Address spaces verified: private user mappings"))
         || !output
             .iter()
-            .any(|line| line.contains("Ring-3 syscall verified: test program exited with code 42"))
+            .any(|line| {
+                line.contains(
+                    "ELF user process verified: static x86_64 TEST.ELF loaded from NOSFS, NX/write protections applied, and exited with code 42",
+                )
+            })
         || !output.iter().any(|line| {
             line.contains(
-                "Ring-3 filesystem read verified: BOOT.JSON copied to a validated user buffer",
+                "Ring-3 syscalls verified: BOOT.JSON read into validated user memory and process exit",
             )
         })
         || !output.iter().any(|line| {
             line.contains(
-                "Ring-3 protection boundary verified: supervisor-memory read fault recovered",
+                "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",
             )
         })
         || !output.iter().any(|line| {
@@ -354,12 +358,14 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 saw_address_spaces |=
                     line.contains("Address spaces verified: private user mappings");
                 saw_user_syscall |=
-                    line.contains("Ring-3 syscall verified: test program exited with code 42");
+                    line.contains(
+                        "ELF user process verified: static x86_64 TEST.ELF loaded from NOSFS, NX/write protections applied, and exited with code 42",
+                    );
                 saw_user_filesystem_read |= line.contains(
-                    "Ring-3 filesystem read verified: BOOT.JSON copied to a validated user buffer",
+                    "Ring-3 syscalls verified: BOOT.JSON read into validated user memory and process exit",
                 );
                 saw_user_fault_recovery |= line.contains(
-                    "Ring-3 protection boundary verified: supervisor-memory read fault recovered",
+                    "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",
                 );
                 saw_scheduler |= line
                     .contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions");
@@ -447,7 +453,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ring-3 syscall: {saw_user_syscall}, ring-3 filesystem read: {saw_user_filesystem_read}, user protection-fault recovery: {saw_user_fault_recovery}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ELF user process: {saw_user_syscall}, ring-3 filesystem read: {saw_user_filesystem_read}, user protection-fault recovery: {saw_user_fault_recovery}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

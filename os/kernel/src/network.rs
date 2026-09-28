@@ -58,16 +58,16 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     let user_exit_code = crate::address_space::verify_user_syscall()?;
     let _ = writeln!(
         Serial,
-        "Ring-3 syscall verified: test program exited with code {} via int 0x80.",
+        "ELF user process verified: static x86_64 TEST.ELF loaded from NOSFS, NX/write protections applied, and exited with code {}.",
         user_exit_code
     );
     let _ = writeln!(
         Serial,
-        "Ring-3 filesystem read verified: BOOT.JSON copied to a validated user buffer."
+        "Ring-3 syscalls verified: BOOT.JSON read into validated user memory and process exit."
     );
     let _ = writeln!(
         Serial,
-        "Ring-3 protection boundary verified: supervisor-memory read fault recovered."
+        "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered."
     );
     let scheduled_steps = crate::scheduler::verify_cooperative_round_robin()?;
     let _ = writeln!(

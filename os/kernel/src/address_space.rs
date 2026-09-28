@@ -9,6 +9,7 @@ const ENTRY_PRESENT: u64 = 1;
 const ENTRY_WRITABLE: u64 = 1 << 1;
 const ENTRY_USER: u64 = 1 << 2;
 const ENTRY_HUGE: u64 = 1 << 7;
+const ENTRY_NO_EXECUTE: u64 = 1 << 63;
 const ENTRY_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const USER_PML4_LIMIT: usize = 256;
 const USER_TEST_OFFSET: u64 = 0x0040_0000;
@@ -46,16 +47,38 @@ pub(crate) struct AddressSpace {
 }
 
 pub(crate) fn copy_to_user(destination: u64, source: &[u8]) -> Result<(), &'static str> {
-    if source.is_empty() || destination >= (1 << 47) {
-        return Err("user destination range is empty or outside the lower canonical address space");
+    validate_user_range(destination, source.len(), true)?;
+    unsafe {
+        core::ptr::copy_nonoverlapping(source.as_ptr(), destination as *mut u8, source.len());
+    }
+    Ok(())
+}
+
+pub(crate) fn zero_user_range(destination: u64, length: usize) -> Result<(), &'static str> {
+    if length == 0 {
+        return Ok(());
+    }
+    validate_user_range(destination, length, true)?;
+    unsafe {
+        core::ptr::write_bytes(destination as *mut u8, 0, length);
+    }
+    Ok(())
+}
+
+fn validate_user_range(
+    destination: u64,
+    length: usize,
+    require_write: bool,
+) -> Result<(), &'static str> {
+    if length == 0 || destination >= (1 << 47) {
+        return Err("user memory range is empty or outside the lower canonical address space");
     }
     let end = destination
-        .checked_add(source.len() as u64)
-        .ok_or("user destination range overflow")?;
+        .checked_add(length as u64)
+        .ok_or("user memory range overflow")?;
     if end > (1 << 47) {
-        return Err("user destination range crosses the lower canonical address-space limit");
+        return Err("user memory range crosses the lower canonical address-space limit");
     }
-
     let root = read_cr3() & ENTRY_ADDRESS_MASK;
     let first_page = destination & !(PAGE_SIZE - 1);
     let last_page = (end - 1) & !(PAGE_SIZE - 1);
@@ -65,13 +88,13 @@ pub(crate) fn copy_to_user(destination: u64, source: &[u8]) -> Result<(), &'stat
         for (level, index) in page_table_indices(page).into_iter().enumerate() {
             let entry = unsafe { read_volatile(table_entry_pointer(table_physical, index)?) };
             if entry & ENTRY_PRESENT == 0 || entry & ENTRY_USER == 0 {
-                return Err("user destination is not mapped with user permissions");
+                return Err("user memory range is not fully user-mapped");
             }
-            if entry & ENTRY_WRITABLE == 0 {
-                return Err("user destination mapping is not writable");
+            if require_write && entry & ENTRY_WRITABLE == 0 {
+                return Err("user memory range is not writable");
             }
             if level < 3 && entry & ENTRY_HUGE != 0 {
-                return Err("user destination uses an unsupported huge-page mapping");
+                return Err("user memory range uses an unsupported huge-page mapping");
             }
             table_physical = entry & ENTRY_ADDRESS_MASK;
         }
@@ -80,11 +103,7 @@ pub(crate) fn copy_to_user(destination: u64, source: &[u8]) -> Result<(), &'stat
         }
         page = page
             .checked_add(PAGE_SIZE)
-            .ok_or("user destination page range overflow")?;
-    }
-
-    unsafe {
-        core::ptr::copy_nonoverlapping(source.as_ptr(), destination as *mut u8, source.len());
+            .ok_or("user memory page range overflow")?;
     }
     Ok(())
 }
@@ -108,6 +127,7 @@ pub(crate) fn initialize(physical_memory_offset: u64) -> Result<(), &'static str
     if INITIALIZED.load(Ordering::Relaxed) {
         return Err("address-space manager was initialized more than once");
     }
+    super::syscall::enable_user_memory_protections()?;
     if physical_memory_offset % PAGE_SIZE != 0 {
         return Err("physical memory mapping offset is not page-aligned");
     }
@@ -196,6 +216,9 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
     let user_buffer = user_code
         .checked_add(PAGE_SIZE * 2)
         .ok_or("user data buffer address overflow")?;
+    let elf_load_base = user_code
+        .checked_add(PAGE_SIZE * 3)
+        .ok_or("ELF load address overflow")?;
     let kernel_root = read_cr3() & ENTRY_ADDRESS_MASK;
     let mut kernel_stack_base = None;
     let mut kernel_stack_pages = 0;
@@ -232,9 +255,8 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             return Err(error);
         }
     };
-    if let Err(error) = map_user_page(&mut space, user_code)
-        .and_then(|()| map_user_page(&mut space, user_stack))
-        .and_then(|()| map_user_page(&mut space, user_buffer))
+    if let Err(error) =
+        map_user_page(&mut space, user_stack).and_then(|()| map_user_page(&mut space, user_buffer))
     {
         destroy(&mut space)?;
         release_kernel_stack(kernel_stack_base, kernel_stack_pages)?;
@@ -249,6 +271,8 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
 
     let result = (|| {
         activate(&space)?;
+        map_user_page(&mut space, user_code)?;
+        set_user_page_permissions(user_code, true, true)?;
         if !kernel_mapping_is_supervisor(&space)? {
             return Err("ring-3 fault test requires a supervisor-only kernel mapping");
         }
@@ -305,6 +329,54 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             user_code as usize,
             user_stack_top,
             protected_address,
+            0b101,
+        )?;
+
+        let mut elf_image = [0; 512];
+        let elf_length = super::storage::read_test_elf(&mut elf_image)?;
+        let mut malformed_image = elf_image;
+        malformed_image[0] = 0;
+        if super::elf::load(&mut space, &malformed_image[..elf_length], elf_load_base).is_ok() {
+            return Err("ELF loader accepted an image with an invalid signature");
+        }
+        let loaded = super::elf::load(&mut space, &elf_image[..elf_length], elf_load_base)?;
+        if loaded.entry != elf_load_base || loaded.load_bias != elf_load_base {
+            return Err("ELF loader returned an unexpected process entry point");
+        }
+        let process_exit = super::syscall::verify_user_exit(loaded.entry as usize, user_stack_top)?;
+        if process_exit != 42 {
+            return Err("ELF user process exited with an unexpected status");
+        }
+        let mut nx_fault_code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0];
+        nx_fault_code[2..10].copy_from_slice(&user_stack.to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                nx_fault_code.as_ptr(),
+                user_code as *mut u8,
+                nx_fault_code.len(),
+            );
+        }
+        super::syscall::verify_user_page_fault(
+            user_code as usize,
+            user_stack_top,
+            user_stack,
+            0b1_0101,
+        )?;
+
+        let mut write_fault_code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xc7, 0x00, 0, 0, 0, 0];
+        write_fault_code[2..10].copy_from_slice(&elf_load_base.to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                write_fault_code.as_ptr(),
+                user_code as *mut u8,
+                write_fault_code.len(),
+            );
+        }
+        super::syscall::verify_user_page_fault(
+            user_code as usize,
+            user_stack_top,
+            elf_load_base,
+            0b111,
         )?;
         Ok(exit_code)
     })();
@@ -494,7 +566,7 @@ fn map_user_page(space: &mut AddressSpace, virtual_address: u64) -> Result<(), &
         unsafe {
             write_volatile(
                 leaf,
-                physical_address | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER,
+                physical_address | ENTRY_PRESENT | ENTRY_WRITABLE | ENTRY_USER | ENTRY_NO_EXECUTE,
             );
         }
         Ok(())
@@ -516,6 +588,59 @@ fn map_user_page(space: &mut AddressSpace, virtual_address: u64) -> Result<(), &
         physical_address,
     };
     Ok(())
+}
+
+pub(crate) fn map_user_page_for_elf(
+    space: &mut AddressSpace,
+    virtual_address: u64,
+) -> Result<(), &'static str> {
+    map_user_page(space, virtual_address)
+}
+
+pub(crate) fn set_user_page_permissions(
+    virtual_address: u64,
+    writable: bool,
+    executable: bool,
+) -> Result<(), &'static str> {
+    if virtual_address % PAGE_SIZE != 0 || virtual_address >= (1 << 47) {
+        return Err("user permission address must be an aligned lower-half page");
+    }
+    let root = read_cr3() & ENTRY_ADDRESS_MASK;
+    let indices = page_table_indices(virtual_address);
+    let mut table_physical = root;
+    for (level, index) in indices.iter().enumerate() {
+        let entry_pointer = table_entry_pointer(table_physical, *index)?;
+        let mut entry = unsafe { read_volatile(entry_pointer) };
+        if entry & ENTRY_PRESENT == 0 || entry & ENTRY_USER == 0 {
+            return Err("cannot set permissions on a non-user mapping");
+        }
+        if level == 3 {
+            if writable {
+                entry |= ENTRY_WRITABLE;
+            } else {
+                entry &= !ENTRY_WRITABLE;
+            }
+            if executable {
+                entry &= !ENTRY_NO_EXECUTE;
+            } else {
+                entry |= ENTRY_NO_EXECUTE;
+            }
+            unsafe {
+                write_volatile(entry_pointer, entry);
+                core::arch::asm!(
+                    "invlpg [{}]",
+                    in(reg) virtual_address,
+                    options(nostack, preserves_flags)
+                );
+            }
+            return Ok(());
+        }
+        if entry & ENTRY_HUGE != 0 {
+            return Err("cannot set permissions through a huge-page mapping");
+        }
+        table_physical = entry & ENTRY_ADDRESS_MASK;
+    }
+    Err("user mapping permission walk did not reach a leaf")
 }
 
 fn activate(space: &AddressSpace) -> Result<(), &'static str> {
