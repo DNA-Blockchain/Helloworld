@@ -2,7 +2,7 @@ use core::{
     cell::UnsafeCell,
     mem::size_of,
     ptr,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
 
 const TASK_COUNT: usize = 2;
@@ -13,6 +13,10 @@ const TASK_B_CONTEXT: usize = 2;
 const STACK_PAGES: usize = 4;
 const PAGE_SIZE: usize = 4096;
 const EXPECTED_TRACE: [usize; 5] = [1, 2, 1, 2, 1];
+const TASK_READY: u8 = 0;
+const TASK_RUNNING: u8 = 1;
+const TASK_BLOCKED: u8 = 2;
+const TASK_EXITED: u8 = 3;
 
 struct TaskContexts(UnsafeCell<[usize; CONTEXT_COUNT]>);
 
@@ -26,6 +30,9 @@ static TRACE_LENGTH: AtomicUsize = AtomicUsize::new(0);
 static TRACE: [AtomicUsize; EXPECTED_TRACE.len()] =
     [const { AtomicUsize::new(0) }; EXPECTED_TRACE.len()];
 static CHECKS_PASSED: AtomicBool = AtomicBool::new(true);
+static TASK_STATES: [AtomicU8; TASK_COUNT] = [const { AtomicU8::new(TASK_READY) }; TASK_COUNT];
+static TASK_A_WAITED: AtomicBool = AtomicBool::new(false);
+static TASK_A_WOKEN: AtomicBool = AtomicBool::new(false);
 
 core::arch::global_asm!(
     ".global task_context_switch",
@@ -68,6 +75,10 @@ pub(crate) fn verify_cooperative_round_robin() -> Result<usize, &'static str> {
     TRACE_LENGTH.store(0, Ordering::Relaxed);
     CHECKS_PASSED.store(true, Ordering::Relaxed);
     ACTIVE_CONTEXT.store(ROOT_CONTEXT, Ordering::Relaxed);
+    TASK_STATES[TASK_A_CONTEXT - 1].store(TASK_READY, Ordering::Relaxed);
+    TASK_STATES[TASK_B_CONTEXT - 1].store(TASK_READY, Ordering::Relaxed);
+    TASK_A_WAITED.store(false, Ordering::Relaxed);
+    TASK_A_WOKEN.store(false, Ordering::Relaxed);
 
     let stack_a = stacks[0].ok_or("task A stack is missing")?;
     let stack_b = stacks[1].ok_or("task B stack is missing")?;
@@ -89,6 +100,10 @@ pub(crate) fn verify_cooperative_round_robin() -> Result<usize, &'static str> {
             .enumerate()
             .all(|(index, expected)| TRACE[index].load(Ordering::Relaxed) == *expected);
     let checks_passed = CHECKS_PASSED.load(Ordering::Acquire);
+    let lifecycle_passed = TASK_A_WAITED.load(Ordering::Acquire)
+        && TASK_A_WOKEN.load(Ordering::Acquire)
+        && TASK_STATES[TASK_A_CONTEXT - 1].load(Ordering::Acquire) == TASK_EXITED
+        && TASK_STATES[TASK_B_CONTEXT - 1].load(Ordering::Acquire) == TASK_READY;
     for base in stacks.into_iter().flatten() {
         release_stack(base)?;
     }
@@ -97,6 +112,9 @@ pub(crate) fn verify_cooperative_round_robin() -> Result<usize, &'static str> {
     }
     if !checks_passed {
         return Err("a resumed task failed its stack or continuation check");
+    }
+    if !lifecycle_passed {
+        return Err("cooperative task block/wake lifecycle reached an unexpected state");
     }
     Ok(trace_length)
 }
@@ -161,6 +179,34 @@ fn context_slot(index: usize) -> *mut usize {
 
 unsafe fn switch_to(next_context: usize) {
     let current_context = ACTIVE_CONTEXT.load(Ordering::Relaxed);
+    if current_context != ROOT_CONTEXT {
+        let current_state = &TASK_STATES[current_context - 1];
+        if current_state.load(Ordering::Acquire) == TASK_RUNNING
+            && current_state
+                .compare_exchange(
+                    TASK_RUNNING,
+                    TASK_READY,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_err()
+        {
+            CHECKS_PASSED.store(false, Ordering::Release);
+        }
+    }
+    if next_context != ROOT_CONTEXT {
+        if TASK_STATES[next_context - 1]
+            .compare_exchange(
+                TASK_READY,
+                TASK_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            CHECKS_PASSED.store(false, Ordering::Release);
+        }
+    }
     ACTIVE_CONTEXT.store(next_context, Ordering::Relaxed);
     let next_stack = unsafe { context_slot(next_context).read() };
     unsafe {
@@ -188,8 +234,12 @@ extern "C" fn task_a() -> ! {
         record_step(1);
         wait_one_tick();
         let next = if TRACE_LENGTH.load(Ordering::Acquire) == EXPECTED_TRACE.len() {
+            TASK_STATES[TASK_A_CONTEXT - 1].store(TASK_EXITED, Ordering::Release);
             ROOT_CONTEXT
         } else {
+            if !TASK_A_WAITED.swap(true, Ordering::AcqRel) {
+                TASK_STATES[TASK_A_CONTEXT - 1].store(TASK_BLOCKED, Ordering::Release);
+            }
             TASK_B_CONTEXT
         };
         unsafe {
@@ -202,6 +252,17 @@ extern "C" fn task_b() -> ! {
     loop {
         record_step(2);
         wait_one_tick();
+        if TASK_STATES[TASK_A_CONTEXT - 1]
+            .compare_exchange(
+                TASK_BLOCKED,
+                TASK_READY,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            TASK_A_WOKEN.store(true, Ordering::Release);
+        }
         unsafe {
             switch_to(TASK_A_CONTEXT);
         }
@@ -226,6 +287,7 @@ fn record_step(task_id: usize) {
     if task_index >= TASK_COUNT
         || stack_pointer < STACK_BASES[task_index].load(Ordering::Relaxed)
         || stack_pointer >= STACK_LIMITS[task_index].load(Ordering::Relaxed)
+        || TASK_STATES[task_index].load(Ordering::Acquire) != TASK_RUNNING
     {
         CHECKS_PASSED.store(false, Ordering::Relaxed);
     }

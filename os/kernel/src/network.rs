@@ -77,7 +77,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     let scheduled_steps = crate::scheduler::verify_cooperative_round_robin()?;
     let _ = writeln!(
         Serial,
-        "Cooperative context switching verified: {} A/B/A/B/A resumptions on saved task stacks.",
+        "Cooperative scheduler verified: {} A/B/A/B/A steps with blocked-task wakeup and exit.",
         scheduled_steps
     );
     let mut config = Config::new(EthernetAddress(device.mac()).into());

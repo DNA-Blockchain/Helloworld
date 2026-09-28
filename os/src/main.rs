@@ -237,7 +237,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             )
         })
         || !output.iter().any(|line| {
-            line.contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions")
+            line.contains("Cooperative scheduler verified: 5 A/B/A/B/A steps")
         })
         || !output.iter().any(|line| {
             line.contains("Block device verified: 4096 sectors; persistent test record generation ")
@@ -377,8 +377,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 saw_user_fault_recovery |= line.contains(
                     "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",
                 );
-                saw_scheduler |= line
-                    .contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions");
+                saw_scheduler |= line.contains("Cooperative scheduler verified: 5 A/B/A/B/A steps");
                 saw_storage |= line.contains(
                     "Block device verified: 4096 sectors; persistent test record generation ",
                 );

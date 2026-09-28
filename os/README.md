@@ -61,10 +61,11 @@ this kernel.
 - Runs a one-shot kernel task on a separate 16-KiB stack and verifies that it
   can allocate from the kernel heap. This is a stack-switching test, not a
   process or preemptive scheduler.
-- Includes a bounded cooperative context-switch check: two kernel tasks
-  suspend and resume across five timer-paced A/B/A/B/A steps, preserving their
-  saved stack contexts on separate 16-KiB stacks. It is not preemptive and does
-  not schedule ring-3 processes.
+- Includes a bounded cooperative scheduler check: two kernel tasks switch
+  across five timer-paced A/B/A/B/A steps on separate 16-KiB stacks. The check
+  exercises ready, running, blocked, and exited states, including waking a
+  blocked task. It is not preemptive, does not block ring-3 processes, and does
+  not yet schedule the network service.
 - Uses `smoltcp` as a no-heap dual-stack network layer with Ethernet, ARP,
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an

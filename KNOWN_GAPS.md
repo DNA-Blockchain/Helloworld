@@ -50,9 +50,11 @@ confident-looking file imply more than it's actually verified.
   and lets the test harness reclaim its user pages, and a kernel
   heap verified growing from 64 KiB for a large `Vec` allocation, then
   allocating and releasing `Box` values; it is capped at 512 KiB.
-  A bounded cooperative context-switch test suspends and resumes two kernel
-  tasks across separate saved stacks, but there is not yet preemptive scheduling
-  or a general process model. QEMU verifies a ring-3 read of a supervisor-only
+  A bounded cooperative scheduler test switches two kernel tasks across
+  separate saved stacks and verifies ready/running/blocked/exited transitions,
+  including waking a blocked task. It does not schedule ring-3 processes or the
+  network service; there is not yet preemptive scheduling or a general process
+  model. QEMU verifies a ring-3 read of a supervisor-only
   mapping faults and returns to the harness. Normal exit, expected NX/write
   faults, and an unexpected user page fault all reach test-harness cleanup.
   The harness also recovers from a ring-3 invalid-opcode exception and
