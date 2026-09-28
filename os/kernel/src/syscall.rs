@@ -6,7 +6,9 @@ use core::{
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const SYSCALL_EXIT: u64 = 1;
-const SYSCALL_READ_BOOT_JSON: u64 = 2;
+const SYSCALL_READ_FILE: u64 = 2;
+const SYSCALL_ERROR: u64 = u64::MAX - 1;
+const MAX_FILENAME_BYTES: usize = 16;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
 const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
 
@@ -78,6 +80,8 @@ core::arch::global_asm!(
     "cld",
     "push r12",
     "mov r12, rsp",
+    "mov rcx, rdx",
+    "mov rdx, rsi",
     "mov rsi, rdi",
     "mov rdi, rax",
     "and rsp, -16",
@@ -240,23 +244,56 @@ pub(crate) fn verify_user_page_fault(
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn syscall_dispatch(number: u64, argument: u64) -> u64 {
+extern "C" fn syscall_dispatch(
+    number: u64,
+    filename_address: u64,
+    output_address: u64,
+    output_capacity: u64,
+) -> u64 {
     if number == SYSCALL_EXIT {
-        EXIT_CODE.store(argument, Ordering::Release);
+        EXIT_CODE.store(filename_address, Ordering::Release);
         return EXIT_SYSCALL_RETURN;
     }
-    if number == SYSCALL_READ_BOOT_JSON {
-        let mut file = [0; 512];
-        let length = match super::storage::read_boot_json(&mut file) {
-            Ok(length) => length,
-            Err(_) => return u64::MAX - 1,
+    if number == SYSCALL_READ_FILE {
+        let Ok(capacity) = usize::try_from(output_capacity) else {
+            return SYSCALL_ERROR;
         };
-        if super::address_space::copy_to_user(argument, &file[..length]).is_err() {
-            return u64::MAX - 1;
+        if capacity == 0 || capacity > super::filesystem::MAX_FILE_SIZE {
+            return SYSCALL_ERROR;
         }
-        return length as u64;
+        if super::address_space::validate_user_buffer(output_address, capacity, true).is_err() {
+            return SYSCALL_ERROR;
+        }
+        let mut filename = [0; MAX_FILENAME_BYTES];
+        let mut filename_length = None;
+        for (index, byte) in filename.iter_mut().enumerate() {
+            let Some(address) = filename_address.checked_add(index as u64) else {
+                return SYSCALL_ERROR;
+            };
+            if super::address_space::copy_from_user(address, core::slice::from_mut(byte)).is_err() {
+                return SYSCALL_ERROR;
+            }
+            if *byte == 0 {
+                filename_length = Some(index);
+                break;
+            }
+        }
+        let Some(filename_length) = filename_length else {
+            return SYSCALL_ERROR;
+        };
+        let Ok(filename) = core::str::from_utf8(&filename[..filename_length]) else {
+            return SYSCALL_ERROR;
+        };
+        if filename.is_empty() {
+            return SYSCALL_ERROR;
+        }
+        let output =
+            unsafe { core::slice::from_raw_parts_mut(output_address as *mut u8, capacity) };
+        return super::storage::read_named_file(filename, output)
+            .map(|length| length as u64)
+            .unwrap_or(SYSCALL_ERROR);
     }
-    u64::MAX - 1
+    SYSCALL_ERROR
 }
 
 #[unsafe(no_mangle)]

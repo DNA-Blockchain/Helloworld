@@ -200,10 +200,10 @@ fn write_u64(output: &mut [u8], offset: usize, value: u64) {
     output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn read_boot_json(output: &mut [u8]) -> Result<usize, &'static str> {
+pub(crate) fn read_named_file(name: &str, output: &mut [u8]) -> Result<usize, &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
     let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
-    filesystem.read_file(&mut device, BOOT_JSON_NAME, output)
+    filesystem.read_file(&mut device, name, output)
 }
 
 pub(crate) fn expected_boot_json() -> &'static [u8] {

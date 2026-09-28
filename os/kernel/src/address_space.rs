@@ -54,6 +54,26 @@ pub(crate) fn copy_to_user(destination: u64, source: &[u8]) -> Result<(), &'stat
     Ok(())
 }
 
+pub(crate) fn copy_from_user(source: u64, destination: &mut [u8]) -> Result<(), &'static str> {
+    validate_user_range(source, destination.len(), false)?;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            source as *const u8,
+            destination.as_mut_ptr(),
+            destination.len(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_user_buffer(
+    address: u64,
+    length: usize,
+    require_write: bool,
+) -> Result<(), &'static str> {
+    validate_user_range(address, length, require_write)
+}
+
 pub(crate) fn zero_user_range(destination: u64, length: usize) -> Result<(), &'static str> {
     if length == 0 {
         return Ok(());
@@ -307,11 +327,22 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             return Err("ring-3 test program returned an unexpected syscall exit value");
         }
 
-        let mut file_read_code = [
-            0xb8, 0x02, 0x00, 0x00, 0x00, 0x48, 0xbf, 0, 0, 0, 0, 0, 0, 0, 0, 0xcd, 0x80, 0x48,
-            0x89, 0xc7, 0xb8, 0x01, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
-        ];
+        copy_to_user(user_buffer, b"BOOT.JSON\0")?;
+        let file_output = user_buffer + 128;
+        let file_capacity = PAGE_SIZE_BYTES - 128;
+        let mut file_read_code = [0; 49];
+        file_read_code[..5].copy_from_slice(&[0xb8, 0x02, 0, 0, 0]);
+        file_read_code[5..7].copy_from_slice(&[0x48, 0xbf]);
+        file_read_code[15..17].copy_from_slice(&[0x48, 0xbe]);
+        file_read_code[25..27].copy_from_slice(&[0x48, 0xba]);
+        file_read_code[35..37].copy_from_slice(&[0xcd, 0x80]);
+        file_read_code[37..40].copy_from_slice(&[0x48, 0x89, 0xc7]);
+        file_read_code[40..45].copy_from_slice(&[0xb8, 0x01, 0, 0, 0]);
+        file_read_code[45..47].copy_from_slice(&[0xcd, 0x80]);
+        file_read_code[47..49].copy_from_slice(&[0x0f, 0x0b]);
         file_read_code[7..15].copy_from_slice(&user_buffer.to_le_bytes());
+        file_read_code[17..25].copy_from_slice(&(file_output as u64).to_le_bytes());
+        file_read_code[27..35].copy_from_slice(&(file_capacity as u64).to_le_bytes());
         unsafe {
             core::ptr::copy_nonoverlapping(
                 file_read_code.as_ptr(),
@@ -322,15 +353,41 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         let file_length = super::storage::expected_boot_json().len() as u64;
         let read_exit_code = super::syscall::verify_user_exit(user_code as usize, user_stack_top)?;
         if read_exit_code != file_length {
-            return Err("ring-3 filesystem syscall returned an unexpected file length");
+            return Err("ring-3 named-file syscall returned an unexpected file length");
         }
         let user_file =
-            unsafe { core::slice::from_raw_parts(user_buffer as *const u8, file_length as usize) };
+            unsafe { core::slice::from_raw_parts(file_output as *const u8, file_length as usize) };
         if user_file != super::storage::expected_boot_json() {
-            return Err("ring-3 filesystem syscall returned unexpected file contents");
+            return Err("ring-3 named-file syscall returned unexpected file contents");
         }
 
         let protected_address = verify_isolation as *const () as u64;
+        file_read_code[7..15].copy_from_slice(&user_buffer.to_le_bytes());
+        file_read_code[17..25].copy_from_slice(&protected_address.to_le_bytes());
+        file_read_code[27..35].copy_from_slice(&(file_capacity as u64).to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                file_read_code.as_ptr(),
+                user_code as *mut u8,
+                file_read_code.len(),
+            );
+        }
+        if super::syscall::verify_user_exit(user_code as usize, user_stack_top)? != u64::MAX - 1 {
+            return Err("ring-3 named-file syscall accepted a supervisor output pointer");
+        }
+        file_read_code[7..15].copy_from_slice(&protected_address.to_le_bytes());
+        file_read_code[17..25].copy_from_slice(&(file_output as u64).to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                file_read_code.as_ptr(),
+                user_code as *mut u8,
+                file_read_code.len(),
+            );
+        }
+        if super::syscall::verify_user_exit(user_code as usize, user_stack_top)? != u64::MAX - 1 {
+            return Err("ring-3 named-file syscall accepted a supervisor filename pointer");
+        }
+
         let mut fault_code = [
             0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x8b, 0x00, 0xb8, 0x2a, 0x00, 0x00, 0x00,
             0xcd, 0x80, 0x0f, 0x0b,

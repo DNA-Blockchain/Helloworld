@@ -40,16 +40,17 @@ this kernel.
   This is a bounded lifecycle smoke test, not a general process manager: there
   is no dynamic linker, relocations, arguments/environment, complete syscall
   ABI, or teardown after arbitrary process faults.
-- Also exercises a separate ring-3 machine-code test program that reads the
-  fixed `BOOT.JSON` file through a page-validated syscall and attempts to read
-  a supervisor-only kernel address. Only the expected protection fault is
-  recovered; other faults halt the kernel.
-- Provides one additional test syscall that reads only the fixed `BOOT.JSON`
-  test file from `NOSFS v2` into a user buffer after validating that every
-  destination page is present, user-accessible, and writable. The ring-3 smoke
-  program verifies the returned bytes and exits with their length. This is not
-  a general filesystem API; arbitrary file paths, user-provided lengths, and
-  filesystem writes from user mode are not exposed.
+- Also exercises a separate ring-3 machine-code test program that reads a
+  NUL-terminated filename through the read-only user-copy path, requests that
+  file from `NOSFS v2`, and receives it into a fully validated writable user
+  buffer. The syscall bounds the filename to 15 bytes and the output length to
+  the filesystem's 256-KiB file limit. QEMU checks a valid `BOOT.JSON` read and
+  rejects supervisor pointers for both the filename and output buffer. The
+  current `int 0x80` ABI uses syscall 1 for exit (`RDI` = status) and syscall 2
+  for read-file (`RDI` = filename pointer, `RSI` = output pointer, `RDX` =
+  output capacity); it returns a byte count or `u64::MAX - 1` on error.
+  User-mode writes, directories, permissions, and concurrent filesystem access
+  are not exposed.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
@@ -101,7 +102,7 @@ The Python research agent is still not executable in this kernel. The chosen
 next runtime direction is MicroPython in a separate ring-3 ELF process, not
 Python embedded in the kernel. This is a target architecture, not an implemented
 runtime: the current loader, process memory limits, 256-KiB filesystem file
-limit, and fixed-file syscall are not yet sufficient to load and run
+limit, and minimal read-only file syscall are not yet sufficient to load and run
 MicroPython. Work must first provide a bounded user-process lifecycle,
 appropriate runtime storage, and validated JSON/filesystem/network interfaces.
 Only a reviewed research client should be allowed to access configured public

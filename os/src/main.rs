@@ -228,7 +228,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             })
         || !output.iter().any(|line| {
             line.contains(
-                "Ring-3 syscalls verified: BOOT.JSON read into validated user memory and process exit",
+                "Ring-3 syscalls verified: named BOOT.JSON read into validated user memory; supervisor output pointer rejected",
             )
         })
         || !output.iter().any(|line| {
@@ -369,7 +369,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                         "ELF process isolation verified: dedicated CR3, TEST.ELF exit 42, NX/write fault recovery, and harness page reclamation",
                     );
                 saw_user_filesystem_read |= line.contains(
-                    "Ring-3 syscalls verified: BOOT.JSON read into validated user memory and process exit",
+                    "Ring-3 syscalls verified: named BOOT.JSON read into validated user memory; supervisor output pointer rejected",
                 );
                 saw_user_fault_recovery |= line.contains(
                     "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",

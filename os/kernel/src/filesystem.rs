@@ -6,6 +6,7 @@ const ROOT_DIRECTORY_LBA: u32 = 10;
 const FIRST_DATA_LBA: u32 = 11;
 const DIRECTORY_ENTRY_SIZE: usize = 32;
 const MAX_FILE_SECTORS: usize = 512;
+pub(crate) const MAX_FILE_SIZE: usize = MAX_FILE_SECTORS * SECTOR_SIZE;
 const SUPERBLOCK_MAGIC: &[u8; 8] = b"NOSFS001";
 const FILESYSTEM_VERSION: u32 = 2;
 const ENTRY_NAME_SIZE: usize = 16;

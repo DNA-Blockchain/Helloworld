@@ -65,16 +65,17 @@ confident-looking file imply more than it's actually verified.
   round-trips a 24-KiB runtime-sized file. It has no journal,
   directories, permissions, safe concurrent writers, or general crash recovery;
   allocation leaks or an interrupted metadata update can require manual
-  recovery. There is no block cache, partition support, or user-facing storage
+  recovery. There is no block cache, partition support, or user-facing write
   syscall. It lacks general syscall
   services and broad hardware support. The ELF loader does not support
   relocations, dynamic linking, process arguments, general ELF binaries,
   preemptive scheduling, or process-specific fault teardown. User-mode
-  networking sockets are not implemented. A ring-3 smoke program can read only
-  the fixed `BOOT.JSON` file through a pointer-validated syscall; there is no
-  general user filesystem API. The Python research agent remains a host
-  application; running it on this OS requires an isolated user-space runtime,
-  broader filesystem API, and network syscalls. It must not run as privileged
+  networking sockets are not implemented. A ring-3 syscall can read a named
+  flat file using bounded, validated user pointers; user-mode writes,
+  directories, and file permissions are absent. QEMU verifies that neither the
+  filename nor output pointer can address supervisor memory. The Python research agent
+  remains a host application; running it on this OS requires an isolated
+  user-space runtime, broader filesystem API, and network syscalls. It must not run as privileged
   kernel code. MicroPython has not yet been ported or run in the guest.
   The driver only supports the
   QEMU 82540EM model; the
