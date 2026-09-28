@@ -49,7 +49,7 @@ if (-not (Test-Path $KeyFile) -and -not $env:NETWORK_OS_BACKUP_PASSPHRASE) {
 
 $LogPath = Join-Path $ProjectDir "backup_task.log"
 $Action = New-ScheduledTaskAction -Execute "cmd.exe" -WorkingDirectory $ProjectDir `
-    -Argument "/c `"`"$($PythonCmd.Source)`" backup.py run --root ""$ProjectRoot"" --apply-retention --audit ""$ProjectRoot\system_audit.jsonl"" >> `"$LogPath`" 2>&1`""
+    -Argument "/c `"`"$($PythonCmd.Source)`" backup.py --root ""$ProjectRoot"" run --apply-retention --audit ""$ProjectRoot\system_audit.jsonl"" >> `"$LogPath`" 2>&1`""
 $Trigger = New-ScheduledTaskTrigger -Daily -At $At
 $Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
@@ -58,4 +58,4 @@ $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings `
     -Principal $Principal -Description "Encrypted nightly backup of network-os-project state (backup.py)" -Force | Out-Null
-Write-Host "Installed $TaskName: daily at $At, output appended to $LogPath"
+Write-Host "Installed ${TaskName}: daily at $At, output appended to $LogPath"

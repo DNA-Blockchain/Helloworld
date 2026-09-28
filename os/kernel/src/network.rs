@@ -24,7 +24,10 @@ const DNS_TEST_NAME: &[u8] = b"example.com";
 const DNS_TEST_ID: u16 = 0x4e4f;
 const DNS_LOCAL_PORT: u16 = 53053;
 
-pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> {
+pub(crate) fn run(
+    boot_info: &'static mut BootInfo,
+    telemetry: &mut crate::telemetry::Telemetry,
+) -> Result<(), &'static str> {
     let mut device = E1000::initialize(boot_info)?;
     crate::memory::initialize(boot_info)?;
     crate::memory::verify_allocate_and_release()?;
@@ -50,6 +53,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         heap_pages * 4
     );
     crate::storage::verify_task_bundle()?;
+    record_telemetry(telemetry, crate::telemetry::STAGE_TASKS_VALIDATED);
     let _ = writeln!(
         Serial,
         "NOSFS workflow dispatcher verified: topological plan, bounded status events, dependency wakeup, and failure policies; tasks not executed."
@@ -66,6 +70,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         "Address spaces verified: separate roots, 16 private user pages, and supervisor kernel mappings."
     );
     let user_exit_code = crate::address_space::verify_user_syscall()?;
+    record_telemetry(telemetry, crate::telemetry::STAGE_USER_PROCESS_CHECKED);
     let _ = writeln!(
         Serial,
         "ELF process verified: dedicated CR3, exit {}, page-fault and invalid-opcode recovery, and page reclamation.",
@@ -159,6 +164,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         device.report_status();
         return Err("DHCP lease was not received from QEMU's user network");
     };
+    record_telemetry(telemetry, crate::telemetry::STAGE_DHCP_CONFIGURED);
     let mut address_error = false;
     interface.update_ip_addrs(|addresses| {
         if addresses.push(IpCidr::Ipv4(config.address)).is_err() {
@@ -244,6 +250,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     }
 
     let _ = writeln!(Serial, "HTTP health service listening on port {HTTP_PORT}");
+    record_telemetry(telemetry, crate::telemetry::STAGE_NETWORK_READY);
     serve_http(
         &mut interface,
         &mut device,
@@ -251,6 +258,15 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         tcp_handle,
         HTTP_PORT,
     )
+}
+
+fn record_telemetry(telemetry: &mut crate::telemetry::Telemetry, stage: u16) {
+    if let Err(error) = telemetry.record(stage, crate::telemetry::STATUS_OK, now_ms() as u64) {
+        let _ = writeln!(
+            Serial,
+            "Guest analytics disabled after persistence failure: {error}"
+        );
+    }
 }
 
 fn verify_dns_resolution(

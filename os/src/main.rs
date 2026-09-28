@@ -1,13 +1,13 @@
 use std::{
     env,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpStream, UdpSocket},
     path::Path,
     process::{Child, Command, ExitCode, Stdio},
     sync::mpsc,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const HOST_HEALTH_ADDR: &str = "127.0.0.1:18080";
@@ -163,7 +163,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             Ok(None) => {}
             Err(error) => {
                 let cleanup = terminate_qemu(&mut child, &mut output, &receiver);
-                print_output(&output);
+                print_output(&output, "check-slaac");
                 return match cleanup {
                     Ok(()) => Err(format!("Could not inspect QEMU process: {error}")),
                     Err(cleanup_error) => Err(format!(
@@ -176,7 +176,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
 
     if !service_ready {
         let cleanup = terminate_qemu(&mut child, &mut output, &receiver);
-        print_output(&output);
+        print_output(&output, "check-slaac");
         cleanup?;
         return Err("QEMU did not reach the network-service-ready state within 60 seconds.".into());
     }
@@ -184,7 +184,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
     let first_response = request_health_endpoint();
     let second_response = request_health_endpoint();
     let cleanup = terminate_qemu(&mut child, &mut output, &receiver);
-    print_output(&output);
+    print_output(&output, "check");
     cleanup?;
     for response in [first_response?, second_response?] {
         if !response.starts_with("HTTP/1.1 200 OK\r\n") || !response.ends_with("\r\n\r\nok\n") {
@@ -212,6 +212,14 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         || !output
             .iter()
             .any(|line| line.contains("Kernel task verified: separate 16-KiB stack"))
+        || !output
+            .iter()
+            .any(|line| line.contains("Guest checkpoints active: boot "))
+        || !output.iter().any(|line| {
+            line.contains(
+                "Guest checkpoint failback verified: intact prior copy selected after simulated corruption",
+            )
+        })
         || !output
             .iter()
             .any(|line| {
@@ -350,6 +358,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
     let mut saw_virtual_memory = false;
     let mut saw_heap = false;
     let mut saw_kernel_task = false;
+    let mut saw_guest_checkpoint = false;
     let mut saw_address_spaces = false;
     let mut saw_user_syscall = false;
     let mut saw_user_filesystem_read = false;
@@ -374,6 +383,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 saw_virtual_memory |= line.contains("Virtual memory verified: ");
                 saw_heap |= line.contains("Kernel heap verified: Vec/Box allocation");
                 saw_kernel_task |= line.contains("Kernel task verified: separate 16-KiB stack");
+                saw_guest_checkpoint |= line.contains("Guest checkpoints active: boot ");
                 saw_address_spaces |= line.contains(
                     "Address spaces verified: separate roots, 16 private user pages, and supervisor kernel mappings",
                 );
@@ -411,6 +421,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     && saw_virtual_memory
                     && saw_heap
                     && saw_kernel_task
+                    && saw_guest_checkpoint
                     && saw_address_spaces
                     && saw_user_syscall
                     && saw_user_filesystem_read
@@ -439,7 +450,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
             Err(error) => {
                 let cleanup = terminate_qemu(&mut child, &mut output, &receiver);
                 let router_cleanup = stop_process(&mut router, "SLAAC test router");
-                print_output(&output);
+                print_output(&output, "check");
                 return Err(format!(
                     "Could not inspect QEMU process: {error}{}{}",
                     cleanup
@@ -457,7 +468,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
 
     let qemu_cleanup = terminate_qemu(&mut child, &mut output, &receiver);
     let router_cleanup = stop_process(&mut router, "SLAAC test router");
-    print_output(&output);
+    print_output(&output, "check");
     qemu_cleanup?;
     router_cleanup?;
     if !(saw_timer
@@ -465,6 +476,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_virtual_memory
         && saw_heap
         && saw_kernel_task
+        && saw_guest_checkpoint
         && saw_address_spaces
         && saw_user_syscall
         && saw_user_filesystem_read
@@ -482,7 +494,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ELF user process: {saw_user_syscall}, ring-3 filesystem/stdout: {saw_user_filesystem_read}, guest task output: {saw_user_task_output}, user protection-fault recovery: {saw_user_fault_recovery}, task bundle: {saw_task_bundle}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, guest checkpoints: {saw_guest_checkpoint}, address spaces: {saw_address_spaces}, ELF user process: {saw_user_syscall}, ring-3 filesystem/stdout: {saw_user_filesystem_read}, guest task output: {saw_user_task_output}, user protection-fault recovery: {saw_user_fault_recovery}, task bundle: {saw_task_bundle}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())
@@ -626,10 +638,76 @@ fn stop_process(child: &mut Child, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn print_output(output: &[String]) {
+fn print_output(output: &[String], mode: &str) {
     for line in output {
         println!("{line}");
     }
+    match persist_qemu_log(output, mode) {
+        Ok(path) => println!("Engineering transcript saved: {}", path.display()),
+        Err(error) => eprintln!("Could not persist QEMU engineering transcript: {error}"),
+    }
+}
+
+fn persist_qemu_log(output: &[String], mode: &str) -> Result<std::path::PathBuf, String> {
+    let log_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("logs");
+    fs::create_dir_all(&log_dir)
+        .map_err(|error| format!("could not create {}: {error}", log_dir.display()))?;
+    let slots = [
+        log_dir.join(format!("qemu-{mode}-a.log")),
+        log_dir.join(format!("qemu-{mode}-b.log")),
+    ];
+    let target = match (slots[0].exists(), slots[1].exists()) {
+        (false, _) => slots[0].clone(),
+        (true, false) => slots[1].clone(),
+        (true, true) => {
+            let first = fs::metadata(&slots[0])
+                .and_then(|metadata| metadata.modified())
+                .map_err(|error| format!("could not inspect {}: {error}", slots[0].display()))?;
+            let second = fs::metadata(&slots[1])
+                .and_then(|metadata| metadata.modified())
+                .map_err(|error| format!("could not inspect {}: {error}", slots[1].display()))?;
+            if first <= second {
+                slots[0].clone()
+            } else {
+                slots[1].clone()
+            }
+        }
+    };
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
+    let temporary = log_dir.join(format!(
+        ".qemu-{mode}-{}-{}.tmp",
+        std::process::id(),
+        timestamp.as_nanos()
+    ));
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| format!("could not create {}: {error}", temporary.display()))?;
+        writeln!(
+            file,
+            "mode={mode} unix_seconds={} duration_nanos={}",
+            timestamp.as_secs(),
+            timestamp.subsec_nanos()
+        )
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+        for line in output {
+            writeln!(file, "{line}")
+                .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+        }
+        file.sync_all()
+            .map_err(|error| format!("could not flush {}: {error}", temporary.display()))?;
+        fs::rename(&temporary, &target)
+            .map_err(|error| format!("could not commit {}: {error}", target.display()))?;
+        Ok(target.clone())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result
 }
 
 fn report_qemu_start_error(error: std::io::Error) {

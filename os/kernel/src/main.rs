@@ -16,6 +16,7 @@ mod storage;
 mod syscall;
 mod task;
 mod task_bundle;
+mod telemetry;
 mod timer;
 mod virtual_memory;
 
@@ -104,9 +105,37 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             exit_qemu(0x11);
         }
     }
-    match network::run(boot_info) {
+    let mut telemetry = telemetry::Telemetry::new();
+    match telemetry.initialize(timer::ticks()) {
+        Ok(()) => {
+            let _ = writeln!(
+                Serial,
+                "Guest checkpoints active: boot {}, log generation {}, checkpoint generation {}.",
+                telemetry.boot_count(),
+                telemetry.log_generation(),
+                telemetry.checkpoint_generation()
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(
+                Serial,
+                "Guest analytics disabled; kernel continues without telemetry: {error}"
+            );
+        }
+    }
+    match network::run(boot_info, &mut telemetry) {
         Ok(()) => exit_qemu(0x10),
         Err(error) => {
+            if let Err(telemetry_error) = telemetry.record(
+                telemetry::STAGE_BOOT_FAILED,
+                telemetry::STATUS_FAILED,
+                timer::ticks(),
+            ) {
+                let _ = writeln!(
+                    Serial,
+                    "Could not persist guest failure checkpoint: {telemetry_error}"
+                );
+            }
             let _ = writeln!(Serial, "Network initialization failed: {error}");
             exit_qemu(0x11)
         }

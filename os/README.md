@@ -122,6 +122,20 @@ this kernel.
   fields verify content integrity, not publisher identity. Execution will
   require an approval/authenticity mechanism and enforcement of the declared
   resource and network capabilities.
+- Persists bounded OS analytics locally on the QEMU data disk. Two rotating
+  event-log snapshots and two alternating boot checkpoints are checksummed and
+  read back after each update; startup selects the newest intact generation and
+  retains the older copy as a fallback. The event ring records stage IDs,
+  status codes, sequence numbers, and uptime ticks only. It does not collect
+  research contents, prompts, credentials, or network payloads. If both copies
+  are invalid or persistence fails, analytics disables itself with a serial
+  warning and does not prevent OS boot. This is not a journaled filesystem,
+  general rollback system, or agent analytics pipeline.
+- The host QEMU integration runner captures the serial transcript from each
+  `check` and `check-slaac` run in `os/logs/`, retaining the newest two logs per
+  mode. These generated transcripts are excluded from Git but included in the
+  encrypted project backup. The interactive `run` mode continues to display
+  live output in the terminal.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
 it is not a general PCI NIC driver. The runner uses QEMU user-mode networking

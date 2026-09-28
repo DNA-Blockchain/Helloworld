@@ -568,14 +568,18 @@ Backups and copies elsewhere are not touched.
 
 ### Encrypted backups
 
-`backup.py` zips everything the project saves at runtime (state files,
-`autonomous/`, `node_data/`, `dna_shell_data/`, and every SQLite database
-via SQLite's online backup, so a running node's database is still copied
-consistently), encrypts it as one `encrypted_data_vault.py` object, and
-decrypts it end to end to verify it before it counts. Node signing keys
-(`keys/`, `*.pem`) are never included. Backups go to `~/network-os-backups`
-(outside the repo; same disk until an off-site copy exists), and anything
-older than 30 days is pruned, always keeping the newest 7.
+`backup.py` snapshots the project source, Git history, schemas, tests,
+documentation, runtime state, and engineering logs, then encrypts the archive
+as one `encrypted_data_vault.py` object and decrypts it end to end to verify
+it before it counts. SQLite databases use SQLite's online backup API, so a
+running node's database is copied consistently. Private-key directories and
+common key/credential file patterns are excluded. Build caches, dependencies,
+and generated targets are excluded, except the OS persistent QEMU disk image
+(`os/target/network-os-persistent.img`) so guest checkpoints are preserved.
+Backups go to `~/network-os-backups` outside the repository, but on the same
+machine/disk; they do not protect against disk loss. Cloud copy remains
+disabled unless separately configured. Anything older than 30 days is pruned,
+always keeping the newest 7.
 
 ```powershell
 python backup.py init                        # once: passphrase, stored with Windows DPAPI
@@ -583,7 +587,18 @@ python backup.py init                        # once: passphrase, stored with Win
 python backup.py list
 python backup.py verify
 python backup.py restore latest --to C:\restore-test   # never writes over existing files
+python backup_health.py test-restore          # verify restore into a temporary directory
 ```
+
+The guest also keeps local-only OS analytics in two rotating, checksummed
+event-log files and two alternating boot-checkpoint files on the QEMU data
+disk. The latest valid generation is selected on boot; the previous intact
+copy is the fallback if one copy is damaged. The bounded log contains stage
+IDs, status, sequence numbers, and uptime ticks only—not research content,
+prompts, credentials, or network payloads. If both copies are invalid or a
+write/readback fails, guest analytics disables itself and the OS continues
+booting with a serial warning. These are engineering diagnostics/checkpoints,
+not a journaled filesystem or a substitute for the encrypted host backup.
 
 The DPAPI copy of the passphrase only works for your Windows account on
 this PC. Keep your own copy (a password manager): if this PC is lost,

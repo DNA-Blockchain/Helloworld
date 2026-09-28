@@ -257,6 +257,12 @@ pub(crate) fn read_named_file(name: &str, output: &mut [u8]) -> Result<usize, &'
     filesystem.read_file(&mut device, name, output)
 }
 
+pub(crate) fn write_named_file(name: &str, contents: &[u8]) -> Result<(), &'static str> {
+    let mut device = QemuAtaDevice::initialize()?;
+    let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    filesystem.write_file(&mut device, name, contents)
+}
+
 pub(crate) fn expected_boot_json() -> &'static [u8] {
     BOOT_JSON_CONTENT
 }

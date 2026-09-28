@@ -42,6 +42,7 @@ node_modules/
 
 # Rust build artifacts
 target/
+os/logs/
 
 # Compiled interop client binaries (source is tracked, build output isn't)
 interop_client.exe
