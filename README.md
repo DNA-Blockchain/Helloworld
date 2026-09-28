@@ -649,6 +649,50 @@ python backup_health.py check          # [ALERT] lines, exit 1 if any
 python backup_health.py test-restore   # run a test restore now
 ```
 
+### Finding work across local disks
+
+`recovery_index.py` builds a local, read-only SHA-256 inventory for directories
+you name, such as a project folder, backup directory, or mounted external drive.
+It does not scan other disks automatically, retain or display file contents,
+change source files, or contact a network; it reads file bytes locally to
+compute hashes. The index stores paths, sizes, timestamps, and hashes in
+`~/.network-os/recovery-index.sqlite3` by default; pass `--db` to put it on a
+protected local disk. Credential directories and common key/secret file types
+are skipped. Disconnecting a drive leaves its old inventory entries available
+and search reports whether a recorded path currently exists.
+
+```powershell
+python recovery_index.py scan C:\Users\you\Documents E:\old-projects
+python recovery_index.py search "research"
+python recovery_index.py duplicates
+```
+
+This can find an indexed file that moved, an exact duplicate on another
+selected disk, or a path that is no longer accessible. It cannot recover file
+contents from a hash alone; use a verified encrypted backup or another
+surviving copy. The existing local `chain_store.py` verifies its own
+tamper-evident hash links, but it has no consensus and by itself proves neither
+the current identity's ownership of a file nor theft. The peer protocol has
+signed identities and chain-block checks, but not a cross-peer file recovery
+or ownership-claim protocol yet. A future opt-in network search should verify
+the user's pinned public key and signed content digests, disclose no file
+contents or local paths by default, and treat matches as evidence to review,
+not proof of theft. Network/chain searches and uploads are not run by this
+local index. The proposed policy contract in
+[`schemas/recovery-search-v1.schema.json`](schemas/recovery-search-v1.schema.json)
+allows either a separate user recovery key or an existing pinned node key, or
+both, while keeping private-key material out of the configuration. It is
+disabled by default and is not yet a peer/chain search implementation.
+
+Use a host terminal for recovery and administration first; the existing
+PowerShell/CLI workflow can safely target chosen disks without exposing a guest
+shell. A terminal inside the guest would be useful later for local diagnostics,
+but requires a bounded command parser, process isolation, and file/socket
+permissions that the current OS doesn't provide. A cloud shell is optional and
+not required for recovery; if added, it should be a separate, user-controlled
+hosted environment with short-lived credentials and explicit remote-data
+consent, never a privileged shell inside the guest.
+
 ### Cloud networking, audit, and contribution trail
 
 Cloud destinations use a provider-neutral endpoint contract in
