@@ -27,6 +27,14 @@ const BOOT_JSON_CONTENT: &[u8] =
 const TEST_ELF_NAME: &str = "TEST.ELF";
 const TEST_ELF_SIZE: usize = 134;
 const RUNTIME_TEST_SIZE: usize = 24 * 1024;
+const TASK_MANIFEST_NAME: &str = "TASK.MF";
+const TASK_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.task-bundle.v1","taskId":"offline-smoke","runtime":"micropython","entrypoint":"TASK.PY","files":[{"name":"TASK.PY","role":"python","sizeBytes":32,"sha256":"eb6cbf91a38220fe9ab3bcb02dd0ae95b938e08ee1b7a54686244b9ddeb2d94c"},{"name":"INPUT.JSON","role":"json","sizeBytes":20,"sha256":"1ae0badf27f751acdba98773e30e45d08351ee156bdf97c99e888add3fd5e790"}],"capabilities":{"network":{"dns":false,"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}},"limits":{"memoryBytes":65536,"runtimeSeconds":5}}"#;
+const WORKFLOW_MANIFEST_NAME: &str = "FLOW.MF";
+const WORKFLOW_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"offline-smoke","failurePolicy":"stop","blocks":[{"blockId":"inspect-input","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":["INPUT.JSON"],"outputFiles":["OUTPUT.JSON"]}]}"#;
+const TASK_PYTHON_NAME: &str = "TASK.PY";
+const TASK_PYTHON: &[u8] = b"print(\"task bundle smoke test\")\n";
+const TASK_INPUT_NAME: &str = "INPUT.JSON";
+const TASK_INPUT: &[u8] = br#"{"sample":"offline"}"#;
 const TEST_ELF_CODE: [u8; 14] = [
     0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x2a, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
 ];
@@ -146,6 +154,41 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
     if elf_length != TEST_ELF_SIZE || stored_elf != test_elf {
         return Err("filesystem TEST.ELF read-after-write verification failed");
     }
+    Ok(())
+}
+
+pub(crate) fn verify_task_bundle() -> Result<(), &'static str> {
+    let mut device = QemuAtaDevice::initialize()?;
+    let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    filesystem.write_file(&mut device, TASK_MANIFEST_NAME, TASK_MANIFEST)?;
+    filesystem.write_file(&mut device, WORKFLOW_MANIFEST_NAME, WORKFLOW_MANIFEST)?;
+    filesystem.write_file(&mut device, TASK_PYTHON_NAME, TASK_PYTHON)?;
+    filesystem.write_file(&mut device, TASK_INPUT_NAME, TASK_INPUT)?;
+
+    let mut task_manifest = [0; 4096];
+    let task_manifest_length =
+        filesystem.read_file(&mut device, TASK_MANIFEST_NAME, &mut task_manifest)?;
+    if &task_manifest[..task_manifest_length] != TASK_MANIFEST {
+        return Err("task bundle manifest readback did not match the stored bytes");
+    }
+    super::task_bundle::validate_task_manifest(
+        &task_manifest[..task_manifest_length],
+        |name, output| filesystem.read_file(&mut device, name, output),
+    )?;
+
+    let mut workflow_manifest = [0; 4096];
+    let workflow_manifest_length =
+        filesystem.read_file(&mut device, WORKFLOW_MANIFEST_NAME, &mut workflow_manifest)?;
+    if &workflow_manifest[..workflow_manifest_length] != WORKFLOW_MANIFEST {
+        return Err("workflow manifest readback did not match the stored bytes");
+    }
+    super::task_bundle::validate_workflow_manifest(
+        &workflow_manifest[..workflow_manifest_length],
+        &[TASK_MANIFEST_NAME],
+        &[TASK_PYTHON_NAME, TASK_INPUT_NAME],
+    )?;
+
+    super::task_bundle::verify_rejected_manifests()?;
     Ok(())
 }
 

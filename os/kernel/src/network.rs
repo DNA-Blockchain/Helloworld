@@ -49,6 +49,11 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
         "Kernel heap verified: Vec/Box allocation, release, and growth to {} KiB.",
         heap_pages * 4
     );
+    crate::storage::verify_task_bundle()?;
+    let _ = writeln!(
+        Serial,
+        "NOSFS task bundle verified: task/workflow manifests, dependency references, file SHA-256, and readback."
+    );
     crate::task::verify_separate_kernel_stack()?;
     let _ = writeln!(
         Serial,

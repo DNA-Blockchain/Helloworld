@@ -227,6 +227,8 @@ version = "0.1.0"
 dependencies = [
  "bootloader_api",
  "linked_list_allocator",
+ "serde",
+ "serde_json",
  "smoltcp",
 ]
 

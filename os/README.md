@@ -98,6 +98,23 @@ this kernel.
   general crash recovery; malformed or unknown metadata is rejected rather
   than reformatted. The image is generated under ignored build output and is
   never a host physical disk.
+- Defines initial JSON Schema contracts for MicroPython task bundles and
+  workflows in `os/schemas/`. A task bundle references bounded, checksummed
+  files stored as ordinary NOSFS files; workflow blocks reference task
+  manifests and name their input/output files and dependencies. A block is
+  not an independently executable disk sector. The boot test persists and
+  reads back a sample bundle, validates its task and workflow manifests in the
+  guest, verifies each declared file's SHA-256 and size, and rejects malformed
+  JSON, a bad digest, and a cyclic workflow. The bounded validator checks
+  required/allowed fields and cross-references; it is not a workflow
+  dispatcher, MicroPython runtime, or task-level filesystem/network capability
+  enforcement.
+  The names reflect current NOSFS constraints (15-byte flat filenames and
+  256-KiB maximum file size); the 16-entry root directory is too small for a
+  useful multi-task workflow alongside the current boot/test files. SHA-256
+  fields verify content integrity, not publisher identity. Execution will
+  require an approval/authenticity mechanism and enforcement of the declared
+  resource and network capabilities.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
 it is not a general PCI NIC driver. The runner uses QEMU user-mode networking
@@ -109,16 +126,16 @@ loopback-only forward, and stops QEMU. `cargo run -- check-slaac` runs the
 controlled RA test described above. This validates the stack and driver only
 in QEMU, not on physical hardware or a production network.
 
-The Python research agent is still not executable in this kernel. The chosen
-next runtime direction is MicroPython in a separate ring-3 ELF process, not
-Python embedded in the kernel. This is a target architecture, not an implemented
-runtime: the current loader, process memory limits, 256-KiB filesystem file
-limit, and minimal read-only file syscall are not yet sufficient to load and run
-MicroPython. Work must first provide a bounded user-process lifecycle,
-appropriate runtime storage, and validated JSON/filesystem/network interfaces.
-Only a reviewed research client should be allowed to access configured public
-metadata APIs; web content and research records remain data, never executable
-code.
+The Python research agent is still not executable in this kernel. The intended
+direction is a workflow dispatcher that loads approved task manifests and
+launches MicroPython in a separate ring-3 ELF process, never inside the kernel.
+The guest can validate the initial task-bundle and workflow formats, but this
+does not execute them. The current loader, process lifecycle, 256-KiB per-file
+limit, and minimal read-only file syscall are not sufficient to load MicroPython
+or dispatch these workflows. Before execution, the OS needs a stable process
+ABI, a user-space runtime, bounded data handoff, and enforced per-task
+capabilities. Only approved code may be executable; downloaded research
+records remain data, not code.
 
 Blockchain is not required to run the research agent. The recommended data
 path is authorized, encrypted off-chain storage with provenance and access
