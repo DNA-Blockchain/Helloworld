@@ -168,6 +168,27 @@ mpy-cross/build/mpy-cross -o /tmp/soft_launch.mpy /mnt/c/Users/odaat/network-os-
 MICROPYPATH=/tmp ports/unix/build-standard/micropython -m soft_launch
 ```
 
+### Host research-to-MicroPython pilot
+
+`examples/micropython/research_result_summary.py` accepts one saved JSON
+response from `blockchain_dna_tool.py` and emits a bounded summary of topic,
+source statuses, record counts, and new-ID count. It treats records and IDs as
+data, does not infer scientific results, and marks chain writes disabled. The
+paired `research_result_fixture.json` contains synthetic IDs only; it permits
+offline validation without contacting research APIs. To run the fixture using
+the WSL standard MicroPython binary built above:
+
+```powershell
+wsl.exe -d Ubuntu-24.04 -- /root/micropython-soft-launch/source/ports/unix/build-standard/micropython /mnt/c/Users/odaat/network-os-project/os/examples/micropython/research_result_summary.py /mnt/c/Users/odaat/network-os-project/os/examples/micropython/research_result_fixture.json
+```
+
+For a future real-data trial, first make an explicitly approved research query
+with `blockchain_dna_tool.py`, save its JSON response, review that response,
+and pass only the reviewed response file to the same MicroPython task. Do not
+pipe raw external web content into execution, and do not write research data to
+a blockchain. This host-side orchestration is not a security sandbox and does
+not integrate the runtime into the guest OS.
+
 This validates task syntax and MicroPython behavior on the host only; WSL
 MicroPython has the host user's permissions and is not a security sandbox. Run
 only reviewed, approved scripts, never untrusted research records or downloaded
