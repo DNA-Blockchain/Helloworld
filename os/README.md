@@ -31,12 +31,14 @@ this kernel.
   ranges, accepts only static `PT_LOAD` segments, applies a page-aligned load
   bias, rejects writable-executable segments, caps image/file/segment sizes,
   maps private user pages, zeroes BSS, and applies read/write/NX page
-  permissions. QEMU tests verify that user execution from the NX stack and a
-  write to read-only executable text both fault and return to the harness. The
-  ring-3 program calls `int 0x80` to exit with status 42.
-  This is a loader smoke test, not a general process manager: there is no
-  dynamic linker, relocations, arguments/environment, complete syscall ABI,
-  or fault-to-process teardown.
+  permissions. The test maps the executable and stack into a dedicated CR3
+  address space, rejects a malformed ELF, verifies that execution from the NX
+  stack and a write to read-only executable text both fault and return to the
+  harness; the test harness reclaims the user pages after the exit and
+  protection checks. The ring-3 program calls `int 0x80` to exit with status 42.
+  This is a bounded lifecycle smoke test, not a general process manager: there
+  is no dynamic linker, relocations, arguments/environment, complete syscall
+  ABI, or teardown after arbitrary process faults.
 - Also exercises a separate ring-3 machine-code test program that reads the
   fixed `BOOT.JSON` file through a page-validated syscall and attempts to read
   a supervisor-only kernel address. Only the expected protection fault is

@@ -58,7 +58,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     let user_exit_code = crate::address_space::verify_user_syscall()?;
     let _ = writeln!(
         Serial,
-        "ELF user process verified: static x86_64 TEST.ELF loaded from NOSFS, NX/write protections applied, and exited with code {}.",
+        "ELF process isolation verified: dedicated CR3, TEST.ELF exit {}, NX/write fault recovery, and harness page reclamation.",
         user_exit_code
     );
     let _ = writeln!(

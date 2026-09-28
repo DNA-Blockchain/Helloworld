@@ -42,17 +42,20 @@ confident-looking file imply more than it's actually verified.
   behavior on physical networks. The kernel has a QEMU-verified 100 Hz PIT
   clock, a fixed-metadata physical frame allocator below 4 GiB, a kernel-only
   4-KiB virtual-page arena tested for map/read/write/unmap/reuse, two CR3
-  address spaces   with private user-marked pages, a QEMU-tested bounded ELF64 static
-  x86_64 `ET_DYN` loader that loads `TEST.ELF` from the virtual disk, maps its
-  executable segment read-only and other mapped pages NX, verifies write/fetch
-  protection faults, and exits through one `int 0x80` syscall, and a kernel
+  address spaces with private user-marked pages, a QEMU-tested bounded ELF64
+  static x86_64 `ET_DYN` loader that loads `TEST.ELF` from the virtual disk,
+  maps it into a dedicated CR3 address space, validates its permissions,
+  verifies write/fetch protection faults, exits through one `int 0x80` syscall,
+  and lets the test harness reclaim its user pages, and a kernel
   heap verified growing from 64 KiB for a large `Vec` allocation, then
   allocating and releasing `Box` values; it is capped at 512 KiB.
   A bounded cooperative context-switch test suspends and resumes two kernel
   tasks across separate saved stacks, but there is not yet preemptive scheduling
   or a general process model. A QEMU-tested ring-3 read of a supervisor-only mapping now
-  triggers and recovers from the expected page-protection fault; general
-  exception containment, process teardown, and fault recovery remain missing.
+  triggers and recovers from the expected page-protection fault. The harness
+  tests user-page reclamation after normal exit and the expected NX/write
+  faults, but arbitrary process-fault teardown and general exception
+  containment remain missing.
   A QEMU-only secondary IDE driver now sits behind a bounded sector-level
   block-device interface and verifies a checksummed sector counter across
   emulator restarts. An experimental `NOSFS v2` filesystem now mounts that

@@ -219,6 +219,9 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
     let elf_load_base = user_code
         .checked_add(PAGE_SIZE * 3)
         .ok_or("ELF load address overflow")?;
+    let process_stack = elf_load_base
+        .checked_add(PAGE_SIZE)
+        .ok_or("ELF stack address overflow")?;
     let kernel_root = read_cr3() & ENTRY_ADDRESS_MASK;
     let mut kernel_stack_base = None;
     let mut kernel_stack_pages = 0;
@@ -336,48 +339,68 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         let elf_length = super::storage::read_test_elf(&mut elf_image)?;
         let mut malformed_image = elf_image;
         malformed_image[0] = 0;
-        if super::elf::load(&mut space, &malformed_image[..elf_length], elf_load_base).is_ok() {
-            return Err("ELF loader accepted an image with an invalid signature");
+        let mut process_space = create()?;
+        if let Err(error) = map_user_page(&mut process_space, process_stack) {
+            destroy(&mut process_space)?;
+            return Err(error);
         }
-        let loaded = super::elf::load(&mut space, &elf_image[..elf_length], elf_load_base)?;
-        if loaded.entry != elf_load_base || loaded.load_bias != elf_load_base {
-            return Err("ELF loader returned an unexpected process entry point");
-        }
-        let process_exit = super::syscall::verify_user_exit(loaded.entry as usize, user_stack_top)?;
-        if process_exit != 42 {
-            return Err("ELF user process exited with an unexpected status");
-        }
-        let mut nx_fault_code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0];
-        nx_fault_code[2..10].copy_from_slice(&user_stack.to_le_bytes());
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                nx_fault_code.as_ptr(),
-                user_code as *mut u8,
-                nx_fault_code.len(),
-            );
-        }
-        super::syscall::verify_user_page_fault(
-            user_code as usize,
-            user_stack_top,
-            user_stack,
-            0b1_0101,
-        )?;
+        let process_result = (|| {
+            activate(&process_space)?;
+            if super::elf::load(
+                &mut process_space,
+                &malformed_image[..elf_length],
+                elf_load_base,
+            )
+            .is_ok()
+            {
+                return Err("ELF loader accepted an image with an invalid signature");
+            }
+            let loaded =
+                super::elf::load(&mut process_space, &elf_image[..elf_length], elf_load_base)?;
+            if loaded.entry != elf_load_base || loaded.load_bias != elf_load_base {
+                return Err("ELF loader returned an unexpected process entry point");
+            }
+            let process_stack_top = (process_stack + PAGE_SIZE - 16) as usize;
+            let process_exit =
+                super::syscall::verify_user_exit(loaded.entry as usize, process_stack_top)?;
+            if process_exit != 42 {
+                return Err("ELF user process exited with an unexpected status");
+            }
 
-        let mut write_fault_code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xc7, 0x00, 0, 0, 0, 0];
-        write_fault_code[2..10].copy_from_slice(&elf_load_base.to_le_bytes());
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                write_fault_code.as_ptr(),
-                user_code as *mut u8,
-                write_fault_code.len(),
-            );
+            let mut nx_fault_code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0];
+            nx_fault_code[2..10].copy_from_slice(&process_stack.to_le_bytes());
+            set_user_page_permissions(loaded.entry, true, true)?;
+            copy_to_user(loaded.entry, &nx_fault_code)?;
+            set_user_page_permissions(loaded.entry, false, true)?;
+            super::syscall::verify_user_page_fault(
+                loaded.entry as usize,
+                process_stack_top,
+                process_stack,
+                0b1_0101,
+            )?;
+
+            let mut write_fault_code = [0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xc7, 0x00, 0, 0, 0, 0];
+            write_fault_code[2..10].copy_from_slice(&loaded.entry.to_le_bytes());
+            set_user_page_permissions(loaded.entry, true, true)?;
+            copy_to_user(loaded.entry, &write_fault_code)?;
+            set_user_page_permissions(loaded.entry, false, true)?;
+            super::syscall::verify_user_page_fault(
+                loaded.entry as usize,
+                process_stack_top,
+                loaded.entry,
+                0b111,
+            )?;
+            Ok(process_exit)
+        })();
+        let restore_process_root = activate(&space);
+        if let Err(error) = restore_process_root {
+            return Err(error);
         }
-        super::syscall::verify_user_page_fault(
-            user_code as usize,
-            user_stack_top,
-            elf_load_base,
-            0b111,
-        )?;
+        destroy(&mut process_space)?;
+        let process_exit = process_result?;
+        if process_exit != 42 {
+            return Err("ELF process lifecycle returned an unexpected exit status");
+        }
         Ok(exit_code)
     })();
 
@@ -643,7 +666,7 @@ pub(crate) fn set_user_page_permissions(
     Err("user mapping permission walk did not reach a leaf")
 }
 
-fn activate(space: &AddressSpace) -> Result<(), &'static str> {
+pub(crate) fn activate(space: &AddressSpace) -> Result<(), &'static str> {
     activate_root(space.root_physical)
 }
 
@@ -662,7 +685,7 @@ fn activate_root(root_physical: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn destroy(space: &mut AddressSpace) -> Result<(), &'static str> {
+pub(crate) fn destroy(space: &mut AddressSpace) -> Result<(), &'static str> {
     let _guard = disable_interrupts();
     let pages = unsafe { &(*USER_PAGES.0.get())[space.record_index] };
     for page in pages {

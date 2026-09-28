@@ -219,7 +219,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .iter()
             .any(|line| {
                 line.contains(
-                    "ELF user process verified: static x86_64 TEST.ELF loaded from NOSFS, NX/write protections applied, and exited with code 42",
+                    "ELF process isolation verified: dedicated CR3, TEST.ELF exit 42, NX/write fault recovery, and harness page reclamation",
                 )
             })
         || !output.iter().any(|line| {
@@ -359,7 +359,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     line.contains("Address spaces verified: private user mappings");
                 saw_user_syscall |=
                     line.contains(
-                        "ELF user process verified: static x86_64 TEST.ELF loaded from NOSFS, NX/write protections applied, and exited with code 42",
+                        "ELF process isolation verified: dedicated CR3, TEST.ELF exit 42, NX/write fault recovery, and harness page reclamation",
                     );
                 saw_user_filesystem_read |= line.contains(
                     "Ring-3 syscalls verified: BOOT.JSON read into validated user memory and process exit",
