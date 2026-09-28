@@ -7,8 +7,11 @@ use core::{
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const SYSCALL_EXIT: u64 = 1;
 const SYSCALL_READ_FILE: u64 = 2;
+const SYSCALL_WRITE: u64 = 3;
 const SYSCALL_ERROR: u64 = u64::MAX - 1;
 const MAX_FILENAME_BYTES: usize = 16;
+const MAX_WRITE_BYTES: usize = 4096;
+const WRITE_CHUNK_BYTES: usize = 128;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
 const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
 
@@ -303,30 +306,25 @@ extern "C" fn user_exception_dispatch(vector: u64, code_segment: u64) -> ! {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn syscall_dispatch(
-    number: u64,
-    filename_address: u64,
-    output_address: u64,
-    output_capacity: u64,
-) -> u64 {
+extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argument3: u64) -> u64 {
     if number == SYSCALL_EXIT {
-        EXIT_CODE.store(filename_address, Ordering::Release);
+        EXIT_CODE.store(argument1, Ordering::Release);
         return EXIT_SYSCALL_RETURN;
     }
     if number == SYSCALL_READ_FILE {
-        let Ok(capacity) = usize::try_from(output_capacity) else {
+        let Ok(capacity) = usize::try_from(argument3) else {
             return SYSCALL_ERROR;
         };
         if capacity == 0 || capacity > super::filesystem::MAX_FILE_SIZE {
             return SYSCALL_ERROR;
         }
-        if super::address_space::validate_user_buffer(output_address, capacity, true).is_err() {
+        if super::address_space::validate_user_buffer(argument2, capacity, true).is_err() {
             return SYSCALL_ERROR;
         }
         let mut filename = [0; MAX_FILENAME_BYTES];
         let mut filename_length = None;
         for (index, byte) in filename.iter_mut().enumerate() {
-            let Some(address) = filename_address.checked_add(index as u64) else {
+            let Some(address) = argument1.checked_add(index as u64) else {
                 return SYSCALL_ERROR;
             };
             if super::address_space::copy_from_user(address, core::slice::from_mut(byte)).is_err() {
@@ -346,11 +344,41 @@ extern "C" fn syscall_dispatch(
         if filename.is_empty() {
             return SYSCALL_ERROR;
         }
-        let output =
-            unsafe { core::slice::from_raw_parts_mut(output_address as *mut u8, capacity) };
+        let output = unsafe { core::slice::from_raw_parts_mut(argument2 as *mut u8, capacity) };
         return super::storage::read_named_file(filename, output)
             .map(|length| length as u64)
             .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_WRITE {
+        let Ok(length) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if length == 0
+            || length > MAX_WRITE_BYTES
+            || super::address_space::validate_user_buffer(argument1, length, false).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+
+        let mut chunk = [0; WRITE_CHUNK_BYTES];
+        let mut offset = 0;
+        while offset < length {
+            let chunk_length = (length - offset).min(chunk.len());
+            let Some(address) = argument1.checked_add(offset as u64) else {
+                return SYSCALL_ERROR;
+            };
+            if super::address_space::copy_from_user(address, &mut chunk[..chunk_length]).is_err() {
+                return SYSCALL_ERROR;
+            }
+            for byte in &chunk[..chunk_length] {
+                if *byte == b'\n' {
+                    crate::Serial::write_byte(b'\r');
+                }
+                crate::Serial::write_byte(*byte);
+            }
+            offset += chunk_length;
+        }
+        return length as u64;
     }
     SYSCALL_ERROR
 }

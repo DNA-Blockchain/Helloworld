@@ -73,7 +73,7 @@ pub(crate) fn run(boot_info: &'static mut BootInfo) -> Result<(), &'static str> 
     );
     let _ = writeln!(
         Serial,
-        "Ring-3 syscalls verified: named BOOT.JSON read into validated user memory; supervisor output pointer rejected."
+        "Ring-3 syscalls verified: bounded stdout echo of BOOT.JSON; supervisor read and write pointers rejected."
     );
     let _ = writeln!(
         Serial,

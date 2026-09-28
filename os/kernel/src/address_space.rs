@@ -330,19 +330,24 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         copy_to_user(user_buffer, b"BOOT.JSON\0")?;
         let file_output = user_buffer + 128;
         let file_capacity = PAGE_SIZE_BYTES - 128;
-        let mut file_read_code = [0; 49];
+        let mut file_read_code = [0; 69];
         file_read_code[..5].copy_from_slice(&[0xb8, 0x02, 0, 0, 0]);
         file_read_code[5..7].copy_from_slice(&[0x48, 0xbf]);
         file_read_code[15..17].copy_from_slice(&[0x48, 0xbe]);
         file_read_code[25..27].copy_from_slice(&[0x48, 0xba]);
         file_read_code[35..37].copy_from_slice(&[0xcd, 0x80]);
-        file_read_code[37..40].copy_from_slice(&[0x48, 0x89, 0xc7]);
-        file_read_code[40..45].copy_from_slice(&[0xb8, 0x01, 0, 0, 0]);
-        file_read_code[45..47].copy_from_slice(&[0xcd, 0x80]);
-        file_read_code[47..49].copy_from_slice(&[0x0f, 0x0b]);
+        file_read_code[37..40].copy_from_slice(&[0x48, 0x89, 0xc6]);
+        file_read_code[40..42].copy_from_slice(&[0x48, 0xbf]);
+        file_read_code[50..55].copy_from_slice(&[0xb8, 0x03, 0, 0, 0]);
+        file_read_code[55..57].copy_from_slice(&[0xcd, 0x80]);
+        file_read_code[57..60].copy_from_slice(&[0x48, 0x89, 0xc7]);
+        file_read_code[60..65].copy_from_slice(&[0xb8, 0x01, 0, 0, 0]);
+        file_read_code[65..67].copy_from_slice(&[0xcd, 0x80]);
+        file_read_code[67..69].copy_from_slice(&[0x0f, 0x0b]);
         file_read_code[7..15].copy_from_slice(&user_buffer.to_le_bytes());
         file_read_code[17..25].copy_from_slice(&(file_output as u64).to_le_bytes());
         file_read_code[27..35].copy_from_slice(&(file_capacity as u64).to_le_bytes());
+        file_read_code[42..50].copy_from_slice(&(file_output as u64).to_le_bytes());
         unsafe {
             core::ptr::copy_nonoverlapping(
                 file_read_code.as_ptr(),
@@ -362,6 +367,27 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         }
 
         let protected_address = verify_isolation as *const () as u64;
+        let mut invalid_write_code = [0; 34];
+        invalid_write_code[..5].copy_from_slice(&[0xb8, 0x03, 0, 0, 0]);
+        invalid_write_code[5..7].copy_from_slice(&[0x48, 0xbf]);
+        invalid_write_code[15..20].copy_from_slice(&[0xbe, 1, 0, 0, 0]);
+        invalid_write_code[20..22].copy_from_slice(&[0xcd, 0x80]);
+        invalid_write_code[22..25].copy_from_slice(&[0x48, 0x89, 0xc7]);
+        invalid_write_code[25..30].copy_from_slice(&[0xb8, 0x01, 0, 0, 0]);
+        invalid_write_code[30..32].copy_from_slice(&[0xcd, 0x80]);
+        invalid_write_code[32..34].copy_from_slice(&[0x0f, 0x0b]);
+        invalid_write_code[7..15].copy_from_slice(&protected_address.to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                invalid_write_code.as_ptr(),
+                user_code as *mut u8,
+                invalid_write_code.len(),
+            );
+        }
+        if super::syscall::verify_user_exit(user_code as usize, user_stack_top)? != u64::MAX - 1 {
+            return Err("ring-3 write syscall accepted a supervisor input pointer");
+        }
+
         file_read_code[7..15].copy_from_slice(&user_buffer.to_le_bytes());
         file_read_code[17..25].copy_from_slice(&protected_address.to_le_bytes());
         file_read_code[27..35].copy_from_slice(&(file_capacity as u64).to_le_bytes());

@@ -47,13 +47,16 @@ this kernel.
   NUL-terminated filename through the read-only user-copy path, requests that
   file from `NOSFS v2`, and receives it into a fully validated writable user
   buffer. The syscall bounds the filename to 15 bytes and the output length to
-  the filesystem's 256-KiB file limit. QEMU checks a valid `BOOT.JSON` read and
-  rejects supervisor pointers for both the filename and output buffer. The
-  current `int 0x80` ABI uses syscall 1 for exit (`RDI` = status) and syscall 2
-  for read-file (`RDI` = filename pointer, `RSI` = output pointer, `RDX` =
-  output capacity); it returns a byte count or `u64::MAX - 1` on error.
-  User-mode writes, directories, permissions, and concurrent filesystem access
-  are not exposed.
+  the filesystem's 256-KiB file limit. It then echoes the file through the
+  bounded stdout syscall. QEMU checks the emitted `BOOT.JSON` bytes and rejects
+  supervisor pointers for file reads and stdout writes. The `int 0x80` ABI uses
+  syscall 1 for exit (`RDI` = status), syscall 2 for read-file (`RDI` =
+  filename pointer, `RSI` = output pointer, `RDX` = output capacity), and
+  syscall 3 for stdout (`RDI` = readable buffer, `RSI` = byte count, capped at
+  4 KiB per call). Successful reads/writes return a byte count; failures return
+  `u64::MAX - 1`. Stdout is the serial console, not a terminal or network
+  stream. User-mode file creation/writes, directories, filesystem permissions,
+  and concurrent filesystem access are not exposed.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
@@ -140,6 +143,15 @@ are not sufficient to load MicroPython or dispatch these workflows. Before
 execution, the OS needs a stable process ABI, a user-space runtime, bounded
 data handoff, and enforced per-task capabilities. Only approved code may be
 executable; downloaded research records remain data, not code.
+
+The host research application has an optional local Ollama integration for
+citation-grounded answers (`local_ai_retrieval.py`), but the bare-metal guest
+does not currently connect to Ollama, cloud LLM APIs, MCP servers, or other
+agents. The new ring-3 stdout call is only a local console interface; it does
+not provide guest networking, TLS, credentials, or model access. A future AI
+connection should be an explicitly configured user-space client behind the
+network and TLS services, with per-task destination/data permissions. No
+provider or remote AI endpoint is contacted by the QEMU checks.
 
 ### MicroPython host soft launch
 
