@@ -227,7 +227,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             line.contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions")
         })
         || !output.iter().any(|line| {
-            line.contains("Persistent block storage verified: sector record generation ")
+            line.contains("Block device verified: 4096 sectors; persistent test record generation ")
         })
         || !output
             .iter()
@@ -350,8 +350,9 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 );
                 saw_scheduler |= line
                     .contains("Cooperative context switching verified: 5 A/B/A/B/A resumptions");
-                saw_storage |=
-                    line.contains("Persistent block storage verified: sector record generation ");
+                saw_storage |= line.contains(
+                    "Block device verified: 4096 sectors; persistent test record generation ",
+                );
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");
                 saw_default_route |= line.contains("IPv6 default gateway: fe80::1");

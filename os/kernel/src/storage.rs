@@ -1,3 +1,4 @@
+use super::block_device::{BlockDevice, SECTOR_SIZE, Sector};
 use crate::{port_read, port_read_u16, port_write, port_write_u16};
 
 const IO_BASE: u16 = 0x170;
@@ -17,13 +18,14 @@ const READ_SECTORS: u8 = 0x20;
 const WRITE_SECTORS: u8 = 0x30;
 const FLUSH_CACHE: u8 = 0xe7;
 const TEST_LBA: u32 = 1;
-const SECTOR_SIZE: usize = 512;
+const DEVICE_SECTORS: u32 = 4096;
 const MAGIC: &[u8; 8] = b"NOSDISK1";
 
 pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
-    select_test_disk()?;
+    let mut device = QemuAtaDevice::initialize()?;
+    verify_device_bounds(&device)?;
     let mut sector = [0u8; SECTOR_SIZE];
-    read_sector(TEST_LBA, &mut sector)?;
+    device.read_sector(TEST_LBA, &mut sector)?;
 
     let generation = if sector.iter().all(|byte| *byte == 0) {
         1
@@ -56,14 +58,69 @@ pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
     sector[8..16].copy_from_slice(&generation.to_le_bytes());
     let checksum = record_hash(&sector[..16]);
     sector[16..24].copy_from_slice(&checksum.to_le_bytes());
-    write_sector(TEST_LBA, &sector)?;
+    device.write_sector(TEST_LBA, &sector)?;
+    device.flush()?;
 
     let mut verified = [0u8; SECTOR_SIZE];
-    read_sector(TEST_LBA, &mut verified)?;
+    device.read_sector(TEST_LBA, &mut verified)?;
     if verified[..24] != sector[..24] {
         return Err("persistent storage read-after-write verification failed");
     }
     Ok(generation)
+}
+
+struct QemuAtaDevice {
+    sector_count: u32,
+}
+
+impl QemuAtaDevice {
+    fn initialize() -> Result<Self, &'static str> {
+        select_test_disk()?;
+        Ok(Self {
+            sector_count: DEVICE_SECTORS,
+        })
+    }
+
+    fn validate_lba(&self, lba: u32) -> Result<(), &'static str> {
+        if lba >= self.sector_count {
+            return Err("ATA test disk sector is outside the configured QEMU image");
+        }
+        Ok(())
+    }
+}
+
+impl BlockDevice for QemuAtaDevice {
+    fn sector_count(&self) -> u32 {
+        self.sector_count
+    }
+
+    fn read_sector(&mut self, lba: u32, sector: &mut Sector) -> Result<(), &'static str> {
+        self.validate_lba(lba)?;
+        read_sector(lba, sector)
+    }
+
+    fn write_sector(&mut self, lba: u32, sector: &Sector) -> Result<(), &'static str> {
+        self.validate_lba(lba)?;
+        write_sector(lba, sector)
+    }
+
+    fn flush(&mut self) -> Result<(), &'static str> {
+        unsafe {
+            port_write(STATUS_COMMAND_PORT, FLUSH_CACHE);
+        }
+        delay_400ns();
+        wait_not_busy()
+    }
+}
+
+fn verify_device_bounds(device: &dyn BlockDevice) -> Result<(), &'static str> {
+    if device.sector_count() != DEVICE_SECTORS {
+        return Err("QEMU block device reported an unexpected image capacity");
+    }
+    if TEST_LBA >= device.sector_count() {
+        return Err("persistent test sector is outside the block device");
+    }
+    Ok(())
 }
 
 fn select_test_disk() -> Result<(), &'static str> {
@@ -99,11 +156,6 @@ fn write_sector(lba: u32, sector: &[u8; SECTOR_SIZE]) -> Result<(), &'static str
             port_write_u16(DATA_PORT, word);
         }
     }
-    wait_not_busy()?;
-    unsafe {
-        port_write(STATUS_COMMAND_PORT, FLUSH_CACHE);
-    }
-    delay_400ns();
     wait_not_busy()
 }
 

@@ -62,9 +62,10 @@ this kernel.
   `os/target/network-os-persistent.img`. The kernel reads and updates one
   reserved sector with a generation counter and checksum, flushes the write,
   and verifies it by reading the sector back. Repeated boots increment the
-  counter, demonstrating persistence across emulator restarts. This is a
-  block-I/O test, not a filesystem; the image is generated under ignored
-  build output and is never a host physical disk.
+  counter, demonstrating persistence across emulator restarts. ATA PIO access
+  is routed through a bounded 512-byte `BlockDevice` sector interface with
+  range checks and explicit flush. This is not a filesystem; the image is
+  generated under ignored build output and is never a host physical disk.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
 it is not a general PCI NIC driver. The runner uses QEMU user-mode networking

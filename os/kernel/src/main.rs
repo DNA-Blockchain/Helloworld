@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod address_space;
+mod block_device;
 mod e1000;
 mod heap;
 mod memory;
@@ -79,7 +80,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         Ok(generation) => {
             let _ = writeln!(
                 Serial,
-                "Persistent block storage verified: sector record generation {}.",
+                "Block device verified: 4096 sectors; persistent test record generation {}.",
                 generation
             );
         }

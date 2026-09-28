@@ -51,8 +51,9 @@ confident-looking file imply more than it's actually verified.
   or a general process model. A QEMU-tested ring-3 read of a supervisor-only mapping now
   triggers and recovers from the expected page-protection fault; general
   exception containment, process teardown, and fault recovery remain missing.
-  A QEMU-only secondary IDE driver verifies a checksummed sector
-  counter across emulator restarts; there is still no filesystem, block cache,
+  A QEMU-only secondary IDE driver now sits behind a bounded sector-level
+  block-device interface and verifies a checksummed sector counter across
+  emulator restarts; there is still no filesystem, block cache,
   partition support, or user-facing storage API. It lacks general syscall
   services and broad hardware support. User-mode networking sockets are not
   implemented. The Python research agent remains a host application; running
