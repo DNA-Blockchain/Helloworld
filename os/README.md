@@ -59,13 +59,16 @@ this kernel.
 - Runs a small in-kernel HTTP health service on guest TCP port 8080. `GET
   /health` returns `200 OK` with `ok`; other paths return `404`.
 - Uses a QEMU-only secondary IDE disk image at
-  `os/target/network-os-persistent.img`. The kernel reads and updates one
-  reserved sector with a generation counter and checksum, flushes the write,
-  and verifies it by reading the sector back. Repeated boots increment the
-  counter, demonstrating persistence across emulator restarts. ATA PIO access
-  is routed through a bounded 512-byte `BlockDevice` sector interface with
-  range checks and explicit flush. This is not a filesystem; the image is
-  generated under ignored build output and is never a host physical disk.
+  `os/target/network-os-persistent.img`. ATA PIO access is routed through a
+  bounded 512-byte `BlockDevice` sector interface with capacity checks and
+  explicit flush. A small `NOSFS v2` filesystem on that image provides a
+  checksummed allocation bitmap, fixed root directory with 16 entries,
+  contiguous extents up to 8 KiB per file, and read/write support. The boot
+  check creates and then reads back `BOOT.JSON` across emulator restarts. This
+  experimental filesystem has no journaling, directories, permissions, or
+  general crash recovery; malformed or unknown metadata is rejected rather
+  than reformatted. The image is generated under ignored build output and is
+  never a host physical disk.
 
 The driver is specifically for the emulated 82540EM used by this QEMU runner;
 it is not a general PCI NIC driver. The runner uses QEMU user-mode networking
@@ -76,6 +79,12 @@ and both gateway echoes, makes repeated real HTTP requests through the
 loopback-only forward, and stops QEMU. `cargo run -- check-slaac` runs the
 controlled RA test described above. This validates the stack and driver only
 in QEMU, not on physical hardware or a production network.
+
+The Python research agent is still not executable in this kernel. `NOSFS v2`
+provides an initial persistent file API, but Python support requires a
+user-mode executable loader and a runtime port (including its memory,
+filesystem, and network interfaces). Those components must remain isolated in
+ring 3; the kernel does not execute research or downloaded code.
 
 ## Requirements
 

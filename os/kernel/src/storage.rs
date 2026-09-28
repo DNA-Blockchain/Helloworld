@@ -69,6 +69,41 @@ pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
     Ok(generation)
 }
 
+pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
+    let mut device = QemuAtaDevice::initialize()?;
+    let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    const NAME: &str = "BOOT.JSON";
+    const CONTENT: &[u8] =
+        br#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#;
+    let mut stored = [0; 512];
+    match filesystem.read_file(&mut device, NAME, &mut stored) {
+        Ok(length) => {
+            if &stored[..length] != CONTENT {
+                return Err("filesystem BOOT.JSON contains unexpected data");
+            }
+        }
+        Err("filesystem file does not exist") => {
+            filesystem.write_file(&mut device, NAME, CONTENT)?;
+            let mut verified = [0; 512];
+            let length = filesystem.read_file(&mut device, NAME, &mut verified)?;
+            if &verified[..length] != CONTENT {
+                return Err("filesystem BOOT.JSON read-after-write verification failed");
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    const UPDATE_NAME: &str = "UPDATE.TEST";
+    const UPDATE_CONTENT: &[u8] = b"replacement file contents verify extent update and release";
+    filesystem.write_file(&mut device, UPDATE_NAME, UPDATE_CONTENT)?;
+    let mut updated = [0; 512];
+    let length = filesystem.read_file(&mut device, UPDATE_NAME, &mut updated)?;
+    if &updated[..length] != UPDATE_CONTENT {
+        return Err("filesystem replacement write did not persist the updated file");
+    }
+    Ok(())
+}
+
 struct QemuAtaDevice {
     sector_count: u32,
 }

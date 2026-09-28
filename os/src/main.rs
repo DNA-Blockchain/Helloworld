@@ -229,6 +229,9 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         || !output.iter().any(|line| {
             line.contains("Block device verified: 4096 sectors; persistent test record generation ")
         })
+        || !output.iter().any(|line| {
+            line.contains("Filesystem verified: mounted NOSFS v2 and read persistent BOOT.JSON")
+        })
         || !output
             .iter()
             .any(|line| line.contains("DHCP configured: IPv4 "))
@@ -326,6 +329,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
     let mut saw_user_fault_recovery = false;
     let mut saw_scheduler = false;
     let mut saw_storage = false;
+    let mut saw_filesystem = false;
     let mut saw_ipv4_echo = false;
     let mut saw_slaac = false;
     let mut saw_default_route = false;
@@ -353,6 +357,9 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 saw_storage |= line.contains(
                     "Block device verified: 4096 sectors; persistent test record generation ",
                 );
+                saw_filesystem |= line.contains(
+                    "Filesystem verified: mounted NOSFS v2 and read persistent BOOT.JSON",
+                );
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");
                 saw_default_route |= line.contains("IPv6 default gateway: fe80::1");
@@ -369,6 +376,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     && saw_user_fault_recovery
                     && saw_scheduler
                     && saw_storage
+                    && saw_filesystem
                     && saw_dhcp
                     && saw_ipv4_echo
                     && saw_slaac
@@ -419,6 +427,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_user_fault_recovery
         && saw_scheduler
         && saw_storage
+        && saw_filesystem
         && saw_dhcp
         && saw_ipv4_echo
         && saw_slaac
@@ -427,7 +436,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ring-3 syscall: {saw_user_syscall}, user protection-fault recovery: {saw_user_fault_recovery}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, address spaces: {saw_address_spaces}, ring-3 syscall: {saw_user_syscall}, user protection-fault recovery: {saw_user_fault_recovery}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

@@ -6,6 +6,7 @@ extern crate alloc;
 mod address_space;
 mod block_device;
 mod e1000;
+mod filesystem;
 mod heap;
 mod memory;
 mod network;
@@ -86,6 +87,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
         Err(error) => {
             let _ = writeln!(Serial, "Storage initialization failed: {error}");
+            exit_qemu(0x11);
+        }
+    }
+    match storage::verify_filesystem_record() {
+        Ok(()) => {
+            let _ = writeln!(
+                Serial,
+                "Filesystem verified: mounted NOSFS v2 and read persistent BOOT.JSON."
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(Serial, "Filesystem initialization failed: {error}");
             exit_qemu(0x11);
         }
     }

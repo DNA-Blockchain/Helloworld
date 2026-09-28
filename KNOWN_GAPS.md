@@ -53,12 +53,18 @@ confident-looking file imply more than it's actually verified.
   exception containment, process teardown, and fault recovery remain missing.
   A QEMU-only secondary IDE driver now sits behind a bounded sector-level
   block-device interface and verifies a checksummed sector counter across
-  emulator restarts; there is still no filesystem, block cache,
-  partition support, or user-facing storage API. It lacks general syscall
+  emulator restarts. An experimental `NOSFS v2` filesystem now mounts that
+  image, validates its superblock and allocation bitmap, and stores up to 16
+  flat files of at most 8 KiB each with content checksums. It has no journal,
+  directories, permissions, safe concurrent writers, or general crash recovery;
+  allocation leaks or an interrupted metadata update can require manual
+  recovery. There is no block cache, partition support, or user-facing storage
+  syscall. It lacks general syscall
   services and broad hardware support. User-mode networking sockets are not
   implemented. The Python research agent remains a host application; running
   it on this OS requires an isolated user-space runtime, executable loader,
-  filesystem, and network syscalls. It must not run as privileged kernel code.
+  broader filesystem API, and network syscalls. It must not run as privileged
+  kernel code.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
