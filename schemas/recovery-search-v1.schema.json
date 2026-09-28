@@ -10,7 +10,7 @@
     "enabled",
     "identities",
     "sources",
-    "endpointIds",
+    "networkEnabled",
     "maxResults",
     "includePrivateContent"
   ],
@@ -63,6 +63,7 @@
     "sources": {
       "type": "array",
       "uniqueItems": true,
+      "minItems": 1,
       "items": {
         "type": "string",
         "enum": [
@@ -71,9 +72,14 @@
         ]
       }
     },
+    "networkEnabled": {
+      "type": "boolean",
+      "default": false
+    },
     "endpointIds": {
       "type": "array",
       "uniqueItems": true,
+      "default": [],
       "items": {
         "type": "string",
         "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
@@ -93,21 +99,23 @@
     {
       "if": {
         "properties": {
-          "enabled": {
+          "networkEnabled": {
             "const": true
           }
         },
         "required": [
-          "enabled"
+          "networkEnabled"
         ]
       },
       "then": {
         "properties": {
-          "sources": {
-            "minItems": 1
-          },
           "endpointIds": {
             "minItems": 1
+          },
+          "sources": {
+            "contains": {
+              "const": "configured-peer-index"
+            }
           }
         }
       }

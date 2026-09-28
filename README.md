@@ -26,7 +26,7 @@ declaration. It does not replace or narrow the existing CC0 license.
 |---|---|---|
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
-| Bare-metal OS prototype | `os/` | Experimental Rust x86_64 QEMU kernel; E1000 dual-stack tests, cooperative context switching, bounded static ELF64 ring-3 loader, QEMU IDE block layer, and experimental NOSFS flat-file storage. It does not run the Python research agent. |
+| Bare-metal OS prototype | `os/` | Experimental Rust x86_64 QEMU kernel; E1000 dual-stack tests, cooperative context switching, bounded static ELF64 ring-3 loader, limited file/stdout/DNS smoke-test syscalls, QEMU IDE block access, and experimental NOSFS flat-file storage. It does not run the Python research agent or provide general user sockets/TLS. |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
 | Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
 | Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
@@ -682,7 +682,10 @@ local index. The proposed policy contract in
 [`schemas/recovery-search-v1.schema.json`](schemas/recovery-search-v1.schema.json)
 allows either a separate user recovery key or an existing pinned node key, or
 both, while keeping private-key material out of the configuration. It is
-disabled by default and is not yet a peer/chain search implementation.
+disabled by default; local-only recovery does not require a remote endpoint.
+Remote recovery additionally requires its own explicit network-enabled setting
+and a configured peer endpoint. This remains a policy contract, not yet a
+peer/chain search implementation.
 
 Use a host terminal for recovery and administration first; the existing
 PowerShell/CLI workflow can safely target chosen disks without exposing a guest

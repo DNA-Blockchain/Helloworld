@@ -58,18 +58,16 @@ this kernel.
   stream. User-mode file creation/writes, directories, filesystem permissions,
   and concurrent filesystem access are not exposed.
 - Adds an initial ring-3 DNS lookup syscall (syscall 4: `RDI` = user hostname
-  pointer, `RSI` = byte length, `RDX` = writable 4-byte IPv4 output). The
-  kernel validates and copies the hostname, limits it to a valid 253-byte
-  ASCII DNS name, queries only the configured kernel DNS resolver through the
-  single network owner, and writes the result back through checked user memory.
-  The QEMU test runs this syscall from ring 3 and resolves `example.com`.
-  This is a blocking IPv4 lookup with a bounded timeout, not a user socket API:
-  arbitrary UDP/TCP sockets, nonblocking I/O, IPv6 DNS answers, and TLS remain
-  future work. When no resolver is configured, the ring-3 smoke program handles
-  the syscall error and the network service continues; the normal QEMU check
-  requires successful resolution, while the controlled SLAAC test does not.
-  The network owner is single-core and only lends its state during synchronous
-  syscall execution; it is not safe for concurrent/preemptive user processes.
+  pointer, `RSI` = byte length (1-253 ASCII bytes), `RDX` = writable 4-byte
+  IPv4 result). The kernel validates and copies the hostname, resolves through
+  its existing UDP service with a bounded timeout, and returns 4 on success or
+  `u64::MAX - 1` on error. QEMU runs this syscall from ring 3; the controlled
+  SLAAC test verifies that unavailable upstream DNS is reported without
+  preventing the HTTP service from starting. It is exercised only while the
+  boot test temporarily lends the network owner to a synchronous ring-3 smoke
+  program. This is not a reusable process networking API: processes cannot
+  create/manage arbitrary UDP or TCP sockets, perform nonblocking I/O, or use
+  TLS.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
@@ -88,11 +86,7 @@ this kernel.
   ICMP echo request to the IPv4 gateway.
 - Uses a bounded UDP DNS client to query QEMU's resolver at `10.0.2.3` for
   `example.com`. The boot check validates the transaction ID, response flags,
-  question, answer bounds, and IPv4 record before reporting the result. This
-  exercises kernel networking only; user processes do not yet have DNS or
-  socket syscalls. Networks without QEMU's resolver report DNS as unavailable;
-  the standard `check` mode requires resolution, while the loopback-only
-  `check-slaac` mode does not provide an upstream resolver.
+  question, answer bounds, and IPv4 record before reporting the result.
 - Enables IPv6 SLAAC and waits for an address and default route from a router
   advertisement. QEMU's built-in user network sends no router
   advertisements, so the standard network check reports SLAAC as unavailable
@@ -174,11 +168,12 @@ executable; downloaded research records remain data, not code.
 The host research application has an optional local Ollama integration for
 citation-grounded answers (`local_ai_retrieval.py`), but the bare-metal guest
 does not currently connect to Ollama, cloud LLM APIs, MCP servers, or other
-agents. The new ring-3 stdout call is only a local console interface; it does
-not provide guest networking, TLS, credentials, or model access. A future AI
-connection should be an explicitly configured user-space client behind the
-network and TLS services, with per-task destination/data permissions. No
-provider or remote AI endpoint is contacted by the QEMU checks.
+agents. Ring-3 stdout is a serial-console write, not a guest terminal. The DNS
+syscall is limited to a boot smoke test; it is not a general application socket
+API, and there is no guest TLS service or model access. A future AI connection
+should be an explicitly configured user-space client behind general socket and
+TLS services, with per-task destination/data permissions. No provider or
+remote AI endpoint is contacted by the QEMU checks.
 
 ### MicroPython host soft launch
 
