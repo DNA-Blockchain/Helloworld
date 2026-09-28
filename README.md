@@ -651,15 +651,27 @@ python backup_health.py test-restore   # run a test restore now
 
 ### Cloud networking, audit, and contribution trail
 
-The guest's QEMU network checks prove DHCP, DNS, TCP/HTTP, and ICMP in the
-emulator; they do not provide a guest application socket ABI or TLS. A cloud
-endpoint will not fix those missing guest interfaces. Start cloud connectivity
-from the existing host supervisor, which can keep outbound local research and
-backup work running while the guest remains isolated. The proposed sequence is:
+Cloud destinations use a provider-neutral endpoint contract in
+[`schemas/cloud-endpoint-v1.schema.json`](schemas/cloud-endpoint-v1.schema.json).
+It describes AWS S3, Azure Blob, Google Cloud Storage, S3-compatible services,
+generic HTTPS APIs, and self-hosted endpoints without embedding credentials or
+creating resources. Every endpoint is disabled by default, requires HTTPS with
+peer verification, declares allowed data classes, and sets upload/queue/timeout
+and retention bounds. This is a configuration contract, not an uploader or a
+provisioned endpoint; provider adapters still need to be implemented and
+reviewed before sending data.
 
-1. Keep the guest private and add host-side connection diagnostics and a
-   bounded encrypted retry queue. Cloud unavailability must not stop OS boot
-   or local research.
+The guest now proves a bounded ring-3 DNS lookup through the kernel's network
+owner; QEMU also exercises kernel TCP/HTTP and UDP DNS. The guest still lacks
+general user-process TCP/UDP sockets, TLS, and an upload client. A cloud endpoint
+will not supply those missing guest interfaces. Start cloud connectivity from
+the existing host supervisor, which can perform outbound work while the guest
+remains isolated. The proposed sequence is:
+
+1. Implement provider adapters behind the endpoint schema, beginning with
+   client-encrypted backup upload and checksum-verified restore. Then add
+   redacted, schema-versioned event upload and a bounded encrypted retry queue.
+   Cloud unavailability must not stop OS boot or local research.
 2. For multi-host access, use a private WireGuard tunnel from an explicitly
    enrolled host to a small AWS relay/VPC. Do not expose QEMU, SSH, the local
    node ports, or guest control endpoints publicly. Require peer identity,

@@ -8,10 +8,12 @@ const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const SYSCALL_EXIT: u64 = 1;
 const SYSCALL_READ_FILE: u64 = 2;
 const SYSCALL_WRITE: u64 = 3;
+const SYSCALL_DNS_LOOKUP: u64 = 4;
 const SYSCALL_ERROR: u64 = u64::MAX - 1;
 const MAX_FILENAME_BYTES: usize = 16;
 const MAX_WRITE_BYTES: usize = 4096;
 const WRITE_CHUNK_BYTES: usize = 128;
+const MAX_DNS_NAME_BYTES: usize = 253;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
 const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
 
@@ -379,6 +381,31 @@ extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argu
             offset += chunk_length;
         }
         return length as u64;
+    }
+    if number == SYSCALL_DNS_LOOKUP {
+        let Ok(name_length) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if name_length == 0
+            || name_length > MAX_DNS_NAME_BYTES
+            || super::address_space::validate_user_buffer(argument1, name_length, false).is_err()
+            || super::address_space::validate_user_buffer(argument3, 4, true).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        let mut name = [0; MAX_DNS_NAME_BYTES];
+        if super::address_space::copy_from_user(argument1, &mut name[..name_length]).is_err() {
+            return SYSCALL_ERROR;
+        }
+        let Ok(name) = core::str::from_utf8(&name[..name_length]) else {
+            return SYSCALL_ERROR;
+        };
+        let Ok(address) = super::network::resolve_user_dns(name) else {
+            return SYSCALL_ERROR;
+        };
+        return super::address_space::copy_to_user(argument3, &address)
+            .map(|()| 4)
+            .unwrap_or(SYSCALL_ERROR);
     }
     SYSCALL_ERROR
 }

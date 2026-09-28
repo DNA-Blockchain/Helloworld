@@ -243,7 +243,7 @@ pub(crate) fn verify_isolation() -> Result<(), &'static str> {
     verification
 }
 
-pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
+pub(crate) fn verify_user_syscall() -> Result<(u64, bool), &'static str> {
     let user_code = user_test_address()?;
     let user_stack = user_code
         .checked_add(PAGE_SIZE)
@@ -307,6 +307,7 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         return Err(error);
     }
 
+    let mut user_dns_verified = false;
     let result = (|| {
         activate(&space)?;
         map_user_page(&mut space, user_code)?;
@@ -414,6 +415,40 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
             return Err("ring-3 named-file syscall accepted a supervisor filename pointer");
         }
 
+        copy_to_user(user_buffer, b"example.com")?;
+        let mut dns_code = [0; 65];
+        dns_code[..5].copy_from_slice(&[0xb8, 0x04, 0, 0, 0]);
+        dns_code[5..7].copy_from_slice(&[0x48, 0xbf]);
+        dns_code[15..20].copy_from_slice(&[0xbe, 11, 0, 0, 0]);
+        dns_code[20..22].copy_from_slice(&[0x48, 0xba]);
+        dns_code[30..32].copy_from_slice(&[0xcd, 0x80]);
+        dns_code[32..37].copy_from_slice(&[0x83, 0xf8, 4, 0x75, 0x0e]);
+        dns_code[37..42].copy_from_slice(&[0xbf, 4, 0, 0, 0]);
+        dns_code[42..47].copy_from_slice(&[0xb8, 1, 0, 0, 0]);
+        dns_code[47..49].copy_from_slice(&[0xcd, 0x80]);
+        dns_code[49..51].copy_from_slice(&[0x0f, 0x0b]);
+        dns_code[51..56].copy_from_slice(&[0xbf, 5, 0, 0, 0]);
+        dns_code[56..61].copy_from_slice(&[0xb8, 1, 0, 0, 0]);
+        dns_code[61..63].copy_from_slice(&[0xcd, 0x80]);
+        dns_code[63..65].copy_from_slice(&[0x0f, 0x0b]);
+        dns_code[7..15].copy_from_slice(&user_buffer.to_le_bytes());
+        dns_code[22..30].copy_from_slice(&(file_output as u64).to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(dns_code.as_ptr(), user_code as *mut u8, dns_code.len());
+        }
+        match super::syscall::verify_user_exit(user_code as usize, user_stack_top)? {
+            4 => {
+                let resolved_address =
+                    unsafe { core::slice::from_raw_parts(file_output as *const u8, 4) };
+                if resolved_address == [0, 0, 0, 0] || resolved_address == [255, 255, 255, 255] {
+                    return Err("ring-3 DNS syscall returned an invalid IPv4 address");
+                }
+                user_dns_verified = true;
+            }
+            5 => {}
+            _ => return Err("ring-3 DNS test returned an unexpected status"),
+        }
+
         let mut fault_code = [
             0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x8b, 0x00, 0xb8, 0x2a, 0x00, 0x00, 0x00,
             0xcd, 0x80, 0x0f, 0x0b,
@@ -516,7 +551,7 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
         if process_exit != 42 {
             return Err("ELF process lifecycle returned an unexpected exit status");
         }
-        Ok(exit_code)
+        Ok((exit_code, user_dns_verified))
     })();
 
     let restore_result = activate_root(kernel_root);
@@ -525,8 +560,8 @@ pub(crate) fn verify_user_syscall() -> Result<u64, &'static str> {
     }
     destroy(&mut space)?;
     release_kernel_stack(kernel_stack_base, kernel_stack_pages)?;
-    let exit_code = result?;
-    Ok(exit_code)
+    let result = result?;
+    Ok(result)
 }
 
 fn user_test_address() -> Result<u64, &'static str> {

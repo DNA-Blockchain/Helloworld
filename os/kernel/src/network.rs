@@ -1,6 +1,7 @@
 use crate::{Serial, e1000::E1000};
 use bootloader_api::BootInfo;
 use core::fmt::Write;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use smoltcp::{
     iface::{Config, Interface, SocketSet, SocketStorage},
     phy::Device,
@@ -23,6 +24,50 @@ const DNS_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 3);
 const DNS_TEST_NAME: &[u8] = b"example.com";
 const DNS_TEST_ID: u16 = 0x4e4f;
 const DNS_LOCAL_PORT: u16 = 53053;
+const USER_DNS_MAX_NAME: usize = 253;
+const USER_DNS_PACKET_SIZE: usize = USER_DNS_MAX_NAME + 32;
+
+struct UserNetworkContext {
+    interface: *mut Interface,
+    device: *mut E1000,
+    sockets: *mut (),
+    dns_handle: smoltcp::iface::SocketHandle,
+}
+
+static USER_NETWORK_CONTEXT: AtomicPtr<UserNetworkContext> = AtomicPtr::new(core::ptr::null_mut());
+
+struct InterruptRestore {
+    was_enabled: bool,
+}
+
+impl InterruptRestore {
+    fn enable() -> Self {
+        let flags: usize;
+        // The syscall interrupt gate clears IF; DNS polling needs PIT ticks for its timeout.
+        unsafe {
+            core::arch::asm!(
+                "pushfq",
+                "pop {flags}",
+                "sti",
+                flags = out(reg) flags,
+                options(nomem)
+            );
+        }
+        Self {
+            was_enabled: flags & (1 << 9) != 0,
+        }
+    }
+}
+
+impl Drop for InterruptRestore {
+    fn drop(&mut self) {
+        if !self.was_enabled {
+            unsafe {
+                core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+            }
+        }
+    }
+}
 
 pub(crate) fn run(
     boot_info: &'static mut BootInfo,
@@ -68,21 +113,6 @@ pub(crate) fn run(
     let _ = writeln!(
         Serial,
         "Address spaces verified: separate roots, 16 private user pages, and supervisor kernel mappings."
-    );
-    let user_exit_code = crate::address_space::verify_user_syscall()?;
-    record_telemetry(telemetry, crate::telemetry::STAGE_USER_PROCESS_CHECKED);
-    let _ = writeln!(
-        Serial,
-        "ELF process verified: dedicated CR3, exit {}, page-fault and invalid-opcode recovery, and page reclamation.",
-        user_exit_code
-    );
-    let _ = writeln!(
-        Serial,
-        "Ring-3 syscalls verified: bounded stdout echo of BOOT.JSON; supervisor read and write pointers rejected."
-    );
-    let _ = writeln!(
-        Serial,
-        "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered."
     );
     let scheduled_steps = crate::scheduler::verify_cooperative_round_robin()?;
     let _ = writeln!(
@@ -245,6 +275,49 @@ pub(crate) fn run(
         ipv6_gateway,
     )?;
     verify_dns_resolution(&mut interface, &mut device, &mut sockets, dns_handle)?;
+    let mut user_network_context = UserNetworkContext {
+        interface: &mut interface,
+        device: &mut device,
+        sockets: (&mut sockets as *mut SocketSet<'_>).cast(),
+        dns_handle,
+    };
+    let context_pointer = &mut user_network_context as *mut UserNetworkContext;
+    USER_NETWORK_CONTEXT
+        .compare_exchange(
+            core::ptr::null_mut(),
+            context_pointer,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| "user networking context is already active")?;
+    let user_process_result = crate::address_space::verify_user_syscall();
+    USER_NETWORK_CONTEXT.store(core::ptr::null_mut(), Ordering::Release);
+    let (user_exit_code, user_dns_verified) = user_process_result?;
+    record_telemetry(telemetry, crate::telemetry::STAGE_USER_PROCESS_CHECKED);
+    let _ = writeln!(
+        Serial,
+        "ELF process verified: dedicated CR3, exit {}, page-fault and invalid-opcode recovery, and page reclamation.",
+        user_exit_code
+    );
+    let _ = writeln!(
+        Serial,
+        "Ring-3 syscalls verified: bounded stdout echo of BOOT.JSON; supervisor read and write pointers rejected."
+    );
+    if user_dns_verified {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 DNS syscall verified: example.com resolved through the kernel-owned UDP service."
+        );
+    } else {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 DNS syscall unavailable: configured resolver returned no IPv4 result."
+        );
+    }
+    let _ = writeln!(
+        Serial,
+        "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered."
+    );
     if device.take_tx_error() {
         return Err("E1000 transmit descriptor did not complete");
     }
@@ -269,6 +342,67 @@ fn record_telemetry(telemetry: &mut crate::telemetry::Telemetry, stage: u16) {
     }
 }
 
+pub(crate) fn resolve_user_dns(name: &str) -> Result<[u8; 4], &'static str> {
+    if !valid_dns_name(name.as_bytes()) {
+        return Err("user DNS name is invalid or exceeds the supported bounds");
+    }
+    let context = USER_NETWORK_CONTEXT.load(Ordering::Acquire);
+    if context.is_null() {
+        return Err("user DNS syscall has no active kernel network owner");
+    }
+
+    // The context is installed only while this single-core kernel synchronously
+    // runs a user process; network state has no concurrent mutable owner.
+    let context = unsafe { &mut *context };
+    let interface = unsafe { &mut *context.interface };
+    let device = unsafe { &mut *context.device };
+    let sockets: &mut SocketSet<'_> = unsafe { &mut *context.sockets.cast() };
+    let identifier = now_ms() as u16;
+    let interrupt_restore = InterruptRestore::enable();
+    let result = resolve_ipv4(
+        interface,
+        device,
+        sockets,
+        context.dns_handle,
+        name.as_bytes(),
+        identifier,
+    );
+    drop(interrupt_restore);
+    result?
+        .map(|address| address.octets())
+        .ok_or("user DNS query timed out")
+}
+
+fn valid_dns_name(name: &[u8]) -> bool {
+    if name.is_empty() || name.len() > USER_DNS_MAX_NAME || !name.is_ascii() {
+        return false;
+    }
+    let mut label_length = 0;
+    let mut previous_hyphen = false;
+    for byte in name {
+        if *byte == b'.' {
+            if label_length == 0 || previous_hyphen {
+                return false;
+            }
+            label_length = 0;
+            previous_hyphen = false;
+            continue;
+        }
+        if !byte.is_ascii_alphanumeric() && *byte != b'-' {
+            return false;
+        }
+        if label_length == 0 && *byte == b'-' {
+            return false;
+        }
+        label_length += 1;
+        if label_length > 63 {
+            return false;
+        }
+        previous_hyphen = *byte == b'-';
+    }
+    label_length != 0 && !previous_hyphen
+}
+
 fn verify_dns_resolution(
     interface: &mut Interface,
     device: &mut E1000,
@@ -276,53 +410,79 @@ fn verify_dns_resolution(
     handle: smoltcp::iface::SocketHandle,
 ) -> Result<(), &'static str> {
     verify_dns_codec()?;
-    let mut query = [0; 64];
-    let query_length = build_dns_query(&mut query, DNS_TEST_ID, DNS_TEST_NAME)?;
-    {
+    let Some(address) = resolve_ipv4(
+        interface,
+        device,
+        sockets,
+        handle,
+        DNS_TEST_NAME,
+        DNS_TEST_ID,
+    )?
+    else {
+        let _ = writeln!(
+            Serial,
+            "DNS unavailable: configured network did not provide a response within the timeout."
+        );
+        return Ok(());
+    };
+    let _ = writeln!(
+        Serial,
+        "DNS verified: {} resolved to {} through QEMU's UDP resolver.",
+        core::str::from_utf8(DNS_TEST_NAME).map_err(|_| "DNS test name is not valid UTF-8")?,
+        address
+    );
+    Ok(())
+}
+
+fn resolve_ipv4(
+    interface: &mut Interface,
+    device: &mut E1000,
+    sockets: &mut SocketSet<'_>,
+    handle: smoltcp::iface::SocketHandle,
+    hostname: &[u8],
+    identifier: u16,
+) -> Result<Option<Ipv4Address>, &'static str> {
+    let mut query = [0; USER_DNS_PACKET_SIZE];
+    let query_length = build_dns_query(&mut query, identifier, hostname)?;
+    let result = (|| {
         let socket = sockets.get_mut::<udp::Socket>(handle);
+        socket.close();
         socket
             .bind(DNS_LOCAL_PORT)
             .map_err(|_| "could not bind the DNS UDP socket")?;
         socket
             .send_slice(&query[..query_length], (IpAddress::Ipv4(DNS_SERVER), 53))
             .map_err(|_| "could not queue the DNS query")?;
-    }
 
-    let deadline = now_ms().saturating_add(DNS_WAIT_MS);
-    let mut response = [0; 1024];
-    loop {
-        interface.poll(Instant::from_millis(now_ms()), device, sockets);
-        let received = sockets
-            .get_mut::<udp::Socket>(handle)
-            .recv_slice(&mut response);
-        if let Ok((length, metadata)) = received {
-            if metadata.endpoint.addr == IpAddress::Ipv4(DNS_SERVER) && metadata.endpoint.port == 53
-            {
-                let address =
-                    parse_dns_a_response(&response[..length], DNS_TEST_ID, DNS_TEST_NAME)?
-                        .ok_or("DNS response did not contain an IPv4 address")?;
+        let deadline = now_ms().saturating_add(DNS_WAIT_MS);
+        let mut response = [0; 1024];
+        loop {
+            interface.poll(Instant::from_millis(now_ms()), device, sockets);
+            let received = sockets
+                .get_mut::<udp::Socket>(handle)
+                .recv_slice(&mut response);
+            if let Ok((length, metadata)) = received {
+                if metadata.endpoint.addr == IpAddress::Ipv4(DNS_SERVER)
+                    && metadata.endpoint.port == 53
+                {
+                    return parse_dns_a_response(&response[..length], identifier, hostname);
+                }
+            }
+            if device.take_tx_error() {
+                return Err("E1000 transmit descriptor did not complete");
+            }
+            if now_ms() >= deadline {
                 let _ = writeln!(
                     Serial,
-                    "DNS verified: {} resolved to {} through QEMU's UDP resolver.",
-                    core::str::from_utf8(DNS_TEST_NAME)
-                        .map_err(|_| "DNS test name is not valid UTF-8")?,
-                    address
+                    "DNS unavailable: configured network did not provide a response within the timeout."
                 );
-                return Ok(());
+                return Ok(None);
             }
+            crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
         }
-        if device.take_tx_error() {
-            return Err("E1000 transmit descriptor did not complete");
-        }
-        if now_ms() >= deadline {
-            let _ = writeln!(
-                Serial,
-                "DNS unavailable: configured network did not provide a response within the timeout."
-            );
-            return Ok(());
-        }
-        crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
-    }
+    })();
+    sockets.get_mut::<udp::Socket>(handle).close();
+    result
 }
 
 fn verify_dns_codec() -> Result<(), &'static str> {

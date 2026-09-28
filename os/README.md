@@ -57,6 +57,19 @@ this kernel.
   `u64::MAX - 1`. Stdout is the serial console, not a terminal or network
   stream. User-mode file creation/writes, directories, filesystem permissions,
   and concurrent filesystem access are not exposed.
+- Adds an initial ring-3 DNS lookup syscall (syscall 4: `RDI` = user hostname
+  pointer, `RSI` = byte length, `RDX` = writable 4-byte IPv4 output). The
+  kernel validates and copies the hostname, limits it to a valid 253-byte
+  ASCII DNS name, queries only the configured kernel DNS resolver through the
+  single network owner, and writes the result back through checked user memory.
+  The QEMU test runs this syscall from ring 3 and resolves `example.com`.
+  This is a blocking IPv4 lookup with a bounded timeout, not a user socket API:
+  arbitrary UDP/TCP sockets, nonblocking I/O, IPv6 DNS answers, and TLS remain
+  future work. When no resolver is configured, the ring-3 smoke program handles
+  the syscall error and the network service continues; the normal QEMU check
+  requires successful resolution, while the controlled SLAAC test does not.
+  The network owner is single-core and only lends its state during synchronous
+  syscall execution; it is not safe for concurrent/preemptive user processes.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
