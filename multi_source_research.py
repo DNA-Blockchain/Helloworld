@@ -119,6 +119,23 @@ def search_pubmed(condition: str, biomarker: str | None = None, max_results: int
     except Exception:
         return []
 
+    return _papers(pmids, summary)
+
+
+def pubmed_summaries(pmids: list[str]) -> list[dict]:
+    """Title and date for known PMIDs (e.g. from research_store.json). Unlike
+    search_pubmed this raises on request failure, so a backfill can tell
+    "not found" from "not reachable"; PMIDs NCBI does not return are omitted."""
+    clean = [str(pmid).strip() for pmid in pmids if str(pmid).strip().isdigit()]
+    if not clean:
+        return []
+    if len(clean) > 200:
+        raise ValueError("at most 200 PMIDs per request")
+    summary = _http_get_json(NCBI_ESUMMARY, {"db": "pubmed", "id": ",".join(clean), "retmode": "json"})
+    return _papers(clean, summary)
+
+
+def _papers(pmids: list[str], summary: dict) -> list[dict]:
     papers = []
     result = summary.get("result", {})
     for pmid in pmids:

@@ -90,7 +90,7 @@ ABSTRACT_POINTS = 1
 RECENT_POINTS = 1
 RECENT_YEARS = 3
 
-PUBLIC_SOURCES = ("pubmed", "europe_pmc", "clinicaltrials.gov", "nih_reporter")
+PUBLIC_SOURCES = ("pubmed", "europe_pmc", "clinicaltrials.gov", "nih_reporter", "clinvar")
 
 NOTE = (
     "Ranked by query-term matches and recency for reading order only; "

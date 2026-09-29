@@ -172,6 +172,19 @@ def own_chain_files(node_dir: str, node_id: int) -> list[str]:
     return archived + [os.path.join(node_dir, name)]
 
 
+def published_record_keys(base_dir: str) -> set[tuple[str, str]]:
+    """(source, external_id) of every research record already published,
+    across all node ledgers, so re-publishing can be avoided."""
+    keys = set()
+    for ledger in load_all_ledgers(base_dir).values():
+        for entry in ledger.entries():
+            if entry.get("kind") != "public_research_records":
+                continue
+            for record in entry["block"]["research_provenance"]["records"]:
+                keys.add((record["source"], record["external_id"]))
+    return keys
+
+
 def load_all_ledgers(base_dir: str) -> dict[int, ResearchLedger]:
     """Every node's ledger under base_dir (autonomous/), by node id."""
     ledgers = {}

@@ -474,6 +474,20 @@ and datasets with how many nodes hold each copy, plus JSON endpoints
 downloads everything with the original signed blocks for independent
 verification.
 
+To publish what the growing research agent collected earlier:
+
+```powershell
+python research_backfill.py                          # dry run
+python research_backfill.py --confirm-publication    # queue for node-0
+```
+
+`research_store.json` keeps only IDs, so `research_backfill.py` re-fetches
+each record's title, date and link by ID (`pubmed_summaries`,
+`trials_by_id`, `clinvar_records_by_id`), ranks each source's records with
+`research_analysis.py`, and queues one event per 20 records. Records already
+in any node's ledger are skipped, so it can be re-run safely; sources
+without a fetch-by-ID connector (such as `stjude`) are reported and skipped.
+
 ## Cancer -> modeled reference match workflow
 
 `remission_core.py` runs the whole computational workflow in one pass:

@@ -177,40 +177,66 @@ def search_ncbi_variants(query: str, *, database: str, max_results: int = 10) ->
     if not isinstance(result, dict):
         raise ValueError(f"NCBI {database} response did not contain record summaries")
 
-    records = []
-    for uid in ids[:max_results]:
-        item = result.get(str(uid))
-        if not isinstance(item, dict):
-            continue
-        if database == "clinvar":
-            source = "clinvar"
-            external_id = str(item.get("accession") or item.get("uid") or uid)
-            title = str(item.get("title") or f"ClinVar variation {external_id}")
-            url = f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/"
-            terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
-        else:
-            source = "dbsnp"
-            snp_id = str(item.get("snp_id") or item.get("rs") or item.get("uid") or uid)
-            external_id = (
-                snp_id if snp_id.lower().startswith("rs")
-                else f"rs{snp_id}" if snp_id.isdigit()
-                else snp_id
-            )
-            title = str(item.get("title") or f"dbSNP record {external_id}")
-            url = f"https://www.ncbi.nlm.nih.gov/snp/{urllib.parse.quote(external_id)}"
-            terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
-        records.append({
-            "source": source,
-            "external_id": external_id,
-            "title": title,
-            "abstract": _safe_summary(item, database=database),
-            "source_url": url,
-            "published_at": "",
-            "classification": "public",
-            "rights_status": "public metadata; review source terms",
-            "terms_url": terms,
-        })
-    return records
+    return [
+        _ncbi_variant_record(uid, result[str(uid)], database=database)
+        for uid in ids[:max_results]
+        if isinstance(result.get(str(uid)), dict)
+    ]
+
+
+def clinvar_records_by_id(uids: list[str]) -> list[dict]:
+    """ClinVar records for known variation UIDs (e.g. from research_store.json),
+    in the same form search_ncbi_variants returns. Raises on request failure;
+    UIDs NCBI does not return are omitted."""
+    clean = [str(uid).strip() for uid in uids if str(uid).strip().isdigit()]
+    if not clean:
+        return []
+    if len(clean) > 200:
+        raise ValueError("at most 200 ClinVar UIDs per request")
+    summary_response = _ncbi_get_json(NCBI_ESUMMARY, {
+        "db": "clinvar",
+        "id": ",".join(clean),
+        "retmode": "json",
+    })
+    result = summary_response.get("result", {})
+    if not isinstance(result, dict):
+        raise ValueError("NCBI clinvar response did not contain record summaries")
+    return [
+        _ncbi_variant_record(uid, result[uid], database="clinvar")
+        for uid in clean
+        if isinstance(result.get(uid), dict)
+    ]
+
+
+def _ncbi_variant_record(uid, item: dict, *, database: str) -> dict:
+    if database == "clinvar":
+        source = "clinvar"
+        external_id = str(item.get("accession") or item.get("uid") or uid)
+        title = str(item.get("title") or f"ClinVar variation {external_id}")
+        url = f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/"
+        terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
+    else:
+        source = "dbsnp"
+        snp_id = str(item.get("snp_id") or item.get("rs") or item.get("uid") or uid)
+        external_id = (
+            snp_id if snp_id.lower().startswith("rs")
+            else f"rs{snp_id}" if snp_id.isdigit()
+            else snp_id
+        )
+        title = str(item.get("title") or f"dbSNP record {external_id}")
+        url = f"https://www.ncbi.nlm.nih.gov/snp/{urllib.parse.quote(external_id)}"
+        terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
+    return {
+        "source": source,
+        "external_id": external_id,
+        "title": title,
+        "abstract": _safe_summary(item, database=database),
+        "source_url": url,
+        "published_at": "",
+        "classification": "public",
+        "rights_status": "public metadata; review source terms",
+        "terms_url": terms,
+    }
 
 
 def lookup_ensembl_gene(symbol: str) -> list[dict]:

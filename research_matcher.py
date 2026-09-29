@@ -122,6 +122,40 @@ def find_trials(
     return trials[:max_results]
 
 
+def trials_by_id(nct_ids: list[str]) -> list[dict]:
+    """ClinicalTrials.gov studies for known NCT IDs (e.g. from
+    research_store.json), with their start dates. Unlike find_trials this
+    raises on request failure, so a backfill can tell "not found" from
+    "not reachable"; IDs the registry does not return are omitted."""
+    clean = [i.strip().upper() for i in nct_ids if i.strip().upper().startswith("NCT")]
+    if not clean:
+        return []
+    if len(clean) > 100:
+        raise ValueError("at most 100 NCT IDs per request")
+    params = {
+        "filter.ids": ",".join(clean),
+        "fields": "NCTId,BriefTitle,StartDate",
+        "pageSize": len(clean),
+    }
+    url = f"{CLINICALTRIALS_API}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=20, context=_SSL_CONTEXT) as resp:
+        data = json.loads(resp.read())
+    trials = []
+    for study in data.get("studies", []):
+        proto = study.get("protocolSection", {})
+        nct_id = proto.get("identificationModule", {}).get("nctId")
+        if not nct_id:
+            continue
+        trials.append({
+            "nct_id": nct_id,
+            "title": proto.get("identificationModule", {}).get("briefTitle"),
+            "start_date": proto.get("statusModule", {}).get("startDateStruct", {}).get("date", ""),
+            "url": f"https://clinicaltrials.gov/study/{nct_id}",
+        })
+    return trials
+
+
 if __name__ == "__main__":
     print("=== Real recruiting trials: PTSD + cortisol ===")
     for t in find_trials("PTSD", biomarker="cortisol", recruiting_only=True, max_results=5):

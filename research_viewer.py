@@ -245,7 +245,7 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:var(--accent)}
 <div id="status" class="muted">Loading...</div>
 <form id="search"><input id="q" placeholder="Search titles, IDs, queries"><select id="source">
 <option value="">All sources</option><option>pubmed</option><option>europe_pmc</option>
-<option>clinicaltrials.gov</option><option>nih_reporter</option></select><button>Search</button>
+<option>clinicaltrials.gov</option><option>nih_reporter</option><option>clinvar</option></select><button>Search</button>
 <a href="/api/export" download><button type="button">Export JSON</button></a></form>
 <h2>Published records</h2><div class="scroll"><table><thead><tr><th>Record</th><th>Source</th><th>Date</th>
 <th>Published</th><th>Copies</th></tr></thead><tbody id="records"></tbody></table></div>
