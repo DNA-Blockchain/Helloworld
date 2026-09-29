@@ -1,4 +1,58 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
 network_node.py — consolidated NetworkNode.
 
@@ -75,6 +129,7 @@ from chain_store import ChainStore
 from token_ledger import TokenLedger
 from digital_dna import DigitalDNA
 from atomic_io import replace_with_retry
+from research_ledger import ResearchLedger, own_chain_files, signed_blocks_in_chain_files
 from research_provenance import ResearchProvenanceQueue
 
 HANDSHAKE_CONTEXT = b"dna-chain-project/node-session/v1"
@@ -95,6 +150,8 @@ STATUS_NO_SESSION = b"n"   # unknown sender session or undecryptable: re-handsha
 
 # how many of its most recent blocks a node hands to an auditing peer
 CHAIN_AUDIT_MAX_BLOCKS = 200
+LEDGER_SYNC_SECONDS = 120.0       # how often a node pulls peers' research ledgers
+LEDGER_SYNC_MAX_ENTRIES = 50      # entries per ledger request (each holds one block)
 
 
 def _handshake_signed_bytes(node_id: int, port: int, exchange_pub: bytes) -> bytes:
@@ -158,6 +215,14 @@ class NetworkNode:
         self.mine_interval = mine_interval
         self.enrichers = enrichers or []
         self.provenance_queue = provenance_queue
+        self.chain_dir = chain_dir
+        # Permanent, replicated copy of every public research/dataset event
+        # (see research_ledger.py); unlike the chain it is never archived.
+        self.research_ledger = ResearchLedger(
+            os.path.join(chain_dir, f"research_ledger_{self.node_key}.json")
+        )
+        # peer node_id -> how many of its ledger entries we have processed
+        self.ledger_offsets: dict[int, int] = {}
 
         self.my_priv, self.my_pub = generate_exchange_keypair_raw()
         if signing_key_path:
@@ -187,8 +252,8 @@ class NetworkNode:
         self._handshake_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
         # work sharing hooks (see work_sharing.WorkManager.attach)
-        self.on_verified_block: list[Callable[[dict], None]] = []
-        self.background: list[Callable[[asyncio.Event], "asyncio.Future"]] = []
+        self.on_verified_block: list[Callable[[dict], None]] = [self._record_research]
+        self.background: list[Callable[[asyncio.Event], "asyncio.Future"]] = [self._ledger_sync_loop]
         self.work = None
         self.stats: Counter = Counter()
         self.started_at = time.time()
@@ -356,6 +421,8 @@ class NetworkNode:
 
             elif msg_type == b"C":  # encrypted chain request (for audits)
                 await self._serve_chain_request(reader, writer)
+            elif msg_type == b"L":  # encrypted research ledger request (replication)
+                await self._serve_ledger_request(reader, writer)
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionResetError):
             pass
         except Exception as e:
@@ -531,6 +598,7 @@ class NetworkNode:
 
         # Store in OUR OWN real local chain (previous_hash linked).
         self.chain.append(block)
+        self._record_research(block)
         self.stats["blocks_mined"] += 1
 
         tag = " ".join(f"[{k}]" for k in enrichment)
@@ -624,6 +692,144 @@ class NetworkNode:
             if writer is not None:
                 writer.close()
 
+    # -- research ledger: record, backfill, replicate --
+
+    def _record_research(self, block: dict) -> None:
+        if self.research_ledger.add_block(block):
+            self.stats["research_ledger_added"] += 1
+            self.log(f"research ledger: stored {block.get('research_provenance', block.get('public_dataset_summary', {})).get('event_type', 'dataset summary')} "
+                     f"from node-{block['origin']} block #{block['index']}")
+
+    def _block_authentic(self, block: dict) -> bool:
+        """Full check of a block copied from a ledger: the origin's pinned
+        signing key (or our own), plus the strand/complement/identity checks
+        applied to gossiped blocks."""
+        try:
+            block_hash = bytes.fromhex(block["hash_hex"])
+            if (decode_from_dna(block["strand"]) != block_hash
+                    or decode_from_dna(block["complement"]) != bytes(b ^ 0xFF for b in block_hash)
+                    or block["identity_strand"] != self.identity_strand):
+                return False
+            if block.get("origin") == self.node_id:
+                return verify(signing_pub_from_hex(self.signing_pub_hex), block_signing_bytes(block),
+                              bytes.fromhex(block["sig"]))
+            return self._block_signature_ok(block)
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def backfill_research_ledger(self) -> int:
+        """Import research/dataset blocks this node mined earlier, from its
+        current and archived chains, so daily archiving never loses them."""
+        added = 0
+        for block in signed_blocks_in_chain_files(own_chain_files(self.chain_dir, self.node_id)):
+            if block.get("origin") == self.node_id and self._block_authentic(block):
+                added += self.research_ledger.add_block(block)
+        if added:
+            self.log(f"research ledger: backfilled {added} event(s) from this node's chains")
+        return added
+
+    async def _serve_ledger_request(self, reader, writer) -> None:
+        requester = int.from_bytes(await self._read(reader, 4), "big")
+        length = int.from_bytes(await self._read(reader, 4), "big")
+        if not 0 < length <= 4096:
+            return
+        frame = await self._read(reader, length)
+        session = self.inbound.get(requester)
+        try:
+            if not session or not session.handshake_done:
+                raise LookupError
+            request = json.loads(aead_decrypt(
+                session.session_key, frame, aad=f"ledger-req|node-{requester}->node-{self.node_id}".encode()))
+            since = max(0, int(request.get("since", 0)))
+        except (LookupError, InvalidTag, ValueError, TypeError):
+            self.stats["no_session_replies"] += 1
+            writer.write(STATUS_NO_SESSION)
+            await writer.drain()
+            return
+        entries = self.research_ledger.entries(since, LEDGER_SYNC_MAX_ENTRIES)
+        body = json.dumps({"nonce": request.get("nonce"), "total": len(self.research_ledger),
+                           "entries": entries}).encode()
+        while len(body) > MAX_BLOCK_FRAME_BYTES - 1024 and len(entries) > 1:
+            entries = entries[: len(entries) // 2]   # oldest half first; the rest on the next pull
+            body = json.dumps({"nonce": request.get("nonce"), "total": len(self.research_ledger),
+                               "entries": entries}).encode()
+        sealed = aead_encrypt(session.session_key, body,
+                              aad=f"ledger-resp|node-{self.node_id}->node-{requester}".encode())
+        writer.write(STATUS_OK + len(sealed).to_bytes(4, "big") + sealed)
+        await writer.drain()
+        self.stats["ledger_requests_served"] += 1
+
+    async def fetch_peer_ledger(self, addr: tuple[str, int], since: int) -> Optional[dict]:
+        """{"total": n, "entries": [...]} from the peer's research ledger,
+        starting at entry `since`, or None if it can't be reached."""
+        session = await self._ensure_handshake(addr)
+        if session is None:
+            return None
+        nonce = os.urandom(8).hex()
+        request = aead_encrypt(
+            session.session_key, json.dumps({"nonce": nonce, "since": since}).encode(),
+            aad=f"ledger-req|node-{self.node_id}->node-{session.peer_node_id}".encode())
+        writer = None
+        try:
+            reader, writer = await self._connect(addr)
+            writer.write(b"L" + self.node_id.to_bytes(4, "big") + len(request).to_bytes(4, "big") + request)
+            await writer.drain()
+            if await self._read(reader, 1) != STATUS_OK:
+                self.outbound.pop(addr, None)
+                return None
+            length = int.from_bytes(await self._read(reader, 4), "big")
+            if not 0 < length <= MAX_BLOCK_FRAME_BYTES:
+                return None
+            reply = json.loads(aead_decrypt(
+                session.session_key, await self._read(reader, length),
+                aad=f"ledger-resp|node-{session.peer_node_id}->node-{self.node_id}".encode()))
+            if reply.get("nonce") != nonce or not isinstance(reply.get("entries"), list):
+                return None
+            return reply
+        except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError, InvalidTag, ValueError):
+            return None
+        finally:
+            if writer is not None:
+                writer.close()
+
+    async def sync_research_ledger(self) -> int:
+        """Pull new entries from every peer's ledger and keep the blocks that
+        verify against their origin's key. Returns how many were added."""
+        added = 0
+        for addr in list(self.peers):
+            session = self.outbound.get(addr)
+            peer_id = session.peer_node_id if session and session.handshake_done else None
+            since = self.ledger_offsets.get(peer_id, 0) if peer_id is not None else 0
+            reply = await self.fetch_peer_ledger(addr, since)
+            if reply is None:
+                continue
+            peer_id = self.outbound[addr].peer_node_id if addr in self.outbound else peer_id
+            total = reply.get("total")
+            if isinstance(total, int) and total < since:
+                since = 0   # the peer's ledger was replaced; start over (entries dedupe)
+            for entry in reply["entries"]:
+                block = entry.get("block") if isinstance(entry, dict) else None
+                if isinstance(block, dict) and self._block_authentic(block):
+                    if self.research_ledger.add_block(block):
+                        added += 1
+                        self.stats["research_ledger_synced"] += 1
+            if peer_id is not None:
+                self.ledger_offsets[peer_id] = since + len(reply["entries"])
+        if added:
+            self.log(f"research ledger: synced {added} event(s) from peers")
+        return added
+
+    async def _ledger_sync_loop(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            try:
+                await self.sync_research_ledger()
+            except Exception as e:   # one bad reply must not stop replication
+                self.log(f"research ledger sync error: {e}")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=LEDGER_SYNC_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+
     def address_of(self, node_id: int) -> Optional[tuple[str, int]]:
         """The configured peer address whose handshake authenticated as node_id."""
         for addr, session in self.outbound.items():
@@ -645,10 +851,15 @@ class NetworkNode:
             "pinned_peers": sorted(self.peer_signing_keys),
             "connected_peers": sorted(s.peer_node_id for s in self.outbound.values() if s.handshake_done),
             "work": self.work.status() if self.work else None,
+            "research_ledger": {
+                "entries": len(self.research_ledger),
+                "ok": self.research_ledger.verify()[0],
+            },
         }
 
     async def run(self, stop_event: asyncio.Event):
         await self.start_server()
+        self.backfill_research_ledger()
         background = [asyncio.create_task(loop(stop_event)) for loop in self.background]
         next_provenance_retry = 0.0
         while not stop_event.is_set():

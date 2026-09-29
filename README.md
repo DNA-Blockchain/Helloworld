@@ -449,6 +449,31 @@ withdrawn. The event goes into `autonomous/research-outbox`; node-0, which
 mines it into a signed block and gossips it to its peers. Patient, genomic
 and other private data never go on the chain.
 
+### Research ledger: every node keeps a copy, and you can browse it
+
+Node chains are archived daily and the archive is pruned after 30 days, so
+published research lives in a separate, permanent
+`autonomous/node-N/research_ledger_node-N.json` on every node
+(`research_ledger.py`). Each entry is the original signed block carrying a
+`public_research_records` or other provenance event, or a
+`public_dataset_summary` from `dataset_sharing.py`. A node adds an entry
+when it mines or verifies such a block, backfills from its own current and
+archived chains at startup, and every two minutes pulls new entries from
+its peers' ledgers over the existing encrypted sessions, keeping only
+blocks that verify against the origin node's pinned signing key. The ledger
+file is itself hash-linked, so tampering is detectable.
+
+```powershell
+python research_viewer.py      # http://127.0.0.1:8791
+```
+
+The viewer is local and read-only: a searchable page of published records
+and datasets with how many nodes hold each copy, plus JSON endpoints
+(`/api/records?q=...&source=...`, `/api/records/<source>/<id>`,
+`/api/datasets`, `/api/events`, `/api/status`) and `/api/export`, which
+downloads everything with the original signed blocks for independent
+verification.
+
 ## Cancer -> modeled reference match workflow
 
 `remission_core.py` runs the whole computational workflow in one pass:
