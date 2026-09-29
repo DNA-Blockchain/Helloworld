@@ -285,6 +285,149 @@ def _validate_public_research_records(event: dict) -> None:
         raise ValueError("research records event exceeds the 32-KiB block payload limit")
 
 
+# ------------------------------------------------------- variant classifications
+# What a public variant database reports about a variant, republished with
+# attribution. The classification is ClinVar's and its submitters', never this
+# project's, and it describes a variant's reported significance, not a
+# treatment. Every record carries the URL of the source record so a reader can
+# check the claim where it was made.
+_VARIANT_DATABASES = {
+    "clinvar": {
+        "url": "https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/",
+        "asserted_by": "ClinVar (NCBI) and its submitters, not this project",
+    },
+}
+_VCV_RE = re.compile(r"^VCV[0-9]{9}$")
+_UID_RE = re.compile(r"^[0-9]{1,12}$")
+# ClinVar's classification wording, checked by shape rather than by a fixed
+# list: the vocabulary changes over time, and rejecting a new term would be
+# worse than carrying it verbatim beside the source URL that states it.
+_SIGNIFICANCE_RE = re.compile(r"^[A-Za-z][A-Za-z ,/()'‐-―-]{0,119}$")
+MAX_VARIANT_RECORDS = 20
+MAX_VARIANT_CONDITIONS = 6
+_VARIANT_RECORD_FIELDS = {
+    "uid", "accession", "gene", "title", "variant_type", "significance",
+    "review_status", "last_evaluated", "conditions", "source_url", "record_sha256",
+}
+
+
+def variant_record_hash(record: dict) -> str:
+    """The hash published with a variant record: its reported content, so a
+    reader can confirm the row was not altered after publication."""
+    return _canonical_hash({
+        key: record[key] for key in sorted(_VARIANT_RECORD_FIELDS - {"record_sha256"})
+    })
+
+
+def create_public_variant_classification_event(
+    records: list[dict], *, database: str = "clinvar", confirm_publication: bool = False,
+    time_anchor: dict | None = None,
+) -> dict:
+    """Republish a public variant database's own classifications, attributed.
+    Only public metadata is carried: the variant's reported significance, its
+    review status, the conditions named and a link to the source record."""
+    if confirm_publication is not True:
+        raise PermissionError(
+            "explicit confirmation is required before publishing variant classifications to the chain"
+        )
+    if database not in _VARIANT_DATABASES:
+        raise ValueError(f"database must be one of {sorted(_VARIANT_DATABASES)}")
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_variant_classification",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "database": database,
+        "asserted_by": _VARIANT_DATABASES[database]["asserted_by"],
+        "record_count": len(records),
+        "records": [
+            {
+                "uid": str(record["uid"]),
+                "accession": record["accession"],
+                "gene": record["gene"],
+                "title": str(record["title"])[:300],
+                "variant_type": str(record.get("variant_type") or "")[:80],
+                "significance": record["significance"],
+                "review_status": str(record.get("review_status") or "")[:120],
+                "last_evaluated": str(record.get("last_evaluated") or "")[:32],
+                "conditions": sorted(set(record.get("conditions") or []))[:MAX_VARIANT_CONDITIONS],
+                "source_url": record["source_url"],
+                "record_sha256": variant_record_hash({**record, "uid": str(record["uid"])}),
+            }
+            for record in records
+        ],
+    }
+    if time_anchor is not None:
+        event["time_anchor"] = time_anchor
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_variant_classification(event: dict) -> None:
+    expected = {
+        "schema_version", "event_type", "event_id", "created_at", "classification",
+        "database", "asserted_by", "record_count", "records",
+    }
+    _check_fields(event, expected, "variant classification")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION or event["classification"] != "public":
+        raise ValueError("variant classification event must be a public schema-1 event")
+    if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
+        raise ValueError("variant classification event has an invalid event ID")
+    _require_timestamp(event["created_at"], "variant classification")
+    database = event["database"]
+    if database not in _VARIANT_DATABASES:
+        raise ValueError("variant classification event names an unknown database")
+    if event["asserted_by"] != _VARIANT_DATABASES[database]["asserted_by"]:
+        raise ValueError("variant classification event must attribute the classification to its database")
+    records = event["records"]
+    if (
+        not isinstance(records, list)
+        or not 1 <= len(records) <= MAX_VARIANT_RECORDS
+        or event["record_count"] != len(records)
+    ):
+        raise ValueError(f"variant classification event must hold 1-{MAX_VARIANT_RECORDS} records "
+                         "matching record_count")
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != _VARIANT_RECORD_FIELDS:
+            raise ValueError("published variant record has unsupported fields")
+        if not isinstance(record["uid"], str) or not _UID_RE.fullmatch(record["uid"]):
+            raise ValueError("published variant record has an invalid database UID")
+        if not isinstance(record["accession"], str) or not _VCV_RE.fullmatch(record["accession"]):
+            raise ValueError("published variant record has an invalid accession")
+        if not isinstance(record["gene"], str) or not _GENE_RE.fullmatch(record["gene"]):
+            raise ValueError("published variant record has an invalid gene symbol")
+        if not isinstance(record["title"], str) or not 0 < len(record["title"]) <= 300:
+            raise ValueError("published variant record has an invalid title")
+        if not isinstance(record["significance"], str) or not _SIGNIFICANCE_RE.fullmatch(
+            record["significance"]
+        ):
+            raise ValueError("published variant record has an invalid reported significance")
+        for field, limit in (("variant_type", 80), ("review_status", 120), ("last_evaluated", 32)):
+            if not isinstance(record[field], str) or len(record[field]) > limit:
+                raise ValueError(f"published variant record has an invalid {field}")
+        conditions = record["conditions"]
+        if (
+            not isinstance(conditions, list)
+            or len(conditions) > MAX_VARIANT_CONDITIONS
+            or conditions != sorted(set(conditions))
+            or any(not isinstance(c, str) or not 0 < len(c) <= 120 for c in conditions)
+        ):
+            raise ValueError("published variant record has invalid conditions")
+        expected_url = _VARIANT_DATABASES[database]["url"].format(uid=record["uid"])
+        if record["source_url"] != expected_url:
+            raise ValueError("published variant record's source URL does not match its database record")
+        if record["record_sha256"] != variant_record_hash(record):
+            raise ValueError("published variant record's hash does not match its content")
+        if record["accession"] in seen:
+            raise ValueError("variant classification event lists an accession twice")
+        seen.add(record["accession"])
+    size = len(json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    if size > MAX_PUBLISHED_EVENT_BYTES:
+        raise ValueError("variant classification event exceeds the 32-KiB block payload limit")
+
+
 # ------------------------------------------------------------------ CRISPR
 # Which published records mention CRISPR work, and which genes they name.
 # These are keyword tags over a record's own published title: they say what
@@ -846,6 +989,9 @@ def validate_public_provenance(event: dict) -> None:
         return
     if isinstance(event, dict) and event.get("event_type") == "public_crispr_relevance":
         _validate_public_crispr_relevance(event)
+        return
+    if isinstance(event, dict) and event.get("event_type") == "public_variant_classification":
+        _validate_public_variant_classification(event)
         return
     if isinstance(event, dict) and event.get("event_type") == "public_model_run_record":
         _validate_public_model_run_record(event)

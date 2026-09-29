@@ -611,6 +611,22 @@ and a link, and caches it under `autonomous/clinvar/`. Every row is attributed
 to ClinVar and its submitters; the project never restates it as its own
 judgment, and a reported significance is not a treatment.
 
+Those cached rows can go on the chain, since they are public metadata from a
+public database:
+
+```powershell
+python twin_context.py clinvar BRCA1 --publish                       # dry run
+python twin_context.py clinvar BRCA1 --publish --confirm-publication
+```
+
+A `public_variant_classification` event carries, per variant, the accession,
+gene, variant title, **ClinVar's** reported significance, its review status,
+when it was last evaluated, the conditions named, a link to the source record,
+and a hash of the row so it can be checked for alteration later. The event
+must attribute the classification to ClinVar and its submitters, and the
+validator enforces that wording; accessions already on the chain are skipped,
+so it can be re-run.
+
 `twin_context.py context` records reported tumour annotations for a case (ER,
 PR, HER2, triple-negative, grade G1-G3, stage 0-IV). Anything it does not
 recognise is refused rather than guessed at. **Context never changes the
