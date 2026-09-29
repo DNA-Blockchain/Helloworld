@@ -245,6 +245,16 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             )
         })
         || !output.iter().any(|line| {
+            line.contains(
+                "Ring-3 TCP socket ABI verified: bounded connect/send/receive/close calls and invalid endpoint rejection",
+            )
+        })
+        || !output.iter().any(|line| {
+            line.contains(
+                "Ring-3 UDP datagram verified: user bind/sendto/recvfrom resolved DNS through the kernel network owner",
+            )
+        })
+        || !output.iter().any(|line| {
             line.contains(r#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#)
         })
         || !output.iter().any(|line| {
@@ -369,6 +379,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
     let mut saw_user_filesystem_read = false;
     let mut saw_user_task_output = false;
     let mut saw_user_dns = false;
+    let mut saw_user_tcp_abi = false;
     let mut saw_user_fault_recovery = false;
     let mut saw_task_bundle = false;
     let mut saw_scheduler = false;
@@ -408,6 +419,9 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 ) || line.contains(
                     "Ring-3 DNS syscall unavailable: configured resolver returned no IPv4 result",
                 );
+                saw_user_tcp_abi |= line.contains(
+                    "Ring-3 TCP socket ABI verified: bounded connect/send/receive/close calls and invalid endpoint rejection",
+                );
                 saw_user_fault_recovery |= line.contains(
                     "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",
                 );
@@ -438,6 +452,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     && saw_user_filesystem_read
                     && saw_user_task_output
                     && saw_user_dns
+                    && saw_user_tcp_abi
                     && saw_user_fault_recovery
                     && saw_task_bundle
                     && saw_scheduler
@@ -494,6 +509,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_user_filesystem_read
         && saw_user_task_output
         && saw_user_dns
+        && saw_user_tcp_abi
         && saw_user_fault_recovery
         && saw_task_bundle
         && saw_scheduler
@@ -507,7 +523,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
         && saw_service_ready)
     {
         return Err(format!(
-            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, guest checkpoints: {saw_guest_checkpoint}, address spaces: {saw_address_spaces}, ELF user process: {saw_user_syscall}, ring-3 filesystem/stdout: {saw_user_filesystem_read}, guest task output: {saw_user_task_output}, ring-3 DNS: {saw_user_dns}, user protection-fault recovery: {saw_user_fault_recovery}, task bundle: {saw_task_bundle}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
+            "The controlled-router check did not verify all expected behavior (PIT timer: {saw_timer}, persistent storage: {saw_storage}, filesystem: {saw_filesystem}, physical frame allocator: {saw_memory}, virtual memory: {saw_virtual_memory}, growing kernel heap: {saw_heap}, separate kernel task stack: {saw_kernel_task}, guest checkpoints: {saw_guest_checkpoint}, address spaces: {saw_address_spaces}, ELF user process: {saw_user_syscall}, ring-3 filesystem/stdout: {saw_user_filesystem_read}, guest task output: {saw_user_task_output}, ring-3 DNS: {saw_user_dns}, ring-3 TCP ABI: {saw_user_tcp_abi}, user protection-fault recovery: {saw_user_fault_recovery}, task bundle: {saw_task_bundle}, cooperative scheduler: {saw_scheduler}, DHCP: {saw_dhcp}, IPv4 echo: {saw_ipv4_echo}, SLAAC address: {saw_slaac}, RA default route: {saw_default_route}, IPv6 echo: {saw_ipv6_echo}, service ready: {saw_service_ready})."
         ));
     }
     Ok(())

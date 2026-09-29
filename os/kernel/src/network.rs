@@ -19,6 +19,11 @@ const PING_WAIT_MS: i64 = 3_000;
 const DNS_WAIT_MS: i64 = 3_000;
 const HTTP_PORT: u16 = 8080;
 const HTTP_REQUEST_CAPACITY: usize = 512;
+const USER_SOCKET_BUFFER_BYTES: usize = 1024;
+const USER_TCP_LOCAL_PORT: u16 = 53055;
+const USER_TCP_CONNECT_TIMEOUT_MS: i64 = 5_000;
+const USER_SOCKET_IO_TIMEOUT_MS: i64 = 2_000;
+pub(crate) const USER_UDP_LOCAL_PORT: u16 = 53056;
 const IPV6_TEST_GATEWAY: Ipv6Address = Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
 const DNS_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 3);
 const DNS_TEST_NAME: &[u8] = b"example.com";
@@ -27,11 +32,20 @@ const DNS_LOCAL_PORT: u16 = 53053;
 const USER_DNS_MAX_NAME: usize = 253;
 const USER_DNS_PACKET_SIZE: usize = USER_DNS_MAX_NAME + 32;
 
+#[derive(Clone, Copy)]
 struct UserNetworkContext {
     interface: *mut Interface,
     device: *mut E1000,
     sockets: *mut (),
     dns_handle: smoltcp::iface::SocketHandle,
+    tcp_handle: smoltcp::iface::SocketHandle,
+    udp_handle: smoltcp::iface::SocketHandle,
+}
+
+#[derive(Clone, Copy)]
+struct ActiveNetworkHandles {
+    tcp: smoltcp::iface::SocketHandle,
+    udp: smoltcp::iface::SocketHandle,
 }
 
 static USER_NETWORK_CONTEXT: AtomicPtr<UserNetworkContext> = AtomicPtr::new(core::ptr::null_mut());
@@ -163,12 +177,29 @@ pub(crate) fn run(
         udp::PacketBuffer::new(&mut dns_tx_metadata[..], &mut dns_tx_data[..]),
     );
 
-    let mut storage = [SocketStorage::EMPTY; 4];
+    let mut user_tcp_rx_data = [0; USER_SOCKET_BUFFER_BYTES];
+    let mut user_tcp_tx_data = [0; USER_SOCKET_BUFFER_BYTES];
+    let user_tcp_socket = tcp::Socket::new(
+        tcp::SocketBuffer::new(&mut user_tcp_rx_data[..]),
+        tcp::SocketBuffer::new(&mut user_tcp_tx_data[..]),
+    );
+    let mut user_udp_rx_metadata = [udp::PacketMetadata::EMPTY; 2];
+    let mut user_udp_rx_data = [0; USER_SOCKET_BUFFER_BYTES];
+    let mut user_udp_tx_metadata = [udp::PacketMetadata::EMPTY; 2];
+    let mut user_udp_tx_data = [0; USER_SOCKET_BUFFER_BYTES];
+    let user_udp_socket = udp::Socket::new(
+        udp::PacketBuffer::new(&mut user_udp_rx_metadata[..], &mut user_udp_rx_data[..]),
+        udp::PacketBuffer::new(&mut user_udp_tx_metadata[..], &mut user_udp_tx_data[..]),
+    );
+
+    let mut storage = [SocketStorage::EMPTY; 6];
     let mut sockets = SocketSet::new(&mut storage[..]);
     let dhcp_handle = sockets.add(dhcp_socket);
     let icmp_handle = sockets.add(icmp_socket);
     let tcp_handle = sockets.add(tcp_socket);
     let dns_handle = sockets.add(dns_socket);
+    let user_tcp_handle = sockets.add(user_tcp_socket);
+    let user_udp_handle = sockets.add(user_udp_socket);
 
     let dhcp_deadline = now_ms().saturating_add(DHCP_WAIT_MS);
     let mut dhcp_config = None;
@@ -280,6 +311,8 @@ pub(crate) fn run(
         device: &mut device,
         sockets: (&mut sockets as *mut SocketSet<'_>).cast(),
         dns_handle,
+        tcp_handle: user_tcp_handle,
+        udp_handle: user_udp_handle,
     };
     let context_pointer = &mut user_network_context as *mut UserNetworkContext;
     USER_NETWORK_CONTEXT
@@ -291,8 +324,18 @@ pub(crate) fn run(
         )
         .map_err(|_| "user networking context is already active")?;
     let user_process_result = crate::address_space::verify_user_syscall();
+    let tcp_cleanup = user_tcp_close();
+    let udp_cleanup = user_udp_close();
     USER_NETWORK_CONTEXT.store(core::ptr::null_mut(), Ordering::Release);
-    let (user_exit_code, user_dns_verified) = user_process_result?;
+    tcp_cleanup?;
+    udp_cleanup?;
+    let (
+        user_exit_code,
+        user_dns_verified,
+        user_udp_verified,
+        user_tcp_abi_verified,
+        user_tcp_connected,
+    ) = user_process_result?;
     record_telemetry(telemetry, crate::telemetry::STAGE_USER_PROCESS_CHECKED);
     let _ = writeln!(
         Serial,
@@ -312,6 +355,34 @@ pub(crate) fn run(
         let _ = writeln!(
             Serial,
             "Ring-3 DNS syscall unavailable: configured resolver returned no IPv4 result."
+        );
+    }
+    if user_tcp_abi_verified {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 TCP socket ABI verified: bounded connect/send/receive/close calls and invalid endpoint rejection."
+        );
+    }
+    if user_tcp_connected {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 TCP connection verified: bounded connect/close handshake to the resolved test host."
+        );
+    } else {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 TCP live connection unavailable: the resolved test host did not accept a connection."
+        );
+    }
+    if user_udp_verified {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 UDP datagram verified: user bind/sendto/recvfrom resolved DNS through the kernel network owner."
+        );
+    } else {
+        let _ = writeln!(
+            Serial,
+            "Ring-3 UDP round trip unavailable: no upstream DNS response to the user datagram."
         );
     }
     let _ = writeln!(
@@ -371,6 +442,238 @@ pub(crate) fn resolve_user_dns(name: &str) -> Result<[u8; 4], &'static str> {
     result?
         .map(|address| address.octets())
         .ok_or("user DNS query timed out")
+}
+
+fn with_active_network<T>(
+    operation: impl FnOnce(
+        &mut Interface,
+        &mut E1000,
+        &mut SocketSet<'_>,
+        ActiveNetworkHandles,
+    ) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    let context_pointer = USER_NETWORK_CONTEXT.load(Ordering::Acquire);
+    if context_pointer.is_null() {
+        return Err("user socket syscall has no active kernel network owner");
+    }
+
+    // This context is installed only during the synchronous, single-core
+    // ring-3 smoke test; it is not a concurrent process networking interface.
+    let context = unsafe { *context_pointer };
+    let interface = unsafe { &mut *context.interface };
+    let device = unsafe { &mut *context.device };
+    let sockets: &mut SocketSet<'_> = unsafe { &mut *context.sockets.cast() };
+    operation(
+        interface,
+        device,
+        sockets,
+        ActiveNetworkHandles {
+            tcp: context.tcp_handle,
+            udp: context.udp_handle,
+        },
+    )
+}
+
+pub(crate) fn user_tcp_connect(address: [u8; 4], port: u16) -> Result<(), &'static str> {
+    let remote = Ipv4Address::new(address[0], address[1], address[2], address[3]);
+    if !valid_remote_ipv4(remote) || port == 0 {
+        return Err("TCP endpoint is invalid");
+    }
+    with_active_network(|interface, device, sockets, handles| {
+        let socket = sockets.get_mut::<tcp::Socket>(handles.tcp);
+        socket.abort();
+        socket
+            .connect(
+                interface.context(),
+                (IpAddress::Ipv4(remote), port),
+                USER_TCP_LOCAL_PORT,
+            )
+            .map_err(|_| "could not start TCP connection")?;
+
+        let deadline = now_ms().saturating_add(USER_TCP_CONNECT_TIMEOUT_MS);
+        let interrupt_restore = InterruptRestore::enable();
+        let result = loop {
+            interface.poll(Instant::from_millis(now_ms()), device, sockets);
+            let state = sockets.get::<tcp::Socket>(handles.tcp).state();
+            if state == tcp::State::Established {
+                break Ok(());
+            }
+            if state == tcp::State::Closed || state == tcp::State::TimeWait {
+                break Err("TCP peer refused or closed the connection");
+            }
+            if device.take_tx_error() {
+                break Err("E1000 transmit descriptor did not complete");
+            }
+            if now_ms() >= deadline {
+                break Err("TCP connection timed out");
+            }
+            crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
+        };
+        drop(interrupt_restore);
+        if result.is_err() {
+            sockets.get_mut::<tcp::Socket>(handles.tcp).abort();
+        }
+        result
+    })
+}
+
+pub(crate) fn user_tcp_send(data: &[u8]) -> Result<usize, &'static str> {
+    if data.is_empty() || data.len() > USER_SOCKET_BUFFER_BYTES {
+        return Err("TCP write length is outside the supported bounds");
+    }
+    with_active_network(|interface, device, sockets, handles| {
+        let sent = {
+            let socket = sockets.get_mut::<tcp::Socket>(handles.tcp);
+            if !socket.can_send() {
+                return Err("TCP socket is not connected or has no send capacity");
+            }
+            socket
+                .send_slice(data)
+                .map_err(|_| "could not queue TCP data")?
+        };
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
+        if device.take_tx_error() {
+            return Err("E1000 transmit descriptor did not complete");
+        }
+        Ok(sent)
+    })
+}
+
+pub(crate) fn user_tcp_receive(output: &mut [u8]) -> Result<usize, &'static str> {
+    if output.is_empty() || output.len() > USER_SOCKET_BUFFER_BYTES {
+        return Err("TCP read capacity is outside the supported bounds");
+    }
+    with_active_network(|interface, device, sockets, handles| {
+        if !sockets.get::<tcp::Socket>(handles.tcp).is_active() {
+            return Err("TCP socket is not connected");
+        }
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
+        let socket = sockets.get_mut::<tcp::Socket>(handles.tcp);
+        if !socket.can_recv() {
+            return Ok(0);
+        }
+        socket
+            .recv_slice(output)
+            .map_err(|_| "could not read TCP data")
+    })
+}
+
+pub(crate) fn user_tcp_close() -> Result<(), &'static str> {
+    with_active_network(|_, _, sockets, handles| {
+        sockets.get_mut::<tcp::Socket>(handles.tcp).abort();
+        Ok(())
+    })
+}
+
+pub(crate) fn user_udp_bind(port: u16) -> Result<(), &'static str> {
+    if port == 0 {
+        return Err("UDP local port must be nonzero");
+    }
+    with_active_network(|_, _, sockets, handles| {
+        let socket = sockets.get_mut::<udp::Socket>(handles.udp);
+        socket.close();
+        socket
+            .bind(port)
+            .map_err(|_| "could not bind the user UDP socket")
+    })
+}
+
+pub(crate) fn user_udp_send(
+    data: &[u8],
+    address: [u8; 4],
+    port: u16,
+) -> Result<usize, &'static str> {
+    let remote = Ipv4Address::new(address[0], address[1], address[2], address[3]);
+    if data.is_empty() || data.len() > USER_SOCKET_BUFFER_BYTES {
+        return Err("UDP datagram length is outside the supported bounds");
+    }
+    if !valid_remote_ipv4(remote) || port == 0 {
+        return Err("UDP endpoint is invalid");
+    }
+    with_active_network(|interface, device, sockets, handles| {
+        let socket = sockets.get_mut::<udp::Socket>(handles.udp);
+        if !socket.is_open() {
+            return Err("UDP socket is not bound");
+        }
+        socket
+            .send_slice(data, (IpAddress::Ipv4(remote), port))
+            .map_err(|_| "could not queue UDP datagram")?;
+        interface.poll(Instant::from_millis(now_ms()), device, sockets);
+        if device.take_tx_error() {
+            return Err("E1000 transmit descriptor did not complete");
+        }
+        Ok(data.len())
+    })
+}
+
+pub(crate) fn user_udp_receive(output: &mut [u8]) -> Result<(usize, [u8; 4], u16), &'static str> {
+    if output.is_empty() || output.len() > USER_SOCKET_BUFFER_BYTES {
+        return Err("UDP receive capacity is outside the supported bounds");
+    }
+    with_active_network(|interface, device, sockets, handles| {
+        if !sockets.get::<udp::Socket>(handles.udp).is_open() {
+            return Err("UDP socket is not bound");
+        }
+        let deadline = now_ms().saturating_add(USER_SOCKET_IO_TIMEOUT_MS);
+        let interrupt_restore = InterruptRestore::enable();
+        let result = loop {
+            interface.poll(Instant::from_millis(now_ms()), device, sockets);
+            let mut payload = [0; USER_SOCKET_BUFFER_BYTES];
+            let received = sockets
+                .get_mut::<udp::Socket>(handles.udp)
+                .recv_slice(&mut payload);
+            if let Ok((length, metadata)) = received {
+                let IpAddress::Ipv4(address) = metadata.endpoint.addr else {
+                    break Err("user UDP socket received a non-IPv4 datagram");
+                };
+                if length > output.len() {
+                    break Err("UDP datagram exceeds the user receive capacity");
+                }
+                output[..length].copy_from_slice(&payload[..length]);
+                break Ok((length, address.octets(), metadata.endpoint.port));
+            }
+            if device.take_tx_error() {
+                break Err("E1000 transmit descriptor did not complete");
+            }
+            if now_ms() >= deadline {
+                break Ok((0, [0; 4], 0));
+            }
+            crate::timer::wait_for_ticks(crate::timer::ticks().saturating_add(1));
+        };
+        drop(interrupt_restore);
+        result
+    })
+}
+
+pub(crate) fn user_udp_close() -> Result<(), &'static str> {
+    with_active_network(|_, _, sockets, handles| {
+        sockets.get_mut::<udp::Socket>(handles.udp).close();
+        Ok(())
+    })
+}
+
+fn valid_remote_ipv4(address: Ipv4Address) -> bool {
+    !address.is_unspecified() && !address.is_broadcast() && !address.is_multicast()
+}
+
+pub(crate) fn build_user_udp_dns_probe(output: &mut [u8]) -> Result<usize, &'static str> {
+    build_dns_query(output, DNS_TEST_ID, DNS_TEST_NAME)
+}
+
+pub(crate) fn verify_user_udp_dns_probe(
+    packet: &[u8],
+    address: [u8; 4],
+    port: u16,
+) -> Result<Ipv4Address, &'static str> {
+    if address != DNS_SERVER.octets() || port != 53 {
+        return Err("user UDP smoke test received a response from the wrong endpoint");
+    }
+    parse_dns_a_response(packet, DNS_TEST_ID, DNS_TEST_NAME)?
+        .ok_or("user UDP DNS response did not contain an IPv4 address")
+}
+
+pub(crate) fn user_dns_udp_endpoint_argument() -> u64 {
+    (u64::from(53u16) << 32) | u64::from(u32::from_be_bytes(DNS_SERVER.octets()))
 }
 
 fn valid_dns_name(name: &[u8]) -> bool {

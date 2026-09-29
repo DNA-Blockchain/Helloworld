@@ -243,7 +243,7 @@ pub(crate) fn verify_isolation() -> Result<(), &'static str> {
     verification
 }
 
-pub(crate) fn verify_user_syscall() -> Result<(u64, bool), &'static str> {
+pub(crate) fn verify_user_syscall() -> Result<(u64, bool, bool, bool, bool), &'static str> {
     let user_code = user_test_address()?;
     let user_stack = user_code
         .checked_add(PAGE_SIZE)
@@ -308,6 +308,9 @@ pub(crate) fn verify_user_syscall() -> Result<(u64, bool), &'static str> {
     }
 
     let mut user_dns_verified = false;
+    let mut user_udp_verified = false;
+    let mut user_tcp_abi_verified = false;
+    let mut user_tcp_connected = false;
     let result = (|| {
         activate(&space)?;
         map_user_page(&mut space, user_code)?;
@@ -449,6 +452,151 @@ pub(crate) fn verify_user_syscall() -> Result<(u64, bool), &'static str> {
             _ => return Err("ring-3 DNS test returned an unexpected status"),
         }
 
+        let mut invalid_tcp_connect = [0; 26];
+        invalid_tcp_connect[..5].copy_from_slice(&[0xb8, 5, 0, 0, 0]);
+        invalid_tcp_connect[5..7].copy_from_slice(&[0x31, 0xff]);
+        invalid_tcp_connect[7..12].copy_from_slice(&[0xbe, 0xbb, 1, 0, 0]);
+        invalid_tcp_connect[12..14].copy_from_slice(&[0xcd, 0x80]);
+        invalid_tcp_connect[14..17].copy_from_slice(&[0x48, 0x89, 0xc7]);
+        invalid_tcp_connect[17..22].copy_from_slice(&[0xb8, 1, 0, 0, 0]);
+        invalid_tcp_connect[22..24].copy_from_slice(&[0xcd, 0x80]);
+        invalid_tcp_connect[24..26].copy_from_slice(&[0x0f, 0x0b]);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                invalid_tcp_connect.as_ptr(),
+                user_code as *mut u8,
+                invalid_tcp_connect.len(),
+            );
+        }
+        if super::syscall::verify_user_exit(user_code as usize, user_stack_top)? != u64::MAX - 1 {
+            return Err("ring-3 TCP connect accepted an unspecified remote address");
+        }
+
+        let mut unconnected_tcp_send = [0; 34];
+        unconnected_tcp_send[..5].copy_from_slice(&[0xb8, 6, 0, 0, 0]);
+        unconnected_tcp_send[5..7].copy_from_slice(&[0x48, 0xbf]);
+        unconnected_tcp_send[15..20].copy_from_slice(&[0xbe, 1, 0, 0, 0]);
+        unconnected_tcp_send[20..22].copy_from_slice(&[0xcd, 0x80]);
+        unconnected_tcp_send[22..25].copy_from_slice(&[0x48, 0x89, 0xc7]);
+        unconnected_tcp_send[25..30].copy_from_slice(&[0xb8, 1, 0, 0, 0]);
+        unconnected_tcp_send[30..32].copy_from_slice(&[0xcd, 0x80]);
+        unconnected_tcp_send[32..34].copy_from_slice(&[0x0f, 0x0b]);
+        unconnected_tcp_send[7..15].copy_from_slice(&user_buffer.to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                unconnected_tcp_send.as_ptr(),
+                user_code as *mut u8,
+                unconnected_tcp_send.len(),
+            );
+        }
+        if super::syscall::verify_user_exit(user_code as usize, user_stack_top)? != u64::MAX - 1 {
+            return Err("ring-3 TCP send accepted an unconnected socket");
+        }
+        user_tcp_abi_verified = true;
+
+        if user_dns_verified {
+            let mut probe_query = [0; 291];
+            let query_length = super::network::build_user_udp_dns_probe(&mut probe_query)?;
+            let query_address = user_buffer + 256;
+            let udp_output = user_buffer + 512;
+            let udp_endpoint_output = user_buffer + 1600;
+            copy_to_user(query_address, &probe_query[..query_length])?;
+            let mut udp_code = [0; 88];
+            udp_code[..5].copy_from_slice(&[0xb8, 9, 0, 0, 0]);
+            udp_code[5..10].copy_from_slice(&[
+                0xbf,
+                super::network::USER_UDP_LOCAL_PORT as u8,
+                (super::network::USER_UDP_LOCAL_PORT >> 8) as u8,
+                0,
+                0,
+            ]);
+            udp_code[10..12].copy_from_slice(&[0xcd, 0x80]);
+            udp_code[12..17].copy_from_slice(&[0xb8, 10, 0, 0, 0]);
+            udp_code[17..19].copy_from_slice(&[0x48, 0xbf]);
+            udp_code[19..27].copy_from_slice(&query_address.to_le_bytes());
+            udp_code[27..32].copy_from_slice(&[0xbe, query_length as u8, 0, 0, 0]);
+            udp_code[32..34].copy_from_slice(&[0x48, 0xba]);
+            udp_code[34..42]
+                .copy_from_slice(&super::network::user_dns_udp_endpoint_argument().to_le_bytes());
+            udp_code[42..44].copy_from_slice(&[0xcd, 0x80]);
+            udp_code[44..49].copy_from_slice(&[0xb8, 11, 0, 0, 0]);
+            udp_code[49..51].copy_from_slice(&[0x48, 0xbf]);
+            udp_code[51..59].copy_from_slice(&udp_output.to_le_bytes());
+            udp_code[59..64].copy_from_slice(&[0xbe, 0, 4, 0, 0]);
+            udp_code[64..66].copy_from_slice(&[0x48, 0xba]);
+            udp_code[66..74].copy_from_slice(&udp_endpoint_output.to_le_bytes());
+            udp_code[74..76].copy_from_slice(&[0xcd, 0x80]);
+            udp_code[76..79].copy_from_slice(&[0x48, 0x89, 0xc7]);
+            udp_code[79..84].copy_from_slice(&[0xb8, 1, 0, 0, 0]);
+            udp_code[84..86].copy_from_slice(&[0xcd, 0x80]);
+            udp_code[86..88].copy_from_slice(&[0x0f, 0x0b]);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    udp_code.as_ptr(),
+                    user_code as *mut u8,
+                    udp_code.len(),
+                );
+            }
+            let response_length =
+                super::syscall::verify_user_exit(user_code as usize, user_stack_top)?;
+            let response_length =
+                usize::try_from(response_length).map_err(|_| "ring-3 UDP DNS syscall failed")?;
+            if response_length == 0 || response_length > 1024 {
+                return Err("ring-3 UDP DNS syscall returned an invalid datagram length");
+            }
+            let response =
+                unsafe { core::slice::from_raw_parts(udp_output as *const u8, response_length) };
+            let endpoint =
+                unsafe { core::slice::from_raw_parts(udp_endpoint_output as *const u8, 6) };
+            let resolved = super::network::verify_user_udp_dns_probe(
+                response,
+                [endpoint[0], endpoint[1], endpoint[2], endpoint[3]],
+                u16::from_be_bytes([endpoint[4], endpoint[5]]),
+            )?;
+            if resolved.octets()
+                != unsafe { core::slice::from_raw_parts(file_output as *const u8, 4) }
+            {
+                return Err("ring-3 UDP DNS result differs from the kernel resolver result");
+            }
+            user_udp_verified = true;
+        }
+
+        if user_dns_verified {
+            let resolved_address =
+                unsafe { core::slice::from_raw_parts(file_output as *const u8, 4) };
+            let destination = u32::from_be_bytes([
+                resolved_address[0],
+                resolved_address[1],
+                resolved_address[2],
+                resolved_address[3],
+            ]);
+            let mut tcp_connect_code = [0; 50];
+            tcp_connect_code[..5].copy_from_slice(&[0xb8, 5, 0, 0, 0]);
+            tcp_connect_code[5..10].copy_from_slice(&[0xbf, 0, 0, 0, 0]);
+            tcp_connect_code[5 + 1..5 + 5].copy_from_slice(&destination.to_le_bytes());
+            tcp_connect_code[10..15].copy_from_slice(&[0xbe, 80, 0, 0, 0]);
+            tcp_connect_code[15..17].copy_from_slice(&[0xcd, 0x80]);
+            tcp_connect_code[17..20].copy_from_slice(&[0x48, 0x85, 0xc0]);
+            tcp_connect_code[20..22].copy_from_slice(&[0x75, 14]);
+            tcp_connect_code[22..27].copy_from_slice(&[0xb8, 8, 0, 0, 0]);
+            tcp_connect_code[27..29].copy_from_slice(&[0xcd, 0x80]);
+            tcp_connect_code[29..34].copy_from_slice(&[0xbf, 1, 0, 0, 0]);
+            tcp_connect_code[34..36].copy_from_slice(&[0xeb, 5]);
+            tcp_connect_code[36..41].copy_from_slice(&[0xbf, 0, 0, 0, 0]);
+            tcp_connect_code[41..46].copy_from_slice(&[0xb8, 1, 0, 0, 0]);
+            tcp_connect_code[46..48].copy_from_slice(&[0xcd, 0x80]);
+            tcp_connect_code[48..50].copy_from_slice(&[0x0f, 0x0b]);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    tcp_connect_code.as_ptr(),
+                    user_code as *mut u8,
+                    tcp_connect_code.len(),
+                );
+            }
+            user_tcp_connected =
+                super::syscall::verify_user_exit(user_code as usize, user_stack_top)? == 1;
+        }
+
         let mut fault_code = [
             0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x48, 0x8b, 0x00, 0xb8, 0x2a, 0x00, 0x00, 0x00,
             0xcd, 0x80, 0x0f, 0x0b,
@@ -551,7 +699,13 @@ pub(crate) fn verify_user_syscall() -> Result<(u64, bool), &'static str> {
         if process_exit != 42 {
             return Err("ELF process lifecycle returned an unexpected exit status");
         }
-        Ok((exit_code, user_dns_verified))
+        Ok((
+            exit_code,
+            user_dns_verified,
+            user_udp_verified,
+            user_tcp_abi_verified,
+            user_tcp_connected,
+        ))
     })();
 
     let restore_result = activate_root(kernel_root);

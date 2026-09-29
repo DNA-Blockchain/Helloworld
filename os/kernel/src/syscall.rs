@@ -9,11 +9,20 @@ const SYSCALL_EXIT: u64 = 1;
 const SYSCALL_READ_FILE: u64 = 2;
 const SYSCALL_WRITE: u64 = 3;
 const SYSCALL_DNS_LOOKUP: u64 = 4;
+const SYSCALL_TCP_CONNECT: u64 = 5;
+const SYSCALL_TCP_SEND: u64 = 6;
+const SYSCALL_TCP_RECEIVE: u64 = 7;
+const SYSCALL_TCP_CLOSE: u64 = 8;
+const SYSCALL_UDP_BIND: u64 = 9;
+const SYSCALL_UDP_SEND: u64 = 10;
+const SYSCALL_UDP_RECEIVE: u64 = 11;
+const SYSCALL_UDP_CLOSE: u64 = 12;
 const SYSCALL_ERROR: u64 = u64::MAX - 1;
 const MAX_FILENAME_BYTES: usize = 16;
 const MAX_WRITE_BYTES: usize = 4096;
 const WRITE_CHUNK_BYTES: usize = 128;
 const MAX_DNS_NAME_BYTES: usize = 253;
+const MAX_SOCKET_IO_BYTES: usize = 1024;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
 const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
 
@@ -405,6 +414,118 @@ extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argu
         };
         return super::address_space::copy_to_user(argument3, &address)
             .map(|()| 4)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_TCP_CONNECT {
+        let Ok(port) = u16::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        let Ok(address) = u32::try_from(argument1) else {
+            return SYSCALL_ERROR;
+        };
+        return super::network::user_tcp_connect(address.to_be_bytes(), port)
+            .map(|()| 0)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_TCP_SEND {
+        let Ok(length) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if length == 0
+            || length > MAX_SOCKET_IO_BYTES
+            || super::address_space::validate_user_buffer(argument1, length, false).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        let mut data = [0; MAX_SOCKET_IO_BYTES];
+        if super::address_space::copy_from_user(argument1, &mut data[..length]).is_err() {
+            return SYSCALL_ERROR;
+        }
+        return super::network::user_tcp_send(&data[..length])
+            .map(|sent| sent as u64)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_TCP_RECEIVE {
+        let Ok(capacity) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if capacity == 0
+            || capacity > MAX_SOCKET_IO_BYTES
+            || super::address_space::validate_user_buffer(argument1, capacity, true).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        let mut data = [0; MAX_SOCKET_IO_BYTES];
+        let Ok(length) = super::network::user_tcp_receive(&mut data[..capacity]) else {
+            return SYSCALL_ERROR;
+        };
+        return super::address_space::copy_to_user(argument1, &data[..length])
+            .map(|()| length as u64)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_TCP_CLOSE {
+        return super::network::user_tcp_close()
+            .map(|()| 0)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_UDP_BIND {
+        let Ok(port) = u16::try_from(argument1) else {
+            return SYSCALL_ERROR;
+        };
+        return super::network::user_udp_bind(port)
+            .map(|()| 0)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_UDP_SEND {
+        let Ok(length) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if length == 0
+            || length > MAX_SOCKET_IO_BYTES
+            || argument3 >> 48 != 0
+            || super::address_space::validate_user_buffer(argument1, length, false).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        let mut data = [0; MAX_SOCKET_IO_BYTES];
+        if super::address_space::copy_from_user(argument1, &mut data[..length]).is_err() {
+            return SYSCALL_ERROR;
+        }
+        let address = (argument3 as u32).to_be_bytes();
+        let port = (argument3 >> 32) as u16;
+        return super::network::user_udp_send(&data[..length], address, port)
+            .map(|sent| sent as u64)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_UDP_RECEIVE {
+        let Ok(capacity) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if capacity == 0
+            || capacity > MAX_SOCKET_IO_BYTES
+            || super::address_space::validate_user_buffer(argument1, capacity, true).is_err()
+            || super::address_space::validate_user_buffer(argument3, 6, true).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        let mut data = [0; MAX_SOCKET_IO_BYTES];
+        let Ok((length, address, port)) = super::network::user_udp_receive(&mut data[..capacity])
+        else {
+            return SYSCALL_ERROR;
+        };
+        if super::address_space::copy_to_user(argument1, &data[..length]).is_err() {
+            return SYSCALL_ERROR;
+        }
+        let mut endpoint = [0; 6];
+        endpoint[..4].copy_from_slice(&address);
+        endpoint[4..].copy_from_slice(&port.to_be_bytes());
+        return super::address_space::copy_to_user(argument3, &endpoint)
+            .map(|()| length as u64)
+            .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_UDP_CLOSE {
+        return super::network::user_udp_close()
+            .map(|()| 0)
             .unwrap_or(SYSCALL_ERROR);
     }
     SYSCALL_ERROR

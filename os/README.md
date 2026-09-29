@@ -65,9 +65,39 @@ this kernel.
   SLAAC test verifies that unavailable upstream DNS is reported without
   preventing the HTTP service from starting. It is exercised only while the
   boot test temporarily lends the network owner to a synchronous ring-3 smoke
-  program. This is not a reusable process networking API: processes cannot
-  create/manage arbitrary UDP or TCP sockets, perform nonblocking I/O, or use
-  TLS.
+  program. DNS remains a test-context service, not a general process resolver.
+- Adds bounded TCP/UDP socket syscalls 5-12 for the same synchronous ring-3
+  smoke context. TCP connect takes an IPv4 address in `RDI` (a big-endian
+  32-bit address value) and port in `RSI`, and blocks for at most five seconds.
+  TCP send/receive use `RDI` = user buffer and `RSI` = length/capacity, capped
+  at 1024 bytes; send may be partial, receive is a single poll and returns zero
+  when no data is available. TCP close aborts the connection. UDP bind takes
+  a nonzero local port in `RDI`; sendto uses `RDI` = readable buffer, `RSI` =
+  length, and `RDX` = packed IPv4/port (IPv4 in low 32 bits, port in bits
+  32-47). Recvfrom uses `RDI` = writable packet buffer, `RSI` = capacity, and
+  `RDX` = writable 6-byte source endpoint (4 IPv4 bytes, then 2 big-endian port
+  bytes); it waits at most two seconds and returns zero on timeout. UDP payloads
+  are capped at 1024 bytes. Syscall 8 closes TCP and syscall 12 closes UDP.
+  All calls return `u64::MAX - 1` on error. QEMU exercises UDP sendto/recvfrom
+  against its configured DNS resolver and verifies the response source and
+  parsed answer. It also checks TCP endpoint rejection and send-before-connect,
+  and attempts a ring-3 TCP connect/close to the resolved test host on port 80;
+  this last check is reported as unavailable rather than failing when the
+  remote host or network does not accept it. These are early, single-context
+  syscalls, not a process-owned descriptor table: there is one preallocated TCP
+  socket and one UDP socket, accessible only while the boot smoke context is
+  active. General process scheduling, socket ownership/capabilities,
+  asynchronous readiness, IPv6 sockets, and robust stream EOF/error
+  distinctions are not implemented.
+- TLS is deliberately not claimed or enabled. Before a guest TLS client is
+  safe, the OS needs a cryptographically secure entropy source for TLS and TCP
+  sequence numbers, trustworthy time, bounded certificate-chain and hostname
+  validation with a managed trust store, and a maintained no-std TLS stack
+  that fits the process/runtime model. The current deterministic network seed,
+  absent certificate store, limited process isolation, and lack of socket
+  capabilities are not suitable foundations for authenticating cloud or AI
+  endpoints. Until those prerequisites are implemented and tested, use the
+  host-side encrypted backup client for remote transfers.
 - Provides a kernel heap backed by mapped pages and a first-fit free-list
   allocator. It starts at 64 KiB and can grow by contiguous pages to at most
   512 KiB. The boot check exercises heap growth and Rust `Vec` and `Box`
@@ -244,9 +274,17 @@ can still reveal sensitive information and require a privacy review.
 
 - Rust nightly via rustup, with `llvm-tools-preview` and the
   `x86_64-unknown-none` target. The checked-in `rust-toolchain.toml` selects
-  these for this subproject only.
+  a host-neutral dated nightly for this subproject only, including `rustfmt`;
+  rustup selects its configured host triple.
 - QEMU x86_64 (`qemu-system-x86_64`) on `PATH`.
-- On Windows, the pinned GNU-host Rust toolchain needs a MinGW-w64 linker.
+- On Windows, the pre-existing GNU-host Rust toolchain needs a MinGW-w64
+  linker. If rustup is configured for MSVC, set
+  `$env:RUSTUP_TOOLCHAIN = "nightly-2026-09-27-x86_64-pc-windows-gnu"`
+  in PowerShell before invoking Cargo to retain the GNU host.
+- On Ubuntu/WSL, install `build-essential`, `ca-certificates`, `curl`,
+  `qemu-system-x86`, and `qemu-utils`. Keep the project on its existing host
+  filesystem if desired, but set a WSL-local `CARGO_TARGET_DIR` so Linux and
+  Windows never share generated artifacts.
 - Python 3 is needed for the optional controlled SLAAC router test.
 - Network access to download the pinned Rust crates on the first build.
 
@@ -256,6 +294,7 @@ From the repository root:
 
 ```powershell
 $env:PATH = "$env:USERPROFILE\.cargo\bin;C:\Program Files\qemu;$env:PATH"
+$env:RUSTUP_TOOLCHAIN = "nightly-2026-09-27-x86_64-pc-windows-gnu"
 Set-Location os
 cargo run
 ```
@@ -279,6 +318,22 @@ cargo run -- check-slaac
 
 Build artifacts and generated disk images stay under `os/target/` and are
 ignored by Git.
+
+For WSL, the following example stores build artifacts in Linux's home
+filesystem even when the checkout remains on `/mnt/c`:
+
+```bash
+export CARGO_TARGET_DIR="$HOME/.cache/network-os-target"
+cd /mnt/c/Users/odaat/network-os-project/os
+cargo fmt --all -- --check
+cargo check --locked
+cargo run --locked -- check
+```
+
+Linux and Windows builds have separate artifact directories. For faster
+file-heavy builds, a WSL checkout under `~/projects/` is preferable to
+`/mnt/c`; use Git to synchronize it rather than building both environments
+against one target directory.
 
 This kernel uses direct hardware I/O and DMA and must only be run in the
 configured QEMU emulator for this prototype. Do not write its disk image to a
