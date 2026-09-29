@@ -123,7 +123,7 @@ def test_plan_fetches_by_bare_id_and_batches_twenty_per_event(fake_sources):
     sizes = [(b["ranked"][0]["source"], len(b["ranked"])) for b in batches]
     assert sizes == [("pubmed", 20), ("pubmed", 4), ("clinicaltrials.gov", 2), ("clinvar", 1)]
     assert any("stjude IDs skipped" in note for note in notes)
-    assert any("pubmed 25 IDs, 0 already published, 24 fetched, 24 to publish" in note for note in notes)
+    assert any("pubmed 25 IDs, 0 already published or planned, 24 fetched, 24 to publish" in note for note in notes)
     for batch in batches:
         validate_public_provenance(
             research_backfill.create_public_research_records_event(batch, confirm_publication=True))

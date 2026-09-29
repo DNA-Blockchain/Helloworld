@@ -237,7 +237,7 @@ def plan(groups: list[Group], already_published: set[tuple[str, str]]) -> tuple[
             fresh = [r for r in records if r.get("title") and (source, str(r["external_id"])) not in seen]
             seen.update((source, str(r["external_id"])) for r in fresh)
             notes.append(
-                f"{group.label}: {source} {len(ids)} IDs, {len(ids) - len(pending)} already published, "
+                f"{group.label}: {source} {len(ids)} IDs, {len(ids) - len(pending)} already published or planned, "
                 f"{len(records)} fetched, {len(fresh)} to publish"
             )
             for start in range(0, len(fresh), MAX_PUBLISHED_RECORDS):
