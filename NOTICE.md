@@ -3,10 +3,13 @@
 **Copyright © 2026 Chase Allen Ringquist. All rights reserved except as expressly granted below.**
 
 > **License relationship:** This notice records the Author's authorship and
-> ownership declaration; it does not replace, revoke, or narrow the repository's
-> existing [CC0 1.0 license](./LICENSE). That license governs material to which
-> it applies. Third-party components remain subject to their own licenses. If
-> this notice and an applicable license differ, the applicable license governs.
+> ownership declaration; it does not replace or narrow the repository's
+> [Universal Permissive License 1.0](./LICENSE) (SPDX: UPL-1.0), which governs
+> use of the Work's source files. Copies
+> of the Work obtained while it was published under CC0 1.0 (before this change)
+> remain available under those terms. Third-party components remain subject to
+> their own licenses. If this notice and an applicable license differ, the
+> applicable license governs.
 
 ---
 
@@ -50,7 +53,7 @@ itself part of the Work, and removing or falsifying it is prohibited.
 ## 4. Open-Source Components
 
 Where the Author has released a component of the Work under an open-source
-license (such as the repository's CC0 1.0 license), **that license governs the
+license (such as the repository's UPL-1.0 license), **that license governs the
 component it accompanies** and grants the permissions it states. Such a release
 does not transfer ownership, and does not extend to any part of the Work not
 covered by that license.
@@ -70,8 +73,8 @@ written consent of the Author, no person or entity may:
 4. Remove or alter this notice, attribution, or any record of origin;
 5. Represent the Work, or any part of it, as their own creation.
 
-This section does not restrict permissions granted by the repository's existing
-CC0 1.0 license or another applicable component license.
+This section does not restrict permissions granted by the repository's UPL-1.0
+license or another applicable component license.
 
 ## 6. Confidential Materials
 
