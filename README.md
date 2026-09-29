@@ -433,6 +433,22 @@ as `HOSTOUT.JSON`, and the runner copies it to `RANKED.OUT`. Input that the
 task rejects, such as a non-public source, is reported in the serial log and
 produces no ranking; the rest of the boot check still runs.
 
+### Publishing ranked records to the node chain
+
+```powershell
+python research_publish.py RANKED.OUT                        # dry run: shows what would go on-chain
+python research_publish.py RANKED.OUT --confirm-publication  # queue it permanently
+```
+
+`research_publish.py` builds a `public_research_records` event holding each
+ranked record's source, ID, title, URL, date and SHA-256 (at most 20
+records, 32 KiB), validated by `research_provenance.py`. Abstracts are never
+published: their reuse rights are unknown and a chain entry cannot be
+withdrawn. The event goes into `autonomous/research-outbox`; node-0, which
+`node_supervisor.py` starts with `--provenance-queue` alongside work sharing,
+mines it into a signed block and gossips it to its peers. Patient, genomic
+and other private data never go on the chain.
+
 ## Cancer -> modeled reference match workflow
 
 `remission_core.py` runs the whole computational workflow in one pass:

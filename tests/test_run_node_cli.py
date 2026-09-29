@@ -61,6 +61,11 @@ def test_provenance_queue_rejects_live_enrichers():
     assert exc.value.code == 2
 
 
+def test_provenance_queue_allows_work_sharing():
+    args = cli.build_parser().parse_args(["--id", "0", "--provenance-queue", "outbox", "--work-sharing"])
+    assert args.provenance_queue == "outbox" and args.work_sharing
+
+
 def test_research_gossip_flags_cannot_conflict():
     with pytest.raises(SystemExit) as exc:
         import asyncio

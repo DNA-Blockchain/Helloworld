@@ -135,6 +135,15 @@ def test_keys_read_in_process_match_the_cli(tmp_path):
     assert s.keys[1] in out.stdout and s.keys[0] != s.keys[1]
 
 
+def test_only_node_zero_publishes_the_research_outbox(tmp_path):
+    cfg = sup.Config(base_dir=str(tmp_path), node_count=2, python="python")
+    s = sup.Supervisor(cfg)
+    first, second = s.node_command(0), s.node_command(1)
+    assert first[first.index("--provenance-queue") + 1] == cfg.path("research-outbox")
+    assert "--work-sharing" in first
+    assert "--provenance-queue" not in second
+
+
 def _loop_supervisor(tmp_path, monkeypatch):
     cfg = sup.Config(base_dir=str(tmp_path), node_count=0, run_tests=False, run_self_tests=False, notify=False)
     s = sup.Supervisor(cfg)

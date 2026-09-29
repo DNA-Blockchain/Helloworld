@@ -1,4 +1,5 @@
-"""Hash-only research provenance events for explicit peer-network sharing."""
+"""Research provenance events for explicit peer-network sharing: hash-only
+events, plus confirmed publication of public bibliographic records."""
 
 from __future__ import annotations
 
@@ -102,7 +103,100 @@ def create_public_data_hash_event(
     return event
 
 
+MAX_PUBLISHED_RECORDS = 20
+MAX_PUBLISHED_EVENT_BYTES = 32 * 1024
+_PUBLISHED_RECORD_FIELDS = {
+    "source": 32,
+    "external_id": 64,
+    "title": 300,
+    "source_url": 300,
+    "published_at": 32,
+    "record_sha256": 64,
+}
+
+
+def create_public_research_records_event(ranking: dict, *, confirm_publication: bool = False) -> dict:
+    """Full bibliographic records from a research_analysis ranking, for the
+    node chain. The chain is append-only, so publication needs explicit
+    confirmation. Abstracts are never included: their reuse rights are
+    unknown, and a chain entry cannot be withdrawn."""
+    if confirm_publication is not True:
+        raise PermissionError("explicit confirmation is required before publishing records to the chain")
+    if not isinstance(ranking, dict) or ranking.get("schema") != "research-ranking.v1":
+        raise ValueError("input must be a research-ranking.v1 result")
+    records = [
+        {field: str(entry.get(field) or "")[:limit] for field, limit in _PUBLISHED_RECORD_FIELDS.items()}
+        for entry in ranking.get("ranked", [])[:MAX_PUBLISHED_RECORDS]
+    ]
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_research_records",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "query": str(ranking.get("query") or "")[:200],
+        "sources": sorted({record["source"] for record in records}),
+        "record_count": len(records),
+        "records": records,
+        "ranking_sha256": ranking.get("all_records_sha256"),
+    }
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_research_records(event: dict) -> None:
+    expected = {
+        "schema_version", "event_type", "event_id", "created_at", "classification",
+        "query", "sources", "record_count", "records", "ranking_sha256",
+    }
+    if set(event) != expected:
+        raise ValueError("research records event contains unsupported fields")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION:
+        raise ValueError("unsupported research records event schema version")
+    if event["classification"] != "public":
+        raise ValueError("only public research records may be queued")
+    if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
+        raise ValueError("research records event has an invalid event ID")
+    try:
+        timestamp = datetime.fromisoformat(event["created_at"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("research records event has an invalid timestamp") from error
+    if timestamp.tzinfo is None:
+        raise ValueError("research records event timestamp must include a timezone")
+    if not isinstance(event["query"], str) or len(event["query"]) > 200:
+        raise ValueError("research records event has an invalid query")
+    if not isinstance(event["ranking_sha256"], str) or not _HASH_RE.fullmatch(event["ranking_sha256"]):
+        raise ValueError("research records event has an invalid ranking hash")
+    records = event["records"]
+    if (
+        not isinstance(records, list)
+        or not 1 <= len(records) <= MAX_PUBLISHED_RECORDS
+        or event["record_count"] != len(records)
+    ):
+        raise ValueError("research records event must hold 1-20 records matching record_count")
+    for record in records:
+        if not isinstance(record, dict) or set(record) != set(_PUBLISHED_RECORD_FIELDS):
+            raise ValueError("published research record has unsupported fields")
+        for field, limit in _PUBLISHED_RECORD_FIELDS.items():
+            if not isinstance(record[field], str) or len(record[field]) > limit:
+                raise ValueError(f"published research record has an invalid {field}")
+        if record["source"] not in _PUBLIC_SOURCES:
+            raise ValueError("published research record is not from an allowed public source")
+        if not record["external_id"] or not record["title"]:
+            raise ValueError("published research record requires an ID and title")
+        if not _HASH_RE.fullmatch(record["record_sha256"]):
+            raise ValueError("published research record has an invalid hash")
+    if event["sources"] != sorted({record["source"] for record in records}):
+        raise ValueError("research records event sources do not match its records")
+    size = len(json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    if size > MAX_PUBLISHED_EVENT_BYTES:
+        raise ValueError("research records event exceeds the 32-KiB block payload limit")
+
+
 def validate_public_provenance(event: dict) -> None:
+    if isinstance(event, dict) and event.get("event_type") == "public_research_records":
+        _validate_public_research_records(event)
+        return
     if isinstance(event, dict) and event.get("event_type") == "public_data_hash":
         expected_hash_fields = {
             "schema_version",
@@ -187,7 +281,8 @@ def validate_public_provenance(event: dict) -> None:
 
 
 class ResearchProvenanceQueue:
-    """Small file-backed outbox; entries contain hashes and provenance only."""
+    """Small file-backed outbox of validated public events: hashes,
+    provenance, or confirmed public bibliographic records."""
 
     def __init__(self, directory: str | Path):
         self.directory = Path(directory)

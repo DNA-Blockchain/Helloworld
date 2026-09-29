@@ -198,12 +198,11 @@ async def main(argv: list[str] | None = None) -> int:
         parser.error(str(e))
     if args.allow_research_gossip and args.no_research:
         parser.error("--allow-research-gossip and --no-research cannot be used together")
-    if args.provenance_queue and (
-        args.allow_research_gossip or args.allow_external_info or args.work_sharing
-    ):
-        parser.error(
-            "--provenance-queue cannot be combined with live enrichers or --work-sharing"
-        )
+    # Provenance blocks are mined without enrichers; work sharing runs in its
+    # own background loop and its blocks carry only work items, so the two
+    # can share a node. Live enrichers would mix other data into blocks.
+    if args.provenance_queue and (args.allow_research_gossip or args.allow_external_info):
+        parser.error("--provenance-queue cannot be combined with live enrichers")
 
     os.makedirs(args.workdir, exist_ok=True)
     if args.live_db:

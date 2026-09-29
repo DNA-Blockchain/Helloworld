@@ -409,6 +409,10 @@ class Supervisor:
                "--takeover-seconds", str(self.cfg.takeover_seconds),
                "--status-file", os.path.join(self.cfg.node_dir(i), "status.json"),
                "--stop-file", self.stop_file(i)]
+        if i == 0:
+            # research_publish.py queues public research records here; only
+            # node 0 publishes them, so two nodes never mine the same event.
+            cmd += ["--provenance-queue", self.cfg.path("research-outbox")]
         if peers:
             cmd += ["--peers", peers]
         if trust:
