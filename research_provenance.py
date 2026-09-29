@@ -185,6 +185,15 @@ def _validate_time_anchor(anchor: object) -> None:
         raise ValueError("time anchor has an invalid block hash")
 
 
+def _require_timestamp(value: object, kind: str) -> None:
+    try:
+        timestamp = datetime.fromisoformat(value)   # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{kind} event has an invalid timestamp") from error
+    if timestamp.tzinfo is None:
+        raise ValueError(f"{kind} event timestamp must include a timezone")
+
+
 def _check_fields(event: dict, expected: set[str], kind: str) -> None:
     """Exact field set, plus the optional time_anchor (events published before
     anchors existed have none)."""
@@ -274,6 +283,372 @@ def _validate_public_research_records(event: dict) -> None:
     size = len(json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     if size > MAX_PUBLISHED_EVENT_BYTES:
         raise ValueError("research records event exceeds the 32-KiB block payload limit")
+
+
+# ------------------------------------------------------------------ CRISPR
+# Which published records mention CRISPR work, and which genes they name.
+# These are keyword tags over a record's own published title: they say what
+# the title mentions, never that the research supports an edit or a
+# treatment. The method is recorded so a reader knows how a tag was derived.
+CRISPR_TAG_METHOD = "title-keywords-v1"
+CRISPR_TAGS = {
+    "crispr",           # CRISPR/Cas named at all
+    "cas9",             # a specific nuclease
+    "base_editing",     # base editors
+    "prime_editing",    # prime editors
+    "guide_rna",        # guide/sgRNA design or screening
+    "knockout",         # gene knockout or silencing
+    "screen",           # CRISPR screens
+    "delivery",         # delivery vehicles
+    "gene_therapy",     # gene therapy named without CRISPR
+}
+_GENE_RE = re.compile(r"^[A-Z][A-Z0-9-]{1,14}$")
+MAX_TAGGED_GENES = 8
+_CRISPR_RECORD_FIELDS = {"source", "external_id", "record_sha256", "tags", "genes"}
+
+
+def create_public_crispr_relevance_event(
+    records: list[dict], *, confirm_publication: bool = False, time_anchor: dict | None = None
+) -> dict:
+    """CRISPR keyword tags and gene symbols for already-published records,
+    so the chain shows which research is CRISPR-related and about which
+    gene. Tags describe the title's wording, not clinical relevance."""
+    if confirm_publication is not True:
+        raise PermissionError("explicit confirmation is required before publishing CRISPR tags to the chain")
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_crispr_relevance",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "method": CRISPR_TAG_METHOD,
+        "record_count": len(records),
+        "records": [
+            {
+                "source": record["source"],
+                "external_id": record["external_id"],
+                "record_sha256": record["record_sha256"],
+                "tags": sorted(set(record["tags"])),
+                "genes": sorted(set(record.get("genes") or [])),
+            }
+            for record in records
+        ],
+    }
+    if time_anchor is not None:
+        event["time_anchor"] = time_anchor
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_crispr_relevance(event: dict) -> None:
+    expected = {
+        "schema_version", "event_type", "event_id", "created_at", "classification",
+        "method", "record_count", "records",
+    }
+    _check_fields(event, expected, "CRISPR relevance")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION or event["classification"] != "public":
+        raise ValueError("CRISPR relevance event must be a public schema-1 event")
+    if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
+        raise ValueError("CRISPR relevance event has an invalid event ID")
+    _require_timestamp(event["created_at"], "CRISPR relevance")
+    if event["method"] != CRISPR_TAG_METHOD:
+        raise ValueError("CRISPR relevance event has an unknown tagging method")
+    records = event["records"]
+    if (
+        not isinstance(records, list)
+        or not 1 <= len(records) <= MAX_PUBLISHED_RECORDS
+        or event["record_count"] != len(records)
+    ):
+        raise ValueError("CRISPR relevance event must hold 1-20 records matching record_count")
+    keys = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != _CRISPR_RECORD_FIELDS:
+            raise ValueError("tagged record has unsupported fields")
+        for field in ("source", "external_id"):
+            if not isinstance(record[field], str) or not 0 < len(record[field]) <= _PUBLISHED_RECORD_FIELDS[field]:
+                raise ValueError(f"tagged record has an invalid {field}")
+        if record["source"] not in _PUBLIC_SOURCES:
+            raise ValueError("tagged record is not from an allowed public source")
+        if not isinstance(record["record_sha256"], str) or not _HASH_RE.fullmatch(record["record_sha256"]):
+            raise ValueError("tagged record has an invalid record hash")
+        tags, genes = record["tags"], record["genes"]
+        if not isinstance(tags, list) or not tags or set(tags) - CRISPR_TAGS or tags != sorted(set(tags)):
+            raise ValueError("tagged record must list known CRISPR tags, sorted and unique")
+        if (
+            not isinstance(genes, list)
+            or len(genes) > MAX_TAGGED_GENES
+            or genes != sorted(set(genes))
+            or any(not isinstance(gene, str) or not _GENE_RE.fullmatch(gene) for gene in genes)
+        ):
+            raise ValueError("tagged record has invalid gene symbols")
+        keys.add((record["source"], record["external_id"]))
+    if len(keys) != len(records):
+        raise ValueError("CRISPR relevance event lists a record twice")
+
+
+# --------------------------------------------------------------- model runs
+# A remission_core.py run's provenance: which published records it was linked
+# to, and what the computational model reported. Sequences, mutation
+# positions and base changes are genomic data and never appear here; only
+# the run's hash and counts do.
+MODEL_RUN_SCHEMA = "remission-model.v1"
+# Exactly the values remission_core.py reports; it is the source of truth.
+MODELED_STATUSES = {"MODELED_REFERENCE_MATCH", "MODELED_DIFFERENCE_REVIEW"}
+LONGITUDINAL_TRENDS = {
+    "NO_FOLLOW_UP_DATA", "ORIGINAL_MUTATION_DETECTED",
+    "FOLLOW_UP_MATCHES_REFERENCE", "FOLLOW_UP_DIFFERS_REVIEW",
+}
+CLINICAL_STATUSES = {"NOT_CLINICALLY_CONFIRMED", "CLINICALLY_CONFIRMED_REMISSION"}
+GUIDE_DESIGN_METHOD = "spcas9-pam-scan-gc-heuristic-v1"
+MODEL_RUN_DISCLAIMER = (
+    "Computational model only. Not a biological CRISPR intervention, not guide-RNA validation, "
+    "and not a treatment recommendation. A modeled reference match is not clinical remission."
+)
+_MODEL_RUN_RECORD_FIELDS = {"source", "external_id", "record_sha256"}
+_GUIDE_FIELDS = {"method", "sequence_sha256", "candidate_count", "top_score"}
+
+# Where a sequence came from, which decides whether it may be published.
+# public_reference: already public in a named database, under an accession
+#   (e.g. NCBI RefSeq BRCA1 NM_007294.4). Publishing it discloses nothing new.
+# synthetic: made up for a demo or test; describes no person.
+# Anything from or derived from a person's sample is neither. A genome
+# identifies its owner and their relatives for life, the chain is
+# append-only and replicated to every node, and consent cannot be withdrawn
+# from it, so this module has no origin value that permits publishing one.
+SEQUENCE_ORIGINS = {"public_reference", "synthetic"}
+MAX_PUBLISHED_SEQUENCE_BASES = 2000
+_BASES_RE = re.compile(r"^[ACGT]+$")
+_SEQUENCE_FIELDS = {"origin", "accession", "source", "label", "bases", "base_count", "sequence_sha256"}
+
+
+def create_public_sequence_event(
+    *,
+    origin: str,
+    bases: str,
+    label: str,
+    accession: str | None = None,
+    source: str | None = None,
+    confirm_publication: bool = False,
+    time_anchor: dict | None = None,
+) -> dict:
+    """Publish a DNA sequence itself on the chain. Only a public reference
+    sequence (named accession in a public database) or a synthetic one may be
+    published; a sequence from a person's sample must not be, and is
+    refused. See SEQUENCE_ORIGINS."""
+    if confirm_publication is not True:
+        raise PermissionError("explicit confirmation is required before publishing a sequence to the chain")
+    if origin not in SEQUENCE_ORIGINS:
+        raise PermissionError(
+            "only public_reference or synthetic sequences may be published; a sequence from a person's "
+            "sample cannot be put on an append-only public chain"
+        )
+    sequence = {
+        "origin": origin,
+        "accession": accession,
+        "source": source,
+        "label": label[:200],
+        "bases": bases.upper(),
+        "base_count": len(bases),
+        "sequence_sha256": hashlib.sha256(bases.upper().encode("utf-8")).hexdigest(),
+    }
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_sequence_record",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "sequence": sequence,
+    }
+    if time_anchor is not None:
+        event["time_anchor"] = time_anchor
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_sequence_record(event: dict) -> None:
+    expected = {"schema_version", "event_type", "event_id", "created_at", "classification", "sequence"}
+    _check_fields(event, expected, "sequence record")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION or event["classification"] != "public":
+        raise ValueError("sequence record event must be a public schema-1 event")
+    if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
+        raise ValueError("sequence record event has an invalid event ID")
+    _require_timestamp(event["created_at"], "sequence record")
+    sequence = event["sequence"]
+    if not isinstance(sequence, dict) or set(sequence) != _SEQUENCE_FIELDS:
+        raise ValueError("published sequence has unsupported fields")
+    if sequence["origin"] not in SEQUENCE_ORIGINS:
+        raise ValueError(
+            "a published sequence must be public_reference or synthetic; a sequence from a person's "
+            "sample must not be published"
+        )
+    bases = sequence["bases"]
+    if not isinstance(bases, str) or not _BASES_RE.fullmatch(bases):
+        raise ValueError("published sequence must be non-empty ACGT bases")
+    if len(bases) > MAX_PUBLISHED_SEQUENCE_BASES:
+        raise ValueError(f"published sequence exceeds {MAX_PUBLISHED_SEQUENCE_BASES} bases")
+    if sequence["base_count"] != len(bases):
+        raise ValueError("published sequence base_count does not match its bases")
+    if sequence["sequence_sha256"] != hashlib.sha256(bases.encode("utf-8")).hexdigest():
+        raise ValueError("published sequence hash does not match its bases")
+    if not isinstance(sequence["label"], str) or not 0 < len(sequence["label"]) <= 200:
+        raise ValueError("published sequence has an invalid label")
+    if sequence["origin"] == "public_reference":
+        if sequence["source"] not in _DATASET_SOURCES:
+            raise ValueError("a public reference sequence must name an allowed public database")
+        if not isinstance(sequence["accession"], str) or not _ACCESSION_RE.fullmatch(sequence["accession"]):
+            raise ValueError("a public reference sequence must carry a valid accession")
+    elif sequence["accession"] is not None or sequence["source"] is not None:
+        raise ValueError("a synthetic sequence has no accession or public source")
+
+
+MODEL_STAGE_KINDS = {
+    "REFERENCE", "CANCER_SAMPLE", "MUTATION", "CRISPR_EDIT_MODEL", "POST_EDIT",
+    "VERIFICATION", "FOLLOW_UP", "ASSESSMENT",
+}
+MAX_MODEL_STAGES = 60
+_STAGE_FIELDS = {"index", "kind", "payload_sha256", "block_hash", "previous_hash"}
+
+
+def _validate_stage_ledger(stages: object) -> None:
+    """remission_core.py's own hash-linked stage ledger, carried onto the node
+    chain so the mutation detection, the modeled edit and the verification are
+    each provable in order. Stage payloads hold sequences, so only their
+    hashes appear here."""
+    if not isinstance(stages, list) or not 1 <= len(stages) <= MAX_MODEL_STAGES:
+        raise ValueError(f"model run stage ledger must hold 1-{MAX_MODEL_STAGES} stages")
+    previous = "0" * 64
+    for position, stage in enumerate(stages, start=1):
+        if not isinstance(stage, dict) or set(stage) != _STAGE_FIELDS:
+            raise ValueError("model run stage has unsupported fields")
+        if stage["index"] != position:
+            raise ValueError("model run stages must be numbered from 1 in order")
+        if stage["kind"] not in MODEL_STAGE_KINDS:
+            raise ValueError("model run stage has an unknown kind")
+        for field in ("payload_sha256", "block_hash", "previous_hash"):
+            if not isinstance(stage[field], str) or not _HASH_RE.fullmatch(stage[field]):
+                raise ValueError(f"model run stage has an invalid {field}")
+        if stage["previous_hash"] != previous:
+            raise ValueError("model run stages are not hash-linked in order")
+        previous = stage["block_hash"]
+    kinds = [stage["kind"] for stage in stages]
+    for required in ("REFERENCE", "CANCER_SAMPLE", "CRISPR_EDIT_MODEL", "POST_EDIT", "VERIFICATION"):
+        if required not in kinds:
+            raise ValueError(f"model run stage ledger is missing its {required} stage")
+
+
+def create_public_model_run_event(
+    *,
+    run_sha256: str,
+    modeled_status: str,
+    longitudinal_trend: str,
+    clinical_status: str,
+    mutation_count: int,
+    records: list[dict],
+    stage_ledger: list[dict],
+    sequence_event_ids: list[str] | None = None,
+    guide_design: dict | None = None,
+    confirm_publication: bool = False,
+    time_anchor: dict | None = None,
+) -> dict:
+    """Provenance for one modeled cancer-to-reference-match run: the run's
+    hash, what the model reported, and the published records it was linked
+    to. No sequence, position or base change is included."""
+    if confirm_publication is not True:
+        raise PermissionError("explicit confirmation is required before publishing a model run to the chain")
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_model_run_record",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "model_schema": MODEL_RUN_SCHEMA,
+        "run_sha256": run_sha256,
+        "modeled_status": modeled_status,
+        "longitudinal_trend": longitudinal_trend,
+        "clinical_status": clinical_status,
+        "mutation_count": mutation_count,
+        "stage_ledger": [{field: stage[field] for field in sorted(_STAGE_FIELDS)} for stage in stage_ledger],
+        "sequence_event_ids": sorted(sequence_event_ids or []),
+        "guide_design": dict(guide_design) if guide_design is not None else None,
+        "record_count": len(records),
+        "records": [{field: record[field] for field in sorted(_MODEL_RUN_RECORD_FIELDS)} for record in records],
+        "disclaimer": MODEL_RUN_DISCLAIMER,
+    }
+    if time_anchor is not None:
+        event["time_anchor"] = time_anchor
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_model_run_record(event: dict) -> None:
+    expected = {
+        "schema_version", "event_type", "event_id", "created_at", "classification",
+        "model_schema", "run_sha256", "modeled_status", "longitudinal_trend", "clinical_status",
+        "mutation_count", "stage_ledger", "sequence_event_ids", "guide_design", "record_count",
+        "records", "disclaimer",
+    }
+    _check_fields(event, expected, "model run")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION or event["classification"] != "public":
+        raise ValueError("model run event must be a public schema-1 event")
+    if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
+        raise ValueError("model run event has an invalid event ID")
+    _require_timestamp(event["created_at"], "model run")
+    if event["model_schema"] != MODEL_RUN_SCHEMA:
+        raise ValueError("model run event has an unsupported model schema")
+    if not isinstance(event["run_sha256"], str) or not _HASH_RE.fullmatch(event["run_sha256"]):
+        raise ValueError("model run event has an invalid run hash")
+    if event["modeled_status"] not in MODELED_STATUSES:
+        raise ValueError("model run event has an unknown modeled status")
+    if event["longitudinal_trend"] not in LONGITUDINAL_TRENDS:
+        raise ValueError("model run event has an unknown longitudinal trend")
+    if event["clinical_status"] not in CLINICAL_STATUSES:
+        raise ValueError("model run event has an unknown clinical status")
+    if type(event["mutation_count"]) is not int or not 0 <= event["mutation_count"] <= 100_000:
+        raise ValueError("model run event has an invalid mutation count")
+    if event["disclaimer"] != MODEL_RUN_DISCLAIMER:
+        raise ValueError("model run event must carry the model-only disclaimer verbatim")
+    _validate_stage_ledger(event["stage_ledger"])
+    ids = event["sequence_event_ids"]
+    if (
+        not isinstance(ids, list)
+        or len(ids) > 4
+        or ids != sorted(set(ids))
+        or any(not isinstance(i, str) or not _EVENT_RE.fullmatch(i) for i in ids)
+    ):
+        raise ValueError("model run event has invalid sequence event IDs")
+    guide = event["guide_design"]
+    if guide is not None:
+        if not isinstance(guide, dict) or set(guide) != _GUIDE_FIELDS:
+            raise ValueError("model run event guide design has unsupported fields")
+        if guide["method"] != GUIDE_DESIGN_METHOD:
+            raise ValueError("model run event guide design has an unknown method")
+        if not isinstance(guide["sequence_sha256"], str) or not _HASH_RE.fullmatch(guide["sequence_sha256"]):
+            raise ValueError("model run event guide design has an invalid sequence hash")
+        if type(guide["candidate_count"]) is not int or not 0 <= guide["candidate_count"] <= 1000:
+            raise ValueError("model run event guide design has an invalid candidate count")
+        if type(guide["top_score"]) is not int or not 0 <= guide["top_score"] <= 1000:
+            raise ValueError("model run event guide design top score must be an integer in 0-1000")
+    records = event["records"]
+    if (
+        not isinstance(records, list)
+        or len(records) > MAX_PUBLISHED_RECORDS
+        or event["record_count"] != len(records)
+    ):
+        raise ValueError("model run event must hold at most 20 records matching record_count")
+    keys = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != _MODEL_RUN_RECORD_FIELDS:
+            raise ValueError("linked model run record has unsupported fields")
+        for field in ("source", "external_id"):
+            if not isinstance(record[field], str) or not 0 < len(record[field]) <= _PUBLISHED_RECORD_FIELDS[field]:
+                raise ValueError(f"linked model run record has an invalid {field}")
+        if record["source"] not in _PUBLIC_SOURCES:
+            raise ValueError("linked model run record is not from an allowed public source")
+        if not isinstance(record["record_sha256"], str) or not _HASH_RE.fullmatch(record["record_sha256"]):
+            raise ValueError("linked model run record has an invalid record hash")
+        keys.add((record["source"], record["external_id"]))
+    if len(keys) != len(records):
+        raise ValueError("model run event lists a record twice")
 
 
 # Why a published record was corrected. The chain is append-only, so a
@@ -459,6 +834,15 @@ def validate_public_provenance(event: dict) -> None:
         return
     if isinstance(event, dict) and event.get("event_type") == "public_research_correction":
         _validate_public_research_correction(event)
+        return
+    if isinstance(event, dict) and event.get("event_type") == "public_crispr_relevance":
+        _validate_public_crispr_relevance(event)
+        return
+    if isinstance(event, dict) and event.get("event_type") == "public_model_run_record":
+        _validate_public_model_run_record(event)
+        return
+    if isinstance(event, dict) and event.get("event_type") == "public_sequence_record":
+        _validate_public_sequence_record(event)
         return
     if isinstance(event, dict) and event.get("event_type") == "public_data_hash":
         expected_hash_fields = {
