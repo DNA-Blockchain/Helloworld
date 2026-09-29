@@ -677,6 +677,18 @@ shape `os/tasks/remission` already takes, so the kernel's MicroPython can
 model the same sequences. `--from-chain` rebuilds the twin from published
 sequence events alone, recomputing the differences from the chain.
 
+The twin's RNA layer (`twin_rna.py`) reads the sample as mRNA and adds three
+lookups to the page:
+- **The tRNA anticodon of each changed codon:** the exact reverse complement,
+  5'→3', with wobble pairing ignored.
+- **The side-chain class and Kyte-Doolittle hydropathy on each side of a
+  missense change:** for example, Val → Asp is nonpolar → negative with charge −1.
+- **An siRNA candidate scan:** 19-base windows of the sample scored with the
+  Reynolds et al. 2004 criteria, with windows covering a difference from the
+  reference listed first. These are design heuristics. No siRNA is tested,
+  off-target matches aren't checked, and a window covering a difference isn't
+  shown to spare the reference allele.
+
 The page is local and is not published: a run of a person's sample holds
 their genomic data. Nothing in the twin is a treatment. The modeled edit is a
 string substitution, `MODELED_REFERENCE_MATCH` is a statement about strings,
