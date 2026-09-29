@@ -1,3 +1,57 @@
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """Public variant and gene lookup connectors used by the local research catalog."""
 
 from __future__ import annotations
@@ -70,8 +124,8 @@ def _post_json(url: str, payload: dict) -> dict:
     return data
 
 
-def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
-    global _NCBI_LAST_REQUEST
+def _ncbi_prepare(params: dict[str, str]) -> dict[str, str]:
+    """Wait out NCBI's request-rate guideline and add the optional API key."""
     now = time.monotonic()
     wait = 0.11 if os.environ.get("NCBI_API_KEY", "").strip() else 0.36
     delay = wait - (now - _NCBI_LAST_REQUEST)
@@ -81,8 +135,45 @@ def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
     request_params = dict(params)
     if api_key:
         request_params["api_key"] = api_key
-    data = _get_json(f"{url}?{urllib.parse.urlencode(request_params)}")
+    return request_params
+
+
+def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
+    global _NCBI_LAST_REQUEST
+    data = _get_json(f"{url}?{urllib.parse.urlencode(_ncbi_prepare(params))}")
     _NCBI_LAST_REQUEST = time.monotonic()
+    return data
+
+
+NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+MAX_FASTA_BYTES = 8 * 1024 * 1024
+_NUCCORE_ACCESSION_RE = re.compile(r"[A-Z]{1,2}_?[0-9]{5,9}\.[0-9]{1,3}")
+
+
+def fetch_nuccore_fasta(accession: str) -> bytes:
+    """FASTA for one versioned NCBI nucleotide accession (e.g. the RefSeq
+    transcript NM_007294.4). Public reference data only; raises on request
+    failure or a non-FASTA reply."""
+    global _NCBI_LAST_REQUEST
+    if not _NUCCORE_ACCESSION_RE.fullmatch(accession):
+        raise ValueError("accession must be a versioned NCBI nucleotide accession such as NM_007294.4")
+    params = _ncbi_prepare({"db": "nuccore", "id": accession, "rettype": "fasta", "retmode": "text"})
+    request = urllib.request.Request(
+        f"{NCBI_EFETCH}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=SSL_CONTEXT) as response:
+            data = response.read(MAX_FASTA_BYTES + 1)
+    except HTTPError as error:
+        raise RuntimeError(f"NCBI returned HTTP {error.code} for {accession}") from None
+    except (URLError, OSError, TimeoutError) as error:
+        raise RuntimeError(f"request to NCBI failed ({type(error).__name__})") from None
+    finally:
+        _NCBI_LAST_REQUEST = time.monotonic()
+    if len(data) > MAX_FASTA_BYTES:
+        raise ValueError(f"{accession} FASTA exceeds {MAX_FASTA_BYTES} bytes")
+    if not data.startswith(b">"):
+        raise ValueError(f"NCBI did not return FASTA for {accession}")
     return data
 
 
@@ -123,40 +214,66 @@ def search_ncbi_variants(query: str, *, database: str, max_results: int = 10) ->
     if not isinstance(result, dict):
         raise ValueError(f"NCBI {database} response did not contain record summaries")
 
-    records = []
-    for uid in ids[:max_results]:
-        item = result.get(str(uid))
-        if not isinstance(item, dict):
-            continue
-        if database == "clinvar":
-            source = "clinvar"
-            external_id = str(item.get("accession") or item.get("uid") or uid)
-            title = str(item.get("title") or f"ClinVar variation {external_id}")
-            url = f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/"
-            terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
-        else:
-            source = "dbsnp"
-            snp_id = str(item.get("snp_id") or item.get("rs") or item.get("uid") or uid)
-            external_id = (
-                snp_id if snp_id.lower().startswith("rs")
-                else f"rs{snp_id}" if snp_id.isdigit()
-                else snp_id
-            )
-            title = str(item.get("title") or f"dbSNP record {external_id}")
-            url = f"https://www.ncbi.nlm.nih.gov/snp/{urllib.parse.quote(external_id)}"
-            terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
-        records.append({
-            "source": source,
-            "external_id": external_id,
-            "title": title,
-            "abstract": _safe_summary(item, database=database),
-            "source_url": url,
-            "published_at": "",
-            "classification": "public",
-            "rights_status": "public metadata; review source terms",
-            "terms_url": terms,
-        })
-    return records
+    return [
+        _ncbi_variant_record(uid, result[str(uid)], database=database)
+        for uid in ids[:max_results]
+        if isinstance(result.get(str(uid)), dict)
+    ]
+
+
+def clinvar_records_by_id(uids: list[str]) -> list[dict]:
+    """ClinVar records for known variation UIDs (e.g. from research_store.json),
+    in the same form search_ncbi_variants returns. Raises on request failure;
+    UIDs NCBI does not return are omitted."""
+    clean = [str(uid).strip() for uid in uids if str(uid).strip().isdigit()]
+    if not clean:
+        return []
+    if len(clean) > 200:
+        raise ValueError("at most 200 ClinVar UIDs per request")
+    summary_response = _ncbi_get_json(NCBI_ESUMMARY, {
+        "db": "clinvar",
+        "id": ",".join(clean),
+        "retmode": "json",
+    })
+    result = summary_response.get("result", {})
+    if not isinstance(result, dict):
+        raise ValueError("NCBI clinvar response did not contain record summaries")
+    return [
+        _ncbi_variant_record(uid, result[uid], database="clinvar")
+        for uid in clean
+        if isinstance(result.get(uid), dict)
+    ]
+
+
+def _ncbi_variant_record(uid, item: dict, *, database: str) -> dict:
+    if database == "clinvar":
+        source = "clinvar"
+        external_id = str(item.get("accession") or item.get("uid") or uid)
+        title = str(item.get("title") or f"ClinVar variation {external_id}")
+        url = f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/"
+        terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
+    else:
+        source = "dbsnp"
+        snp_id = str(item.get("snp_id") or item.get("rs") or item.get("uid") or uid)
+        external_id = (
+            snp_id if snp_id.lower().startswith("rs")
+            else f"rs{snp_id}" if snp_id.isdigit()
+            else snp_id
+        )
+        title = str(item.get("title") or f"dbSNP record {external_id}")
+        url = f"https://www.ncbi.nlm.nih.gov/snp/{urllib.parse.quote(external_id)}"
+        terms = "https://www.ncbi.nlm.nih.gov/home/about/policies/"
+    return {
+        "source": source,
+        "external_id": external_id,
+        "title": title,
+        "abstract": _safe_summary(item, database=database),
+        "source_url": url,
+        "published_at": "",
+        "classification": "public",
+        "rights_status": "public metadata; review source terms",
+        "terms_url": terms,
+    }
 
 
 def lookup_ensembl_gene(symbol: str) -> list[dict]:

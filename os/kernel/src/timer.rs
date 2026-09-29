@@ -1,3 +1,59 @@
+/*
+ * ============================================================================
+ *  SPDX-License-Identifier: UPL-1.0
+ *
+ *  Copyright (c) 2026 Chase Allen Ringquist
+ *
+ *  This file is part of an operating system, software, and network Work
+ *  conceived and authored by Chase Allen Ringquist. The Author retains
+ *  copyright and authorship. Use of this file is licensed as follows.
+ *
+ *  ----------------------------------------------------------------------------
+ *  The Universal Permissive License (UPL), Version 1.0
+ *
+ *  Subject to the condition set forth below, permission is hereby granted to
+ *  any person obtaining a copy of this software, associated documentation
+ *  and/or data (collectively the "Software"), free of charge and under any
+ *  and all copyright rights in the Software, and any and all patent rights
+ *  owned or freely licensable by each licensor hereunder covering either
+ *  (i) the unmodified Software as contributed to or provided by such
+ *  licensor, or (ii) the Larger Works (as defined below), to deal in both
+ *
+ *  (a) the Software, and
+ *
+ *  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+ *  if one is included with the Software (each a "Larger Work" to which the
+ *  Software is contributed by such licensors),
+ *
+ *  without restriction, including without limitation the rights to copy,
+ *  create derivative works of, display, perform, and distribute the Software
+ *  and make, use, sell, offer for sale, import, export, have made, and have
+ *  sold the Software and the Larger Work(s), and to sublicense the foregoing
+ *  rights on either these or other terms.
+ *
+ *  This license is subject to the following condition:
+ *
+ *  The above copyright notice and either this complete permission notice or
+ *  at a minimum a reference to the UPL must be included in all copies or
+ *  substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ *  DEALINGS IN THE SOFTWARE.
+ *  ----------------------------------------------------------------------------
+ *
+ *  Do not remove or alter this notice or any record of origin.
+ *  See NOTICE.md in the project root for authorship and ownership terms.
+ *
+ *  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+ *            Bixby, OK, United States
+ * ============================================================================
+ */
+
 use core::{
     cell::UnsafeCell,
     mem::size_of,
@@ -68,18 +124,38 @@ static IDT: StaticIdt = StaticIdt(UnsafeCell::new([IdtEntry::MISSING; 256]));
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 #[unsafe(no_mangle)]
-extern "C" fn timer_interrupt_handler() {
+extern "C" fn timer_interrupt_handler(code_segment: u64) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     unsafe {
         port_write(PIC1_COMMAND, 0x20);
     }
+    crate::syscall::user_timer_tick(code_segment);
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn unexpected_interrupt_handler() -> ! {
+pub(crate) extern "C" fn unexpected_interrupt_handler() -> ! {
     for byte in b"UNHANDLED EXCEPTION OR INTERRUPT\n" {
         crate::Serial::write_byte(*byte);
     }
+    loop {
+        unsafe {
+            core::arch::asm!("cli", "hlt", options(nomem, nostack));
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub(crate) extern "C" fn unexpected_page_fault_handler(
+    error_code: u64,
+    address: u64,
+    code_segment: u64,
+) -> ! {
+    use core::fmt::Write;
+
+    let _ = writeln!(
+        crate::Serial,
+        "UNHANDLED PAGE FAULT: address={address:#018x} error={error_code:#x} cs={code_segment:#x}"
+    );
     loop {
         unsafe {
             core::arch::asm!("cli", "hlt", options(nomem, nostack));
@@ -93,6 +169,31 @@ core::arch::global_asm!(
     "cli",
     "and rsp, -16",
     "call unexpected_interrupt_handler",
+    "ud2",
+);
+
+core::arch::global_asm!(
+    ".global invalid_opcode_interrupt_stub",
+    "invalid_opcode_interrupt_stub:",
+    "cli",
+    "cld",
+    "mov rdi, 6",
+    "mov rsi, [rsp + 8]",
+    "and rsp, -16",
+    "call user_exception_dispatch",
+    "ud2",
+);
+
+core::arch::global_asm!(
+    ".global page_fault_interrupt_stub",
+    "page_fault_interrupt_stub:",
+    "cli",
+    "cld",
+    "mov rdi, [rsp]",
+    "mov rsi, cr2",
+    "mov rdx, [rsp + 16]",
+    "and rsp, -16",
+    "call page_fault_dispatch",
     "ud2",
 );
 
@@ -115,6 +216,7 @@ core::arch::global_asm!(
     "push r14",
     "push r15",
     "mov r12, rsp",
+    "mov rdi, [r12 + 128]",
     "and rsp, -16",
     "sub rsp, 32",
     "call timer_interrupt_handler",
@@ -139,6 +241,7 @@ core::arch::global_asm!(
 
 unsafe extern "C" {
     fn unexpected_interrupt_stub();
+    fn page_fault_interrupt_stub();
     fn timer_interrupt_stub();
 }
 
@@ -179,6 +282,26 @@ pub(crate) fn initialize() {
     }
 }
 
+pub(crate) fn install_syscall_gate(handler: usize, kernel_code_selector: u16) {
+    let _guard = disable_interrupts();
+    unsafe {
+        let idt = &mut *IDT.0.get();
+        for entry in idt.iter_mut() {
+            entry.selector = kernel_code_selector;
+        }
+        idt[0x80] = IdtEntry::interrupt_gate(handler, kernel_code_selector);
+        idt[0x80].attributes = 0xee;
+        idt[6] = IdtEntry::interrupt_gate(
+            super::syscall::invalid_opcode_stub_address(),
+            kernel_code_selector,
+        );
+        idt[14] = IdtEntry::interrupt_gate(
+            page_fault_interrupt_stub as *const () as usize,
+            kernel_code_selector,
+        );
+    }
+}
+
 pub(crate) fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
@@ -191,6 +314,36 @@ pub(crate) fn wait_for_ticks(target: u64) {
     while ticks() < target {
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack));
+        }
+    }
+}
+
+fn disable_interrupts() -> InterruptGuard {
+    let flags: usize;
+    unsafe {
+        core::arch::asm!(
+            "pushfq",
+            "pop {flags}",
+            "cli",
+            flags = out(reg) flags,
+            options(nomem)
+        );
+    }
+    InterruptGuard {
+        interrupts_were_enabled: flags & (1 << 9) != 0,
+    }
+}
+
+struct InterruptGuard {
+    interrupts_were_enabled: bool,
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        if self.interrupts_were_enabled {
+            unsafe {
+                core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+            }
         }
     }
 }

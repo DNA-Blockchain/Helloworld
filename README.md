@@ -15,6 +15,9 @@ runs on plain Python. It does
 not require Claude, an internet account, a subscription, or GitHub to
 run — see [Owning your copy](#owning-your-copy).
 
+See [NOTICE.md](NOTICE.md) for the author's authorship and ownership
+declaration. It does not replace or narrow the existing CC0 license.
+
 ---
 
 ## What it actually does
@@ -23,7 +26,7 @@ run — see [Owning your copy](#owning-your-copy).
 |---|---|---|
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
-| Bare-metal OS prototype | `os/` | Separate Rust x86_64 BIOS kernel for QEMU; E1000 driver, DHCP lease, and IPv4/ARP/ICMP self-test |
+| Bare-metal OS prototype | `os/` | Experimental Rust x86_64 QEMU kernel; E1000 dual-stack tests, cooperative context switching, bounded static ELF64 ring-3 loader, limited file/stdout/DNS smoke-test syscalls, QEMU IDE block access, and experimental NOSFS flat-file storage. It does not run the Python research agent or provide general user sockets/TLS. |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
 | Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
 | Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
@@ -391,6 +394,213 @@ authentication bypasses are not supported. Downloads are local only;
 they are not automatically added to the catalog, vault, peer network,
 or any model prompt.
 
+## Split research agent (host fetch, kernel analysis)
+
+The kernel has no TLS, so the research agent is split. `research_fetch.py`
+retrieves public records on the host through
+`research_catalog.search_public_sources` (PubMed, Europe PMC,
+ClinicalTrials.gov, NIH RePORTER) and writes a bounded `RESEARCH.JSON`
+(public records only, abstracts trimmed, at most 64 KiB).
+`research_analysis.py` validates, de-duplicates (by source ID and by
+normalized title across sources), scores by query-term matches and recency,
+ranks, and hashes every record; the output is capped at 16 KiB.
+
+```powershell
+python research_fetch.py --query "CRISPR cancer" --term crispr --term cancer --analyze
+python research_fetch.py --query "CRISPR cancer" --output RESEARCH.JSON
+python research_analysis.py RESEARCH.JSON --output RANKED.OUT
+python research_fetch.py --fixture --analyze    # offline synthetic sample
+```
+
+`research_analysis.py` is MicroPython-compatible (integer scores, no project
+imports), and `build_task_bundles.py` packages it with the synthetic sample
+as `os/tasks/research/`, which the kernel runs at every boot check. The
+sample includes Greek letters, dashes, Unicode spaces and characters outside
+the BMP, and the boot check fails unless the kernel's ranking matches
+CPython's byte for byte (`OUTPUT.SHA256`). The kernel's MicroPython `str`
+methods only know ASCII, so the module spells out its own text rules
+(CPython's whitespace set, ASCII case folding). Scores order reading, not
+evidence.
+
+To have the kernel rank freshly fetched records, run the OS in research mode:
+
+```powershell
+python research_fetch.py --query "CRISPR cancer" --output RESEARCH.JSON
+cd os
+cargo run -- research ..\RESEARCH.JSON ..\RANKED.OUT
+cargo run -- research-batch ..\requests ..\rankings   # every *.json (up to 50) in one boot
+```
+
+The runner mounts the QEMU data disk with the kernel's own NOSFS code,
+stores the requests as `HOSTIN00.JSON`, `HOSTIN01.JSON`, ..., and runs the
+full boot check once. The kernel runs the research task on each in ring-3
+MicroPython (a manifest that pins the script; the records are a declared
+data input) and saves the rankings as `HOSTOUTnn.JSON`, which the runner
+copies out under each input's file name. A request that the task rejects,
+such as a non-public source, is reported in the serial log and produces no
+ranking; the others and the rest of the boot check still run.
+
+### Publishing ranked records to the node chain
+
+```powershell
+python research_publish.py RANKED.OUT                        # dry run: shows what would go on-chain
+python research_publish.py RANKED.OUT --confirm-publication  # queue it permanently
+```
+
+`research_publish.py` builds a `public_research_records` event holding each
+ranked record's source, ID, title, URL, date and SHA-256 (at most 20
+records, 32 KiB), validated by `research_provenance.py`. Abstracts are never
+published: their reuse rights are unknown and a chain entry cannot be
+withdrawn. The event goes into `autonomous/research-outbox`; node-0, which
+`node_supervisor.py` starts with `--provenance-queue` alongside work sharing,
+mines it into a signed block and gossips it to its peers. Patient, genomic
+and other private data never go on the chain.
+
+### Research ledger: every node keeps a copy, and you can browse it
+
+Node chains are archived daily and the archive is pruned after 30 days, so
+published research lives in a separate, permanent
+`autonomous/node-N/research_ledger_node-N.json` on every node
+(`research_ledger.py`). Each entry is the original signed block carrying a
+`public_research_records` or other provenance event, or a
+`public_dataset_summary` from `dataset_sharing.py`. A node adds an entry
+when it mines or verifies such a block, backfills from its own current and
+archived chains at startup, and every two minutes pulls new entries from
+its peers' ledgers over the existing encrypted sessions, keeping only
+blocks that verify against the origin node's pinned signing key. The ledger
+file is itself hash-linked, so tampering is detectable.
+
+```powershell
+python research_viewer.py      # http://127.0.0.1:8791
+```
+
+The viewer is local and read-only: a searchable page of published records
+and datasets with how many nodes hold each copy, plus JSON endpoints
+(`/api/records?q=...&source=...`, `/api/records/<source>/<id>`,
+`/api/datasets`, `/api/events`, `/api/status`) and `/api/export`, which
+downloads everything with the original signed blocks for independent
+verification.
+
+To publish what the growing research agent collected earlier:
+
+```powershell
+python research_backfill.py                          # dry run
+python research_backfill.py --confirm-publication    # queue for node-0
+```
+
+`research_store.json` keeps only IDs, so `research_backfill.py` re-fetches
+each record's title, date and link by ID (`pubmed_summaries`,
+`trials_by_id`, `clinvar_records_by_id`), ranks each source's records with
+`research_analysis.py`, and queues one event per 20 records. Besides
+`research_store.json` it reads the research stores and the research corpus
+of past live runs mirrored in `live_store.db` (such as the CRISPR suite's
+`crispr_store`). Records already in any node's ledger are skipped, so it can
+be re-run safely; sources without a fetch-by-ID connector (such as `stjude`)
+are reported and skipped.
+
+New research comes from the agent's own queue of related topics it
+discovered (`research_store.json` and the mirrored stores' `queue`):
+
+```powershell
+python research_queue.py                                  # dry run
+python research_queue.py --kernel --confirm-publication   # rank the topics in the OS kernel
+```
+
+Every queued topic is fetched first, then all are ranked (in the kernel with
+`--kernel`: one `cargo run -- research-batch` boot per 50 topics, about 30
+seconds instead of 35 per topic), and published without repeating topics or
+records already on the chain.
+
+The nodes can also share this work. While
+`autonomous/publish-research-topics.confirmed` exists, `node_supervisor.py`
+starts every node with `--publish-research-topics`: each work-sharing
+research round (every 15 minutes) is assigned to one node, which fetches and
+ranks the next unpublished queued topic and mines the
+`public_research_records` event in its work block. If that node is down, the
+next in line takes over. Delete the file (and restart the nodes) to stop.
+
+### When was it published?
+
+Every event published by these tools carries a `time_anchor`: the Bitcoin
+block at the tip when it was created (from blockstream.info, or
+mempool.space), which proves the event is no older than that block.
+OpenTimestamps proves the other side, that the event existed by a later
+block:
+
+```powershell
+python research_timestamps.py stamp     # submit each ledger event's digest to public calendars
+python research_timestamps.py upgrade   # hours later: fetch the Bitcoin attestations
+python research_timestamps.py status
+```
+
+Proofs are stored as `autonomous/timestamps/<event_id>.ots` and served by the
+viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
+
+### Corrections
+
+The chain is append-only, so a published record is fixed by publishing a
+`public_research_correction` event that names the event and records it
+supersedes, the corrected title and hash, and the hash it replaces:
+
+```powershell
+python research_corrections.py                        # audit: re-fetch and check every record
+python research_corrections.py --confirm-publication  # queue corrections for proven damage
+```
+
+It corrects only records whose published hash is exactly what the kernel's
+earlier text-decoding fault computes from the source record. The viewer
+shows the corrected title and hash, and what was first published.
+
+Public reference datasets are published as metadata plus a hash; the
+sequence stays off the chain:
+
+```powershell
+python dataset_publish.py NM_007294.4 NM_000059.4 NM_000546.6 --confirm-publication
+```
+
+`dataset_publish.py` downloads each NCBI nucleotide accession as FASTA into
+`autonomous/datasets/`, validates it with `dna_shell.py`'s FASTA checks, and
+queues a `public_dataset_record` (accession, title, counts, SHA-256, NCBI
+link). The viewer lists datasets and serves the local FASTA at
+`/api/datasets/<dataset_id>/fasta` only while it matches the published hash.
+Node-0 publishes queued events about one per second, and sets aside any
+outbox entry it cannot validate in `research-outbox/rejected/` instead of
+stopping.
+
+## Cancer -> modeled reference match workflow
+
+`remission_core.py` runs the whole computational workflow in one pass:
+reference/sample comparison, `MUT-000001`-style mutation records, 2-bit
+binary DNA (`A=00 C=01 G=10 T=11`, matching `dna_binary_codec.py`), a
+string-level CRISPR edit model, post-edit verification, follow-up
+comparisons over time, and a SHA-256 hash-linked ledger of every stage.
+
+```powershell
+python remission_workflow.py                         # synthetic demo (ACGTACATACGT -> ACGTACGTACGT)
+python remission_workflow.py --input case.json --output result.json
+$env:REMISSION_VAULT_PASSPHRASE = "..."; python remission_workflow.py --vault
+```
+
+The ledger holds only digests; the full records (which contain sequences)
+are returned separately and `--vault` encrypts them with
+`EncryptedDataVault`, so sequences never go on a chain. The CRISPR step is
+a string transformation, not guide-RNA design or a biological edit.
+`MODELED_REFERENCE_MATCH` is kept separate from
+`CLINICALLY_CONFIRMED_REMISSION`, which is only ever copied from supplied,
+attributed clinical evidence (`clinical_evidence.assessed_by`/`assessed_on`).
+Insertions/deletions are not modeled (sequences must be equal length).
+
+The same file is packaged for the Network OS as a MicroPython task bundle
+in `os/tasks/remission/` (`REMISSION.PY`, `SAMPLE.JSON`, `RMTASK.JSON`,
+`RMFLOW.JSON`, following `os/schemas/`). Regenerate it after editing
+`remission_core.py` with `python build_task_bundles.py`; the tests fail
+if it is stale. The kernel embeds this bundle and runs it at every boot check:
+`REMISSION.PY` executes in its ring-3 MicroPython runtime, reads the declared
+`SAMPLE.JSON` input, and writes the declared `RESULT.OUT` output (on the OS,
+`main()` writes `RESULT.OUT`; elsewhere pass `--output PATH`). The boot check
+requires the output to be byte-identical to CPython's (`OUTPUT.SHA256`). The
+bundle also runs under the WSL MicroPython Unix port.
+
 ## Running the tests
 
 ```bash
@@ -565,14 +775,18 @@ Backups and copies elsewhere are not touched.
 
 ### Encrypted backups
 
-`backup.py` zips everything the project saves at runtime (state files,
-`autonomous/`, `node_data/`, `dna_shell_data/`, and every SQLite database
-via SQLite's online backup, so a running node's database is still copied
-consistently), encrypts it as one `encrypted_data_vault.py` object, and
-decrypts it end to end to verify it before it counts. Node signing keys
-(`keys/`, `*.pem`) are never included. Backups go to `~/network-os-backups`
-(outside the repo; same disk until an off-site copy exists), and anything
-older than 30 days is pruned, always keeping the newest 7.
+`backup.py` snapshots the project source, Git history, schemas, tests,
+documentation, runtime state, and engineering logs, then encrypts the archive
+as one `encrypted_data_vault.py` object and decrypts it end to end to verify
+it before it counts. SQLite databases use SQLite's online backup API, so a
+running node's database is copied consistently. Private-key directories and
+common key/credential file patterns are excluded. Build caches, dependencies,
+and generated targets are excluded, except the OS persistent QEMU disk image
+(`os/target/network-os-persistent.img`) so guest checkpoints are preserved.
+Backups go to `~/network-os-backups` outside the repository, but on the same
+machine/disk; they do not protect against disk loss. Cloud copy remains
+disabled unless separately configured. Anything older than 30 days is pruned,
+always keeping the newest 7.
 
 ```powershell
 python backup.py init                        # once: passphrase, stored with Windows DPAPI
@@ -580,7 +794,18 @@ python backup.py init                        # once: passphrase, stored with Win
 python backup.py list
 python backup.py verify
 python backup.py restore latest --to C:\restore-test   # never writes over existing files
+python backup_health.py test-restore          # verify restore into a temporary directory
 ```
+
+The guest also keeps local-only OS analytics in two rotating, checksummed
+event-log files and two alternating boot-checkpoint files on the QEMU data
+disk. The latest valid generation is selected on boot; the previous intact
+copy is the fallback if one copy is damaged. The bounded log contains stage
+IDs, status, sequence numbers, and uptime ticks only—not research content,
+prompts, credentials, or network payloads. If both copies are invalid or a
+write/readback fails, guest analytics disables itself and the OS continues
+booting with a serial warning. These are engineering diagnostics/checkpoints,
+not a journaled filesystem or a substitute for the encrypted host backup.
 
 The DPAPI copy of the passphrase only works for your Windows account on
 this PC. Keep your own copy (a password manager): if this PC is lost,
@@ -595,11 +820,17 @@ they match. Uploads never overwrite an existing object, and anything that
 fails (offline, AWS down) is retried on the next run, before local
 pruning. AWS only ever receives ciphertext; the passphrase stays here.
 
-`aws_backup_setup.ps1` creates the AWS side after you sign in with
-`aws login`: a private, versioned, TLS-only bucket whose backups expire
-after 35 days, and an IAM user that can put/get/list under `network-os/`
-but cannot delete -- so a compromised PC can't erase the off-site copies.
-Review its header for the exact resources and expected cost first.
+`aws_backup_setup.ps1` prepares a private, versioned, TLS-only S3 bucket
+with a lifecycle policy. It does not create IAM users or long-lived access
+keys and does not upload data by default. Use separate short-lived AWS IAM
+Identity Center profiles for administration and backup access; the backup
+role's narrowly scoped permissions must be granted separately. S3 versioning
+is a recovery window, not immutable retention, and this setup does not yet
+configure CloudTrail or Object Lock. The script requires exact bucket-name
+confirmation, reports the resource/cost categories, and requires a second
+confirmation before enabling local upload configuration. Review the script
+and current regional pricing before running it. No AWS resources are
+provisioned by the repository's tests.
 
 ```powershell
 python offsite_s3.py status
@@ -624,6 +855,109 @@ and appear in the supervisor's daily report; results go to
 python backup_health.py check          # [ALERT] lines, exit 1 if any
 python backup_health.py test-restore   # run a test restore now
 ```
+
+### Finding work across local disks
+
+`recovery_index.py` builds a local, read-only SHA-256 inventory for directories
+you name, such as a project folder, backup directory, or mounted external drive.
+It does not scan other disks automatically, retain or display file contents,
+change source files, or contact a network; it reads file bytes locally to
+compute hashes. The index stores paths, sizes, timestamps, and hashes in
+`~/.network-os/recovery-index.sqlite3` by default; pass `--db` to put it on a
+protected local disk. Credential directories and common key/secret file types
+are skipped. Disconnecting a drive leaves its old inventory entries available
+and search reports whether a recorded path currently exists.
+
+```powershell
+python recovery_index.py scan C:\Users\you\Documents E:\old-projects
+python recovery_index.py search "research"
+python recovery_index.py duplicates
+```
+
+This can find an indexed file that moved, an exact duplicate on another
+selected disk, or a path that is no longer accessible. It cannot recover file
+contents from a hash alone; use a verified encrypted backup or another
+surviving copy. The existing local `chain_store.py` verifies its own
+tamper-evident hash links, but it has no consensus and by itself proves neither
+the current identity's ownership of a file nor theft. The peer protocol has
+signed identities and chain-block checks, but not a cross-peer file recovery
+or ownership-claim protocol yet. A future opt-in network search should verify
+the user's pinned public key and signed content digests, disclose no file
+contents or local paths by default, and treat matches as evidence to review,
+not proof of theft. Network/chain searches and uploads are not run by this
+local index. The proposed policy contract in
+[`schemas/recovery-search-v1.schema.json`](schemas/recovery-search-v1.schema.json)
+allows either a separate user recovery key or an existing pinned node key, or
+both, while keeping private-key material out of the configuration. It is
+disabled by default; local-only recovery does not require a remote endpoint.
+Remote recovery additionally requires its own explicit network-enabled setting
+and a configured peer endpoint. This remains a policy contract, not yet a
+peer/chain search implementation.
+
+Use a host terminal for recovery and administration first; the existing
+PowerShell/CLI workflow can safely target chosen disks without exposing a guest
+shell. A terminal inside the guest would be useful later for local diagnostics,
+but requires a bounded command parser, process isolation, and file/socket
+permissions that the current OS doesn't provide. A cloud shell is optional and
+not required for recovery; if added, it should be a separate, user-controlled
+hosted environment with short-lived credentials and explicit remote-data
+consent, never a privileged shell inside the guest.
+
+### Cloud networking, audit, and contribution trail
+
+Cloud destinations use a provider-neutral endpoint contract in
+[`schemas/cloud-endpoint-v1.schema.json`](schemas/cloud-endpoint-v1.schema.json).
+It describes AWS S3, Azure Blob, Google Cloud Storage, S3-compatible services,
+generic HTTPS APIs, and self-hosted endpoints without embedding credentials or
+creating resources. Every endpoint is disabled by default, requires HTTPS with
+peer verification, declares allowed data classes, and sets upload/queue/timeout
+and retention bounds. This is a configuration contract, not an uploader or a
+provisioned endpoint; provider adapters still need to be implemented and
+reviewed before sending data.
+
+The guest now proves a bounded ring-3 DNS lookup through the kernel's network
+owner; QEMU also exercises kernel TCP/HTTP and UDP DNS. The guest still lacks
+general user-process TCP/UDP sockets, TLS, and an upload client. A cloud endpoint
+will not supply those missing guest interfaces. Start cloud connectivity from
+the existing host supervisor, which can perform outbound work while the guest
+remains isolated. The proposed sequence is:
+
+1. Implement provider adapters behind the endpoint schema, beginning with
+   client-encrypted backup upload and checksum-verified restore. Then add
+   redacted, schema-versioned event upload and a bounded encrypted retry queue.
+   Cloud unavailability must not stop OS boot or local research.
+2. For multi-host access, use a private WireGuard tunnel from an explicitly
+   enrolled host to a small AWS relay/VPC. Do not expose QEMU, SSH, the local
+   node ports, or guest control endpoints publicly. Require peer identity,
+   task IDs, idempotency, leases, rate limits, and a revoke path before more
+   than one worker can act.
+3. Upload only client-encrypted backup archives to S3 using a separate
+   short-lived backup role. Verify remote checksums and restore from a clean
+   machine before calling disaster recovery ready. Add an external-drive copy
+   for a 3-2-1 recovery plan; S3 alone is not the only backup.
+4. Keep CloudTrail as the AWS account/control-plane audit, and add narrowly
+   scoped S3 data-event logging only if needed after reviewing its additional
+   event/storage charges. Separately ship redacted, schema-versioned OS and
+   supervisor events with event IDs, timestamps, component/version, status,
+   and content digest. Exclude prompts, research payloads, credentials,
+   personal data, and raw network contents by default. Buffer locally with a
+   strict size/age cap and visible drop/queue alerts.
+5. Keep the local signed chain and token ledger as the current source of
+   truth. The existing token balances are non-transferable contribution
+   scores, not currency and not OS permissions. A future cross-host trail
+   should use signed, idempotent contribution attestations with explicit
+   verification rules; anchor only a reviewed digest/checkpoint to the
+   permissioned project chain. Never put raw logs or research records on-chain.
+   Training data is a separate, opt-in, human-reviewed export—not an automatic
+   consequence of logging or earning points.
+
+These are implementation boundaries and a rollout plan, not a live cloud
+connection. AWS setup, cloud networking, event upload, and chain anchoring
+remain disabled until the exact account/region, resource names, retention,
+costs, data fields, and network exposure are presented and explicitly
+approved. An offline queue must replay events idempotently after reconnect;
+cloud/chain failures must be visible and must not create duplicate token
+credits or block local operation.
 
 ### JSON interface and interpreter
 

@@ -1,0 +1,8 @@
+# MPY.ELF is embedded in the kernel image byte for byte.
+MPY.ELF binary
+# Built under WSL; keep Unix line endings on Windows checkouts.
+*.sh text eol=lf
+Makefile text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.ld text eol=lf

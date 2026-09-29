@@ -1,4 +1,58 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
 offsite_s3.py — copies backup.py's encrypted backups to Amazon S3, so a
 dead disk or a lost PC doesn't take every copy with it.
@@ -12,8 +66,9 @@ so AWS stores data it cannot read.
 
 HOW
 --------
-Through the AWS CLI (`aws s3api`), already installed -- no extra Python
-dependency. Each upload:
+through the AWS CLI (`aws s3api`) using the configured AWS profile. Prefer an
+IAM Identity Center profile with short-lived credentials; do not put access
+keys in this project's config. Each upload:
 - sends a SHA-256 checksum that S3 verifies on arrival,
 - uses If-None-Match: * so an existing backup is never overwritten,
 - is then checked with head-object: S3's stored SHA-256 must equal ours.
@@ -21,15 +76,16 @@ A backup only counts as off-site after that check, and is recorded in
 <dest>/offsite_s3.jsonl. Anything not yet confirmed -- no internet, AWS
 down, PC asleep -- is simply retried on the next sync.
 
-The AWS side (see aws_backup_setup.ps1) is designed so this PC can add
-backups but not delete or replace them: its IAM user has no delete
-permission and the bucket is versioned, so ransomware or a mistake on
-this PC can't wipe the off-site copies. S3 itself expires them by
-lifecycle rule. Nothing here needs, stores or prints the AWS account ID.
+The setup script creates a versioned private bucket but deliberately does
+not create identities or grant permissions. The operator must configure a
+separate least-privilege SSO role that can put/get objects under the backup
+prefix and list that prefix. Versioning provides a recovery window for
+overwritten objects; it is not immutable retention. S3 lifecycle rules expire
+old data. Nothing here needs, stores or prints the AWS account ID.
 
 Usage
 -----
-    python offsite_s3.py configure --bucket NAME --region us-east-2 --profile network-os-backup
+    python offsite_s3.py configure --bucket NAME --region us-east-2 --profile network-os-backup-sso
     python offsite_s3.py sync                  # upload + verify everything not yet off-site
     python offsite_s3.py status
     python offsite_s3.py pull all-missing      # disaster recovery: download into the local vault
@@ -228,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("configure")
     c.add_argument("--bucket", required=True)
     c.add_argument("--region", required=True)
-    c.add_argument("--profile", help="AWS CLI profile holding the backup user's keys")
+    c.add_argument("--profile", help="AWS CLI profile using short-lived, least-privilege credentials")
     c.add_argument("--prefix", default="network-os/")
     sub.add_parser("sync")
     sub.add_parser("status")

@@ -1,6 +1,60 @@
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
-Tests for backup.py — encrypted backups of the project's state. Pins:
-what is and isn't collected (keys never), a full backup -> verify ->
+Tests for backup.py — encrypted backups of the project's source and state.
+Pins what is and isn't collected (private keys never), a full backup -> verify ->
 restore round trip with byte-for-byte hash checks, a live WAL database
 copied consistently, no plaintext left behind, tamper and wrong-passphrase
 failures, restore never writing over existing files, pruning, and the
@@ -24,6 +78,9 @@ def project(tmp_path):
     root = tmp_path / "project"
     (root / "autonomous" / "node-0" / "keys").mkdir(parents=True)
     (root / "autonomous" / "archive" / "2026-09-01").mkdir(parents=True)
+    (root / "os" / "kernel" / "src").mkdir(parents=True)
+    (root / "os" / "target").mkdir(parents=True)
+    (root / "keys").mkdir()
     (root / "dna_state.json").write_text(json.dumps({"strand_hex": "ab" * 16}))
     (root / "system_audit.jsonl").write_text('{"a": 1}\n')
     (root / "chain_node-0.json").write_text('{"blocks": []}')
@@ -31,13 +88,21 @@ def project(tmp_path):
     (root / "autonomous" / "archive" / "2026-09-01" / "chain.json").write_text("[]")
     (root / "autonomous" / "node-0" / "keys" / "node-0.ed25519.pem").write_text("PRIVATE KEY")
     (root / "signing.pem").write_text("PRIVATE KEY")
+    (root / "keys" / "node.ed25519").write_text("PRIVATE KEY")
+    (root / "os" / "kernel" / "src" / "main.rs").write_text("fn kernel_main() {}")
+    (root / "os" / "target" / "network-os-persistent.img").write_bytes(b"guest disk")
+    (root / "os" / "target" / "debug-kernel.elf").write_bytes(b"build output")
+    (root / "backup_task.log").write_text("backup run log")
+    (root / "os" / "qemu.log").parent.mkdir(parents=True, exist_ok=True)
+    (root / "os" / "qemu.log").write_text("QEMU serial log")
+    (root / "src.py").write_text("print('source')")
     (root / "notes.txt").write_text("not project state")
     (root / "research_store.json.tmp").write_text("partial write")
     return root
 
 
 def _live_db(root: Path, rows: int = 20) -> sqlite3.Connection:
-    """A WAL database with uncheckpointed writes, still open -- like a running node."""
+    """Create a WAL database with uncheckpointed writes, like a running node."""
     con = sqlite3.connect(root / "live_store.db", isolation_level=None)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA wal_autocheckpoint=0")
@@ -47,12 +112,17 @@ def _live_db(root: Path, rows: int = 20) -> sqlite3.Connection:
     return con
 
 
-def test_collect_includes_state_and_never_keys(project):
+def test_collect_includes_development_os_logs_and_guest_disk_but_never_keys(project):
     got = {p.as_posix() for p in backup.collect(project)}
-    assert {"dna_state.json", "system_audit.jsonl", "chain_node-0.json",
-            "autonomous/node-0/status.json", "autonomous/archive/2026-09-01/chain.json"} <= got
-    assert not any("keys/" in p or p.endswith(".pem") for p in got)
-    assert "notes.txt" not in got and "research_store.json.tmp" not in got
+    assert {
+        "src.py", "os/kernel/src/main.rs", "os/target/network-os-persistent.img",
+        "backup_task.log", "os/qemu.log", "dna_state.json", "system_audit.jsonl",
+        "chain_node-0.json", "autonomous/node-0/status.json",
+        "autonomous/archive/2026-09-01/chain.json",
+    } <= got
+    assert not any("keys/" in p or p.endswith((".pem", ".ed25519")) for p in got)
+    assert "os/target/debug-kernel.elf" not in got
+    assert "research_store.json.tmp" not in got
 
 
 def test_round_trip_backup_verify_restore(project, tmp_path):
@@ -60,17 +130,19 @@ def test_round_trip_backup_verify_restore(project, tmp_path):
     bs = backup.BackupSet(tmp_path / "backups")
     entry = bs.run(PASS, root=project)
     con.close()
-    assert entry["verified"] and entry["file_count"] == 6
+    assert entry["verified"] and entry["file_count"] == len(backup.collect(project))
 
     assert bs.verify("latest", PASS)["classification"] == "private"
     out = tmp_path / "restored"
     result = bs.restore("latest", out, PASS)
-    assert result["file_count"] == 6
+    assert result["file_count"] == entry["file_count"]
     assert json.loads((out / "dna_state.json").read_text()) == {"strand_hex": "ab" * 16}
+    assert (out / "os" / "kernel" / "src" / "main.rs").exists()
+    assert (out / "os" / "target" / "network-os-persistent.img").read_bytes() == b"guest disk"
+    assert (out / "backup_task.log").read_text() == "backup run log"
     assert (out / "autonomous" / "node-0" / "status.json").exists()
     assert not (out / "autonomous" / "node-0" / "keys").exists()
-
-    restored = sqlite3.connect(out / "live_store.db")   # WAL rows made it in, as one file
+    restored = sqlite3.connect(out / "live_store.db")
     assert restored.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 20
     assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     restored.close()

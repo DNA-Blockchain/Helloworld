@@ -1,0 +1,201 @@
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
+import json
+
+import pytest
+
+import remission_core
+import remission_workflow
+from dna_binary_codec import decode_from_dna
+
+
+def test_demo_matches_documented_workflow():
+    result = remission_core.run(remission_workflow.DEMO_REQUEST)
+
+    assert result["before"]["binary"] == "00 01 10 11 00 01 00 11 00 01 10 11"
+    assert result["mutations"] == [{
+        "mutation_id": "MUT-000001", "position": 7, "reference": "G", "observed": "A",
+        "reference_bits": "10", "observed_bits": "00", "type": "substitution",
+    }]
+    assert result["modeled_edit"][0]["from"] == "A" and result["modeled_edit"][0]["to"] == "G"
+    assert result["after"]["sequence"] == "ACGTACGTACGT"
+    assert result["verification"]["matching_positions"] == 12
+    assert result["verification"]["different_positions"] == 0
+    assert result["verification"]["mutation_positions"][0]["status"] == "match"
+    assert result["assessment"]["modeled_status"] == remission_core.MODELED_REFERENCE_MATCH
+    assert result["assessment"]["longitudinal_trend"] == "FOLLOW_UP_MATCHES_REFERENCE"
+    assert [b["kind"] for b in result["ledger"]["blocks"]] == [
+        "REFERENCE", "CANCER_SAMPLE", "MUTATION", "CRISPR_EDIT_MODEL",
+        "POST_EDIT", "VERIFICATION", "FOLLOW_UP", "ASSESSMENT",
+    ]
+    assert result["ledger"]["verified"] is True
+
+
+def test_binary_encoding_agrees_with_project_codec():
+    sequence = "ACGTACATACGT"
+    bits = remission_core.to_binary(sequence).replace(" ", "")
+    assert bits == "".join(f"{byte:08b}" for byte in decode_from_dna(sequence))
+
+
+def test_modeled_match_never_implies_clinical_remission():
+    result = remission_core.run(remission_workflow.DEMO_REQUEST)
+    assert result["assessment"]["modeled_status"] == remission_core.MODELED_REFERENCE_MATCH
+    assert result["assessment"]["clinical_status"] == {
+        "status": remission_core.NOT_CLINICALLY_CONFIRMED, "source": "none",
+    }
+
+
+def test_clinical_status_only_from_attributed_external_evidence():
+    request = dict(remission_workflow.DEMO_REQUEST)
+    request["clinical_evidence"] = {"remission_confirmed": True}
+    with pytest.raises(ValueError, match="assessed_by"):
+        remission_core.run(request)
+
+    request["clinical_evidence"] = {
+        "remission_confirmed": True, "assessed_by": "oncology team", "assessed_on": "2026-09-28",
+    }
+    clinical = remission_core.run(request)["assessment"]["clinical_status"]
+    assert clinical["status"] == remission_core.CLINICALLY_CONFIRMED_REMISSION
+    assert clinical["source"] == "externally_supplied"
+
+
+def test_follow_up_detects_returning_mutation():
+    request = dict(remission_workflow.DEMO_REQUEST)
+    request["follow_ups"] = [
+        {"label": "T3", "sequence": "ACGTACGTACGT"},
+        {"label": "T4", "sequence": "ACGTACATACGT"},
+    ]
+    result = remission_core.run(request)
+    assert result["follow_ups"][1]["original_mutations_present"] == ["MUT-000001"]
+    assert result["follow_ups"][1]["differences_vs_previous_follow_up"] == 1
+    assert result["assessment"]["longitudinal_trend"] == "ORIGINAL_MUTATION_DETECTED"
+
+
+def test_ledger_holds_hashes_not_sequences():
+    result = remission_core.run(remission_workflow.DEMO_REQUEST)
+    ledger_text = json.dumps(result["ledger"])
+    assert "ACGT" not in ledger_text
+    for block in result["ledger"]["blocks"]:
+        assert set(block) == {"index", "kind", "payload_sha256", "previous_hash", "block_hash"}
+
+
+def test_ledger_detects_tampering():
+    result = remission_core.run(remission_workflow.DEMO_REQUEST)
+    blocks, records = result["ledger"]["blocks"], result["records"]
+
+    altered = json.loads(json.dumps(records))
+    altered[blocks[4]["payload_sha256"]]["sequence"] = "ACGTACATACGT"
+    ok, problems = remission_core.verify_ledger(blocks, altered)
+    assert not ok and "block 5: record altered" in problems
+
+    reordered = [dict(b) for b in blocks]
+    reordered[2], reordered[3] = reordered[3], reordered[2]
+    assert not remission_core.verify_ledger(reordered)[0]
+
+
+@pytest.mark.parametrize("request_patch, message", [
+    ({"sample": "ACGTACATACG"}, "insertions/deletions"),
+    ({"sample": "ACGTACNTACGT"}, "non-ACGT"),
+    ({"reference": ""}, "empty"),
+    ({"reference": "A" * 5000, "sample": "A" * 5000}, "exceeds"),
+])
+def test_rejects_unsupported_input(request_patch, message):
+    request = dict(remission_workflow.DEMO_REQUEST)
+    request.update(request_patch)
+    with pytest.raises(ValueError, match=message):
+        remission_core.run(request)
+
+
+def test_canonical_json_is_deterministic_and_ascii():
+    assert remission_core.canonical_json({"b": [1, True, None], "a": "é\"x"}) == \
+        '{"a":"\\u00e9\\"x","b":[1,true,null]}'
+    value = {"z": {"y": 1, "x": [2, "s"]}, "k": False}
+    assert json.loads(remission_core.canonical_json(value)) == value
+
+
+def test_task_entrypoint_prints_ledger_only(tmp_path, monkeypatch, capsys):
+    (tmp_path / "SAMPLE.JSON").write_text(json.dumps(remission_workflow.DEMO_REQUEST))
+    monkeypatch.chdir(tmp_path)
+    assert remission_core.main(["REMISSION.PY"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["modeled_status"] == remission_core.MODELED_REFERENCE_MATCH
+    assert "records" not in output and "ACGT" not in json.dumps(output)
+
+
+def test_task_entrypoint_writes_declared_output(tmp_path, monkeypatch, capsys):
+    (tmp_path / "SAMPLE.JSON").write_text(json.dumps(remission_workflow.DEMO_REQUEST))
+    monkeypatch.chdir(tmp_path)
+    assert remission_core.main(["REMISSION.PY", "--output", "COPY.OUT"]) == 0
+    assert json.loads((tmp_path / "COPY.OUT").read_text()) == json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(remission_core.sys, "platform", "network-os")
+    assert remission_core.main(["REMISSION.PY"]) == 0
+    written = json.loads((tmp_path / "RESULT.OUT").read_text())
+    assert written["modeled_status"] == remission_core.MODELED_REFERENCE_MATCH
+    assert written["ledger"]["verified"] is True
+
+
+def test_host_report_and_vault(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("cryptography")
+    monkeypatch.setenv(remission_workflow.PASSPHRASE_ENV, "test-passphrase")
+    out_file = tmp_path / "result.json"
+    code = remission_workflow.main(["--vault", "--vault-dir", str(tmp_path / "vault"), "--output", str(out_file)])
+    assert code == 0
+    report = capsys.readouterr().out
+    assert "MUT-000001" in report and "MODELED_REFERENCE_MATCH" in report
+    assert "NOT_CLINICALLY_CONFIRMED" in report
+    saved = json.loads(out_file.read_text())
+    assert set(saved["records"]) == {"vault"}
+    assert list((tmp_path / "vault").iterdir())

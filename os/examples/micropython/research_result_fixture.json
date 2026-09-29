@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "action": "research",
+  "result": {
+    "topic": {
+      "condition": "offline-synthetic-demo",
+      "biomarker": null
+    },
+    "retrieved_at": 0,
+    "sources": {
+      "synthetic_source_a": {
+        "status": {
+          "status": "ok"
+        },
+        "record_count": 2,
+        "ids": [
+          "SYNTH-A-001",
+          "SYNTH-A-002"
+        ]
+      },
+      "synthetic_source_b": {
+        "status": {
+          "status": "skipped"
+        },
+        "record_count": 0,
+        "ids": []
+      }
+    },
+    "new_ids": [
+      "SYNTH-A-001"
+    ],
+    "related_topics": [],
+    "storage": "offline fixture only",
+    "chain": "not written"
+  }
+}

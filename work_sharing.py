@@ -1,11 +1,68 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
 work_sharing.py — nodes split the network's recurring work between them,
 and take over from each other when one is down or slow.
 
 Rounds: time is cut into rounds of `round_seconds`. Each round has a few
-jobs (see WorkSchedule.tasks_for_round): a research lookup every
-`research_every` rounds, a Bitcoin/Ethereum chain-tip read every
+jobs (see WorkSchedule.tasks_for_round): a research job every
+`research_every` rounds (a lookup whose result is gossiped as a hash, or,
+with research_queue.SharedTopicResearch, publishing the next topic from the
+research agent's queue as a public_research_records event in the work
+block), a Bitcoin/Ethereum chain-tip read every
 `external_every` rounds, and one chain audit per round whose target
 rotates through the nodes.
 
@@ -49,6 +106,7 @@ import requests
 from chain_store import ChainBlock, GENESIS_PREV_HASH
 from dna_binary_codec import decode_from_dna
 from external_chain_bridge import build_external_info_snapshot
+from research_provenance import validate_public_provenance
 
 
 @dataclass(frozen=True)
@@ -266,10 +324,18 @@ class WorkManager:
                     self.gave_up.add(task.task_id)
                     return
             else:
-                result = await asyncio.to_thread(self.runners[task.kind])
+                runner = self.runners[task.kind]
+                args = (task,) if getattr(runner, "wants_task", False) else ()
+                result = await asyncio.to_thread(runner, *args)
             if task.task_id in self.done:   # someone else finished first while we worked
                 self.stats["work_finished_late"] += 1
                 return
+            # A runner may return a public research event to publish with the
+            # work block (research_queue.SharedTopicResearch); it is
+            # validated like any outbox event.
+            research_event = result.pop("research_event", None) if isinstance(result, dict) else None
+            if research_event is not None:
+                validate_public_provenance(research_event)
             result_digest = hashlib.sha256(
                 json.dumps(
                     result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -291,6 +357,8 @@ class WorkManager:
                         else "completed"
                     ),
                 }
+                if research_event is not None:
+                    summary["published_event_id"] = research_event["event_id"]
             work = {
                 "task": task.task_id,
                 "kind": task.kind,
@@ -309,7 +377,12 @@ class WorkManager:
                 self.node.log(f"took over {task.task_id} (position {position} in line)")
             if task.kind == "audit":
                 self._note_audit(work, self.node.node_id)
-            await self.node.mine_and_gossip(extra={"work": work}, run_enrichers=False)
+            extra = {"work": work}
+            if research_event is not None:
+                extra["research_provenance"] = research_event
+                self.node.log(f"published research topic '{research_event['query']}' "
+                              f"({research_event['record_count']} records) for {task.task_id}")
+            await self.node.mine_and_gossip(extra=extra, run_enrichers=False)
         except Exception as e:
             self.stats["work_errors"] += 1
             self.node.log(f"work {task.task_id} failed: {e}")

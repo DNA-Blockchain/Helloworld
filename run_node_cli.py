@@ -1,4 +1,58 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
 run_node_cli.py — run ONE real network node, for real cross-machine use.
 
@@ -41,6 +95,7 @@ import asyncio
 import hashlib
 import json
 import os
+from pathlib import Path
 import time
 from collections.abc import Callable
 
@@ -133,6 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--work-sharing", action="store_true",
                    help="split research/chain-tip lookups and chain audits with the other nodes "
                         "(replaces the per-block research/external enrichers)")
+    p.add_argument("--publish-research-topics", action="store_true",
+                   help="with --work-sharing: when this node is assigned a research round, fetch and rank "
+                        "the next topic in the research agent's queue and publish it permanently as a "
+                        "public_research_records event (this flag is the publication confirmation)")
     p.add_argument("--round-seconds", type=float, default=300.0, help="work-sharing round length")
     p.add_argument("--takeover-seconds", type=float, default=20.0,
                    help="how long each next-in-line node waits before taking over a job")
@@ -198,12 +257,15 @@ async def main(argv: list[str] | None = None) -> int:
         parser.error(str(e))
     if args.allow_research_gossip and args.no_research:
         parser.error("--allow-research-gossip and --no-research cannot be used together")
-    if args.provenance_queue and (
-        args.allow_research_gossip or args.allow_external_info or args.work_sharing
-    ):
-        parser.error(
-            "--provenance-queue cannot be combined with live enrichers or --work-sharing"
-        )
+    # Provenance blocks are mined without enrichers; work sharing runs in its
+    # own background loop and its blocks carry only work items, so the two
+    # can share a node. Live enrichers would mix other data into blocks.
+    if args.provenance_queue and (args.allow_research_gossip or args.allow_external_info):
+        parser.error("--provenance-queue cannot be combined with live enrichers")
+    if args.publish_research_topics and not args.work_sharing:
+        parser.error("--publish-research-topics requires --work-sharing")
+    if args.publish_research_topics and args.allow_research_gossip:
+        parser.error("--publish-research-topics replaces --allow-research-gossip's lookup; use one")
 
     os.makedirs(args.workdir, exist_ok=True)
     if args.live_db:
@@ -257,11 +319,21 @@ async def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.work_sharing:
+        runners = {}
+        if args.publish_research_topics:
+            from research_queue import SharedTopicResearch
+
+            project = os.path.dirname(os.path.abspath(__file__))
+            runners["research"] = SharedTopicResearch(
+                ledgers=Path(os.path.dirname(os.path.abspath(args.workdir))),
+                store_paths=[Path(project, "research_store.json")],
+                live_store=Path(project, "live_store.db"),
+            )
         WorkManager(node, WorkSchedule(
             round_seconds=args.round_seconds,
-            research_every=3 if args.allow_research_gossip else 0,
+            research_every=3 if args.allow_research_gossip or args.publish_research_topics else 0,
             external_every=2 if args.allow_external_info and not args.no_external_info else 0,
-        ), takeover_seconds=args.takeover_seconds).attach()
+        ), takeover_seconds=args.takeover_seconds, runners=runners).attach()
 
     print("=" * 78)
     print(f"REAL NETWORK NODE  id={args.id}  bind={args.bind}:{args.port}")

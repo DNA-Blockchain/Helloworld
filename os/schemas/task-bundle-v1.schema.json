@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NOSFS task bundle manifest v1",
+  "description": "Manifest contract for a bounded user-space task bundle. The guest re-checks every file digest, then runs `elf` tasks directly and `micropython` tasks with its embedded ring-3 MicroPython interpreter, stopping either at `runtimeSeconds`. The entrypoint must be a declared file whose role matches the runtime (python or elf). Network capabilities are declared but tasks requesting any are refused; `memoryBytes` is not enforced yet.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "taskId",
+    "runtime",
+    "entrypoint",
+    "files",
+    "capabilities",
+    "limits"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "nosfs.task-bundle.v1"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,47}$"
+    },
+    "runtime": {
+      "enum": [
+        "micropython",
+        "elf"
+      ]
+    },
+    "entrypoint": {
+      "$ref": "#/$defs/fileName"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 14,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "role",
+          "sizeBytes",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/fileName"
+          },
+          "role": {
+            "enum": [
+              "python",
+              "elf",
+              "json",
+              "data"
+            ]
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 262144
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "network"
+      ],
+      "properties": {
+        "network": {
+          "type": "object",
+          "required": [
+            "dns",
+            "udpDestinations",
+            "tcpDestinations",
+            "tlsHosts"
+          ],
+          "properties": {
+            "dns": {
+              "type": "boolean"
+            },
+            "udpDestinations": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "maxLength": 253
+              }
+            },
+            "tcpDestinations": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "maxLength": 253
+              }
+            },
+            "tlsHosts": {
+              "type": "array",
+              "maxItems": 8,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "maxLength": 253
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "memoryBytes",
+        "runtimeSeconds"
+      ],
+      "properties": {
+        "memoryBytes": {
+          "type": "integer",
+          "minimum": 16384,
+          "maximum": 2097152
+        },
+        "runtimeSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "fileName": {
+      "type": "string",
+      "pattern": "^[A-Z0-9][A-Z0-9._-]{0,14}$",
+      "maxLength": 15
+    }
+  }
+}

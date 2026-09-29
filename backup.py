@@ -1,25 +1,78 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
-backup.py — nightly encrypted backups of this project's state.
+backup.py — nightly encrypted backups of this project's source and state.
 
 WHAT ONE BACKUP IS
 -----------------------
-One zip of everything the project saves at runtime, encrypted as a single
-encrypted_data_vault.py object (AES-256-GCM, scrypt-derived key) and
-verified by decrypting it end to end before it counts:
+One snapshot of the project source, OS, engineering logs, and runtime state,
+encrypted as a single encrypted_data_vault.py object (AES-256-GCM,
+scrypt-derived key) and verified by decrypting it end to end before it counts:
 
-- the runtime state files (dna_state.json, ledgers, research store,
-  corpus, audit log, *.dna.json, chain_node-*.json, ...)
-- autonomous/ (the supervisor's nodes, archive, reports, logs),
-  node_data/, consolidated_run/, dna_shell_data/
+- source, schemas, tests, documentation, configuration, and Git history
+- runtime state, databases, OS sources, and saved guest disk image
+- engineering, supervisor, and audit logs
 - every SQLite database among them (live_store.db, the research catalog
   and sessions) copied with SQLite's online-backup API, so a database
   that is being written during the backup is still copied consistently
 
-Node signing keys (keys/, *.pem) are left out, matching node_supervisor's
-rule that keys are never archived: a restore gets the data back, and
-nodes keep (or regenerate) their own identities. A BACKUP_MANIFEST.json
-inside the zip lists every file with its size and SHA-256.
+Private key directories and common private-key/credential file patterns are
+excluded. Build caches and dependencies are excluded; the OS persistent QEMU
+disk image is included. A BACKUP_MANIFEST.json inside the encrypted zip lists
+every included file with its size and SHA-256.
 
 WHERE THINGS GO
 --------------------
@@ -76,16 +129,16 @@ DPAPI_FILE = Path(os.environ.get("APPDATA", Path.home())) / "network-os" / "back
 KEEP_DAYS = 30
 KEEP_MIN = 7
 
-STATE_FILES = [
-    "dna_state.json", "network_ledger.json", "token_ledger.json", "network_token_ledger.json",
-    "network_token_ledger_external.json", "node_one_ledger.json", "node_two_ledger.json",
-    "research_store.json", "corpus.json", "crispr_store.json", "system_audit.jsonl",
-    "peer_history.json", "*.dna.json", "chain_node-*.json", "live_store.db",
+EXCLUDE_DIRS = {
+    ".pytest_cache", ".ruff_cache", ".mypy_cache", "__pycache__", ".staging",
+    "build", "dist", "node_modules", "venv", ".venv", "keys", "secrets",
+}
+EXCLUDE_FILES = [
+    "*.pem", "*.key", "*.p12", "*.pfx", "*.ed25519", "*.tmp", "*.lock",
+    "*.stop", "*-wal", "*-shm", "*-journal", ".env", ".env.*",
 ]
-STATE_DIRS = ["autonomous", "node_data", "consolidated_run", "dna_shell_data"]
-EXCLUDE_DIRS = {"keys", "__pycache__", ".staging"}
-EXCLUDE_FILES = ["*.pem", "*.tmp", "*.lock", "*.stop", "*-wal", "*-shm", "*-journal"]
 SQLITE_MAGIC = b"SQLite format 3\x00"
+PRESERVED_GUEST_DISK = Path("os/target/network-os-persistent.img")
 
 
 # ---- passphrase (Windows DPAPI, or the environment) ----
@@ -136,23 +189,33 @@ def load_passphrase(path: Path | None = None) -> str:
 def _excluded(rel: Path) -> bool:
     if any(part in EXCLUDE_DIRS for part in rel.parts[:-1]):
         return True
+    if "target" in rel.parts[:-1] and rel != PRESERVED_GUEST_DISK:
+        return True
+    if rel.name.lower() in {"id_rsa", "id_ed25519", "credentials.json"}:
+        return True
     return any(fnmatch.fnmatch(rel.name, pat) for pat in EXCLUDE_FILES)
 
 
 def collect(root: Path = PROJECT_DIR) -> list[Path]:
-    """Relative paths of everything to back up, sorted."""
-    found: set[Path] = set()
-    for pattern in STATE_FILES:
-        for p in root.glob(pattern):
-            if p.is_file():
-                found.add(p.relative_to(root))
-    for d in STATE_DIRS:
-        base = root / d
-        if base.is_dir():
-            for p in base.rglob("*"):
-                if p.is_file():
-                    found.add(p.relative_to(root))
-    return sorted(p for p in found if not _excluded(p))
+    """Return a complete source/state snapshot, excluding secrets and caches."""
+    root = Path(root)
+    found: list[Path] = []
+    for directory, subdirectories, filenames in os.walk(root, followlinks=False):
+        current = Path(directory).relative_to(root)
+        subdirectories[:] = [
+            name
+            for name in subdirectories
+            if name not in EXCLUDE_DIRS
+            and not (name == "target" and current != Path("os"))
+            and current != Path("os/target")
+        ]
+        for filename in filenames:
+            path = Path(directory) / filename
+            relative = path.relative_to(root)
+            if path.is_symlink() or _excluded(relative):
+                continue
+            found.append(relative)
+    return sorted(found)
 
 
 def _is_sqlite(path: Path) -> bool:

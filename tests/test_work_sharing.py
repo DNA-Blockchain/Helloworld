@@ -1,3 +1,57 @@
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """Work sharing between nodes: deterministic assignment, exactly-once work
 when everyone is up, takeover when the first-in-line node is down, and
 chain audits that catch tampering."""
@@ -138,6 +192,56 @@ async def test_work_result_content_is_hashed_before_gossip(tmp_path):
     assert "result" not in blocks[0]
     assert len(blocks[0]["result_provenance"]["result_sha256"]) == 64
     assert blocks[0]["result_provenance"]["summary"]["source"] == "clinicaltrials.gov"
+
+
+class _RecordingNode:
+    node_id = 4
+    peer_signing_keys = {}
+    work = None
+
+    def __init__(self):
+        self.on_verified_block, self.background, self.blocks = [], [], []
+
+    async def mine_and_gossip(self, *, extra, run_enrichers):
+        self.blocks.append(extra)
+
+    def log(self, message):
+        pass
+
+
+def _research_event():
+    import research_analysis
+    import research_fetch
+    from research_provenance import create_public_research_records_event
+    ranking = research_analysis.run(json.loads(json.dumps(research_fetch.FIXTURE_REQUEST)))
+    return create_public_research_records_event(ranking, confirm_publication=True)
+
+
+async def test_a_research_round_can_publish_a_research_event_in_its_work_block():
+    node, seen_rounds = _RecordingNode(), []
+    event = _research_event()
+
+    def runner(task):
+        seen_rounds.append(task.round_no)
+        return {"source": "research_queue", "research_event": event}
+    runner.wants_task = True
+
+    manager = WorkManager(node, WorkSchedule(round_seconds=100, research_every=1, external_every=0, audits=False),
+                          runners={"research": runner})
+    await manager.run_task(manager.schedule.tasks_for_round(7, [node.node_id])[0], 0)
+    [block] = node.blocks
+    assert seen_rounds == [7]
+    assert block["research_provenance"] == event
+    assert block["work"]["result_provenance"]["summary"]["published_event_id"] == event["event_id"]
+
+
+async def test_an_invalid_research_event_is_never_mined():
+    node = _RecordingNode()
+    bad = dict(_research_event(), classification="private")
+    manager = WorkManager(node, WorkSchedule(round_seconds=100, research_every=1, external_every=0, audits=False),
+                          runners={"research": lambda: {"research_event": bad}})
+    await manager.run_task(manager.schedule.tasks_for_round(1, [node.node_id])[0], 0)
+    assert node.blocks == [] and manager.stats["work_errors"] == 1
 
 
 async def test_next_node_takes_over_when_first_in_line_is_down(tmp_path):

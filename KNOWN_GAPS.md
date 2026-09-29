@@ -40,11 +40,73 @@ confident-looking file imply more than it's actually verified.
   controlled local router to send a real RA; it verifies the SLAAC address,
   RA-installed default route, and ICMPv6 echo in QEMU. This does not establish
   behavior on physical networks. The kernel has a QEMU-verified 100 Hz PIT
-  clock, a fixed-metadata physical frame allocator below 4 GiB, and a
-  kernel-only 4-KiB virtual-page arena tested for map/read/write/unmap/reuse.
-  It still lacks multiple address spaces, user mappings and privilege
-  isolation, a heap, syscalls, scheduling, storage/filesystems, and broad
-  hardware support. The driver only supports the QEMU 82540EM model; the
+  clock, a fixed-metadata physical frame allocator below 4 GiB, a kernel-only
+  4-KiB virtual-page arena tested for map/read/write/unmap/reuse, two CR3
+  address spaces with private user-marked pages, a QEMU-tested bounded ELF64
+  static x86_64 `ET_DYN` loader that loads `TEST.ELF` from the virtual disk,
+  maps it into a dedicated CR3 address space with capacity for 512 user pages,
+  validates its permissions,
+  verifies write/fetch protection faults, exits through one `int 0x80` syscall,
+  and lets the test harness reclaim its user pages, and a kernel
+  heap verified growing from 64 KiB for a large `Vec` allocation, then
+  allocating and releasing `Box` values; it is capped at 512 KiB.
+  A bounded cooperative scheduler test switches two kernel tasks across
+  separate saved stacks and verifies ready/running/blocked/exited transitions,
+  including waking a blocked task. It does not schedule ring-3 processes or the
+  network service; there is not yet preemptive scheduling or a general process
+  model. QEMU verifies a ring-3 read of a supervisor-only
+  mapping faults and returns to the harness. Normal exit, expected NX/write
+  faults, and an unexpected user page fault all reach test-harness cleanup.
+  The harness also recovers from a ring-3 invalid-opcode exception and
+  reclaims that process address space. This remains test-harness exception
+  handling: there is no general process manager or recovery for other user
+  exception vectors.
+  A QEMU-only secondary IDE driver now sits behind a bounded sector-level
+  block-device interface and verifies a checksummed sector counter across
+  emulator restarts. An experimental `NOSFS v3` filesystem now mounts that
+  image, validates its superblock and allocation bitmap, and stores up to 128
+  flat files of at most 256 KiB each with content checksums. A QEMU test
+  round-trips a 24-KiB runtime-sized file. It has no journal,
+  directories, permissions, safe concurrent writers, or general crash recovery;
+  allocation leaks or an interrupted metadata update can require manual
+  recovery. There is no block cache, partition support, or user-facing write
+  syscall. It lacks general syscall
+  services and broad hardware support. The ELF loader does not support
+  relocations, dynamic linking, process arguments, general ELF binaries, or
+  preemptive scheduling. Kernel and ring-3 DNS, UDP and TCP checks run against
+  the runner's offline loopback test services, not the internet; bounded
+  single-context ring-3 sockets exist, but a general socket API and TLS are not
+  implemented. A ring-3 syscall can read a named flat file using bounded,
+  validated user pointers; user-mode writes, directories, and file permissions
+  are absent. QEMU verifies that neither the filename nor output pointer can
+  address supervisor memory. The Python research agent remains a host
+  application; running it on this OS requires an isolated user-space runtime,
+  broader filesystem API, and network syscalls. It must not run as privileged
+  kernel code. A ring-3 MicroPython (core features plus Unicode `str`,
+  `json`, `hashlib.sha256`, `binascii`, `sys` and whole-file `open()`) runs
+  workflow scripts, including the remission and research-analysis bundles; it
+  has no floats, imports of other files or network access. Its `str` methods
+  (`strip`, `split`, `lower`, `isalpha`, ...) only know ASCII, so the bundled
+  modules define their own text rules; each boot check requires both
+  bundles' output to match CPython's byte for byte. The research agent is
+  therefore split: `research_fetch.py` retrieves public records over HTTPS
+  on the host, and `research_analysis.py` ranks them in the kernel
+  (`cargo run -- research-batch IN_DIR OUT_DIR` stages up to 50 fetched
+  requests on the data disk before one boot and reads the rankings back
+  after). Records reach the kernel only between boots, not while it runs.
+  Before Unicode `str` was enabled, text above U+00FF reached the ranking
+  cut to one byte; three records published from kernel rankings were
+  affected, and `research_corrections.py` publishes corrections for them
+  (the chain keeps the original entries).
+  The workflow dispatcher can execute static ELF tasks from digest-checked
+  manifests, one at a time and synchronously, restricting reads to each
+  block's declared inputs, writes to its declared `.OUT` outputs, denying
+  network syscalls, and stopping tasks at their `runtimeSeconds` limit. It does
+  not enforce `memoryBytes` or keep a persistent run log. NOSFS v3 can delete files and
+  holds 128 flat entries, but the test disk is only 2 MiB and there are still
+  no subdirectories.
+  The driver only supports the
+  QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
   general-purpose or installable operating system. The HTTP service is a
   small test endpoint, not a hardened production server.

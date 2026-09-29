@@ -1,4 +1,58 @@
 #!/usr/bin/env python3
+# ============================================================================
+#  SPDX-License-Identifier: UPL-1.0
+#
+#  Copyright (c) 2026 Chase Allen Ringquist
+#
+#  This file is part of an operating system, software, and network Work
+#  conceived and authored by Chase Allen Ringquist. The Author retains
+#  copyright and authorship. Use of this file is licensed as follows.
+#
+#  ----------------------------------------------------------------------------
+#  The Universal Permissive License (UPL), Version 1.0
+#
+#  Subject to the condition set forth below, permission is hereby granted to
+#  any person obtaining a copy of this software, associated documentation
+#  and/or data (collectively the "Software"), free of charge and under any
+#  and all copyright rights in the Software, and any and all patent rights
+#  owned or freely licensable by each licensor hereunder covering either
+#  (i) the unmodified Software as contributed to or provided by such
+#  licensor, or (ii) the Larger Works (as defined below), to deal in both
+#
+#  (a) the Software, and
+#
+#  (b) any piece of software and/or hardware listed in the lrgrwrks.txt file
+#  if one is included with the Software (each a "Larger Work" to which the
+#  Software is contributed by such licensors),
+#
+#  without restriction, including without limitation the rights to copy,
+#  create derivative works of, display, perform, and distribute the Software
+#  and make, use, sell, offer for sale, import, export, have made, and have
+#  sold the Software and the Larger Work(s), and to sublicense the foregoing
+#  rights on either these or other terms.
+#
+#  This license is subject to the following condition:
+#
+#  The above copyright notice and either this complete permission notice or
+#  at a minimum a reference to the UPL must be included in all copies or
+#  substantial portions of the Software.
+#
+#  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+#  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+#  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+#  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+#  DEALINGS IN THE SOFTWARE.
+#  ----------------------------------------------------------------------------
+#
+#  Do not remove or alter this notice or any record of origin.
+#  See NOTICE.md in the project root for authorship and ownership terms.
+#
+#  Contact:  ringquistchase@gmail.com  |  (918) 845-0940
+#            Bixby, OK, United States
+# ============================================================================
+
 """
 node_supervisor.py — keeps this PC's nodes running on their own, and
 writes a daily report.
@@ -52,6 +106,9 @@ import live_store
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 TASK_NAME = "dna-chain-project nodes"
+# Present in base_dir: the nodes publish queued research topics between them
+# (run_node_cli.py --publish-research-topics). Delete it to stop.
+PUBLISH_TOPICS_CONFIRMATION = "publish-research-topics.confirmed"
 
 
 @dataclass
@@ -409,6 +466,14 @@ class Supervisor:
                "--takeover-seconds", str(self.cfg.takeover_seconds),
                "--status-file", os.path.join(self.cfg.node_dir(i), "status.json"),
                "--stop-file", self.stop_file(i)]
+        if i == 0:
+            # research_publish.py queues public research records here; only
+            # node 0 publishes them, so two nodes never mine the same event.
+            cmd += ["--provenance-queue", self.cfg.path("research-outbox")]
+        if os.path.exists(self.cfg.path(PUBLISH_TOPICS_CONFIRMATION)):
+            # Publication is permanent, so the nodes share the research
+            # agent's queued topics only while this confirmation file exists.
+            cmd += ["--publish-research-topics"]
         if peers:
             cmd += ["--peers", peers]
         if trust:

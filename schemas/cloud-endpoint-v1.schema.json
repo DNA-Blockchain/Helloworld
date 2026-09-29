@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://network-os.local/schemas/cloud-endpoint-v1.schema.json",
+  "title": "Network OS cloud endpoint configuration",
+  "description": "Provider-neutral, opt-in destinations for client-encrypted backups or explicitly redacted operational events. This schema configures a destination; it does not create infrastructure or authorize a connection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "endpointId", "provider", "purpose", "enabled", "url", "auth", "dataClasses", "limits", "tls"],
+  "properties": {
+    "schemaVersion": {
+      "const": "network-os.cloud-endpoint.v1"
+    },
+    "endpointId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["aws-s3", "azure-blob", "google-cloud-storage", "s3-compatible", "https-api", "self-hosted"]
+    },
+    "purpose": {
+      "type": "string",
+      "enum": ["encrypted-backup", "redacted-os-events", "redacted-agent-events", "chain-checkpoint"]
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["none", "environment-token", "aws-profile", "workload-identity", "user-managed"]
+        },
+        "credentialRef": {
+          "type": "string",
+          "description": "Name/reference only, such as an environment variable or provider profile. Never put a secret value here.",
+          "pattern": "^[A-Za-z0-9_.:/-]{1,128}$"
+        },
+        "audience": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "dataClasses": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["client-encrypted-backup", "redacted-os-events", "redacted-agent-events", "content-digest-only"]
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxUploadBytes", "maxQueueBytes", "retentionDays", "timeoutSeconds"],
+      "properties": {
+        "maxUploadBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "maxQueueBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10737418240
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verifyPeer"],
+      "properties": {
+        "verifyPeer": {
+          "const": true
+        },
+        "caBundleRef": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "cloudAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "service": {
+          "type": "string",
+          "enum": ["aws-cloudtrail", "azure-activity-log", "gcp-cloud-audit", "self-hosted"]
+        },
+        "includeDataEvents": {
+          "type": "boolean",
+          "default": false
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "purpose": {
+            "const": "encrypted-backup"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "dataClasses": {
+            "contains": {
+              "const": "client-encrypted-backup"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "purpose": {
+            "const": "chain-checkpoint"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "dataClasses": {
+            "contains": {
+              "const": "content-digest-only"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

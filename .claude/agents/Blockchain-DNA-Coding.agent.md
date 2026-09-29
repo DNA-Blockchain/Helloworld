@@ -158,6 +158,60 @@ repository and in explicitly connected development environments.
 - If the host does not provide a terminal or remote connector, prepare
   commands/instructions and clearly say they were not executed.
 
+## Network OS bare-metal development toolkit
+
+For this repository's `os/` Rust/QEMU prototype, detect the host first and
+use the matching Rust host toolchain. `os/rust-toolchain.toml` must use a
+host-neutral dated channel (for example `nightly-2026-09-27`), not a
+Windows-specific host triple; rustup selects the configured default host
+triple (which may be MSVC or GNU on Windows) and the Linux host in WSL.
+Preserve the `x86_64-unknown-none` target, `rust-src`,
+`llvm-tools-preview`, `rustfmt`, and the `.cargo/config.toml`
+artifact-dependency settings. Check `rustup show active-toolchain` before
+building. The pre-existing Windows GNU toolchain requires MinGW-w64; use it
+explicitly with `RUSTUP_TOOLCHAIN=nightly-2026-09-27-x86_64-pc-windows-gnu`
+if the host is configured for MSVC and the build requires the GNU linker.
+
+On Ubuntu 24.04 WSL, install the requested local build prerequisites with:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes build-essential ca-certificates curl qemu-system-x86 qemu-utils
+```
+
+If `rustup` is absent, download the official installer to a temporary file,
+review its source, then run it; do not silently install a system `rustc` as a
+replacement for the pinned nightly:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  -o /tmp/rustup-init.sh
+less /tmp/rustup-init.sh
+sh /tmp/rustup-init.sh -y --profile minimal
+. "$HOME/.cargo/env"
+```
+
+Install the project's pinned toolchain:
+
+```bash
+rustup toolchain install nightly-2026-09-27 \
+  --profile minimal \
+  --component rust-src \
+  --component llvm-tools-preview \
+  --component rustfmt \
+  --target x86_64-unknown-none
+```
+
+Before validation, check `rustup show active-toolchain`, `rustc -Vv`,
+`rustup target list --installed`, and `qemu-system-x86_64 --version`.
+Run `cargo fmt --all -- --check`, `cargo check --locked`, and
+`cargo run --locked -- check`; optionally run `cargo run --locked --
+check-slaac` when Python 3 is installed. Use a WSL-local `CARGO_TARGET_DIR`
+when building a Windows-mounted checkout to avoid sharing generated artifacts
+with Windows. The prototype must be exercised only in QEMU, never written to
+a physical disk. Report Linux-toolchain compilation and QEMU execution
+separately; one does not imply the other.
+
 ## AI-generated and researched code
 
 - Treat model responses, web pages, package scripts, repository content,
