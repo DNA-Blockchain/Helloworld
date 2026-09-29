@@ -265,19 +265,27 @@ def twin_from_baseline(sequence: str, label: str = "cancer-free baseline") -> di
     }
 
 
-def linked_research(base_dir: Path, genes: list[str]) -> list[dict]:
-    """Published CRISPR-tagged records for these genes (research_crispr_link.py)."""
+def linked_research(base_dir: Path, genes: list[str], context_tags: list[str] | None = None) -> list[dict]:
+    """Published tagged records for these genes (research_crispr_link.py).
+    `context_tags` (from twin_context.research_tags_for_context) mark the ones
+    worth reading for this case's clinical context; they are sorted first and
+    flagged, never used to change the model."""
     if not genes:
         return []
     try:
         import research_crispr_link
 
-        return [
+        records = [
             {"source": r["source"], "external_id": r["external_id"], "title": r["title"], "tags": r["tags"]}
             for r in research_crispr_link.related_records(base_dir, genes)
         ]
     except (OSError, ValueError, KeyError, ImportError):
         return []
+    wanted = set(context_tags or [])
+    for record in records:
+        record["matches_context"] = bool(wanted & set(record["tags"]))
+    records.sort(key=lambda r: not r["matches_context"])
+    return records
 
 
 def guides_near_mutations(sequence: str, mutations: list[dict], window: int = 30, top_n: int = 5) -> list[dict]:
@@ -321,7 +329,8 @@ def strand_pair(sequence: str) -> dict:
     }
 
 
-def build_page(twin: dict, research: list[dict], guides: list[dict], frame: int = 1) -> str:
+def build_page(twin: dict, research: list[dict], guides: list[dict], frame: int = 1,
+               clinvar: list[dict] | None = None, context: dict | None = None) -> str:
     strands = {part: strand_pair(twin[part]) for part in ("reference", "sample", "edited")}
     data = {
         "twin": twin,
@@ -338,6 +347,8 @@ def build_page(twin: dict, research: list[dict], guides: list[dict], frame: int 
         ),
         "research": research,
         "guides": guides,
+        "clinvar": clinvar or [],
+        "context": context,
     }
     return PAGE.replace("__TWIN_DATA__", json.dumps(data, ensure_ascii=False))
 
@@ -570,6 +581,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--open", action="store_true", help="open the page in your browser when it is written")
+    parser.add_argument("--context-label", metavar="CASE",
+                        help="show the local clinical context recorded for this case "
+                             "(twin_context.py); it is never published and never changes the model")
+    parser.add_argument("--clinvar", action="store_true",
+                        help="fetch ClinVar's classifications for --gene now (network) and cache them; "
+                             "without it, any cached records are shown")
     parser.add_argument("--export-dataset", type=Path, metavar="DIR",
                         help="also write the twin as a packed 2-bit binary dataset the Network OS can read")
     args = parser.parse_args(argv)
@@ -592,10 +609,26 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     scan_sequence = read_fasta_or_plain(args.sequence_file) if args.sequence_file else None
-    guides = guides_near_mutations(scan_sequence or twin["sample"], twin["mutations"])
-    research = linked_research(args.base_dir, args.gene)
+    import twin_context
 
-    args.output.write_text(build_page(twin, research, guides, args.frame), encoding="utf-8")
+    context = twin_context.load_context(args.base_dir, args.context_label) if args.context_label else None
+    if args.context_label and context is None:
+        print(f"No clinical context recorded for {args.context_label!r}; continuing without it.")
+    if args.clinvar:
+        for gene in args.gene:
+            try:
+                cached = twin_context.fetch_clinvar(args.base_dir, gene)
+                print(f"cached {cached['record_count']} ClinVar record(s) for {cached['gene']}")
+            except (OSError, ValueError, RuntimeError) as error:
+                print(f"ClinVar fetch for {gene} failed ({error}); using any cached records")
+    clinvar = twin_context.clinvar_for_genes(args.base_dir, args.gene)
+    context_tags = twin_context.research_tags_for_context(context)
+
+    guides = guides_near_mutations(scan_sequence or twin["sample"], twin["mutations"])
+    research = linked_research(args.base_dir, args.gene, context_tags)
+
+    args.output.write_text(build_page(twin, research, guides, args.frame, clinvar, context),
+                           encoding="utf-8")
     print(f"Digital twin written to {args.output}  ({twin['source']})")
     print(f"{len(twin['sample'])} bases, {len(twin['mutations'])} difference(s) from reference; "
           f"{twin['modeled_status']}, {twin['clinical_status']}")
@@ -609,7 +642,14 @@ def main(argv: list[str] | None = None) -> int:
     if guides:
         print(f"{len(guides)} guide candidate(s) near a difference (efficiency heuristic, not validated)")
     if research:
-        print(f"{len(research)} linked research record(s) from the chain")
+        matching = sum(r["matches_context"] for r in research)
+        print(f"{len(research)} linked research record(s) from the chain"
+              + (f", {matching} matching this case's context" if context_tags else ""))
+    if clinvar:
+        print(f"{len(clinvar)} ClinVar record(s) shown, as ClinVar's own classifications")
+    if context:
+        print(f"clinical context: {', '.join(context['markers']) or 'none'} "
+              f"(local only, never published, does not change the model)")
     if args.export_dataset:
         written = write_dataset(args.export_dataset, twin)
         print(f"Binary dataset written to {args.export_dataset}: "
@@ -696,9 +736,17 @@ not a validated design, and not a treatment.</div>
 <div class="scroll"><table><thead><tr><th>Guide</th><th>PAM</th><th>Strand</th><th>Position</th>
 <th>GC</th><th>Heuristic score</th><th>Nearest difference</th></tr></thead><tbody id="guides"></tbody></table></div>
 
+<h2>What ClinVar reports for this gene</h2>
+<div class="muted small" id="clinvarNote"></div>
+<div class="scroll"><table><thead><tr><th>Variant</th><th>ClinVar's classification</th>
+<th>Review status</th><th>Conditions named</th></tr></thead><tbody id="clinvar"></tbody></table></div>
+
+<h2>Clinical context</h2>
+<div class="muted small" id="contextNote"></div>
+
 <h2>Linked research on the chain</h2>
-<div class="scroll"><table><thead><tr><th>Record</th><th>Source</th><th>CRISPR tags</th></tr></thead>
-<tbody id="research"></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Record</th><th>Source</th><th>Tags</th><th>For this context</th>
+</tr></thead><tbody id="research"></tbody></table></div>
 
 <h2>Chain provenance of this run</h2>
 <div class="muted small">Each stage of the model is hash-linked to the one before it, so the order of
@@ -881,11 +929,32 @@ for (const g of DATA.guides) {
 }
 if (!DATA.guides.length) row(el("guides"), ["No PAM-site candidate falls near a difference in this sequence."]);
 
+el("clinvarNote").textContent = DATA.clinvar.length
+  ? "ClinVar's own reported classifications for variants in this gene, with its review status. These are "
+    + "ClinVar's and its submitters' assessments, not this project's, and they describe a variant's "
+    + "reported significance, not a treatment."
+  : "No cached ClinVar records. Fetch them with: python twin_context.py clinvar <GENE> --fetch";
+for (const c of DATA.clinvar) {
+  const link = document.createElement("a");
+  link.href = c.source_url; link.textContent = c.title; link.rel = "noopener";
+  row(el("clinvar"), [link, c.clinvar_classification, c.clinvar_review_status || "—",
+    (c.conditions || []).join(", ") || "—"]);
+}
+if (!DATA.clinvar.length) row(el("clinvar"), ["Nothing cached for this gene yet."]);
+
+el("contextNote").textContent = DATA.context
+  ? `Recorded: ${(DATA.context.markers || []).join(", ") || "no markers"}`
+    + `${DATA.context.grade ? ", grade " + DATA.context.grade : ""}`
+    + `${DATA.context.stage ? ", stage " + DATA.context.stage : ""}. ${DATA.context.note}`
+  : "No clinical context recorded. Add it with: python twin_context.py context --set ER+ --label <case>. "
+    + "Context is local, never published, and never changes the modeled edit.";
+
 for (const r of DATA.research) {
   const tags = document.createElement("span");
   for (const t of r.tags) { const s = document.createElement("span"); s.className = "tag";
     s.textContent = t; tags.append(s); }
-  row(el("research"), [r.title, `${r.source}:${r.external_id}`, tags]);
+  row(el("research"), [r.title, `${r.source}:${r.external_id}`, tags,
+    r.matches_context ? "yes" : "—"]);
 }
 if (!DATA.research.length) row(el("research"),
   ["No tagged research linked. Pass --gene, and tag records with research_crispr_link.py."]);

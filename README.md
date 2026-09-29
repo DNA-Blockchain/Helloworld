@@ -593,6 +593,37 @@ genome identifies its owner and their relatives for life, the chain is
 append-only and replicated to every node, and consent cannot be taken back
 from it. For those cases only hashes are published.
 
+### Variant significance and clinical context
+
+Neither of these is published: one is a cache of someone else's public
+assessments, the other is clinical detail about a person.
+
+```powershell
+python twin_context.py clinvar BRCA1 --fetch    # cache ClinVar's classifications
+python twin_context.py clinvar BRCA1            # read the cache offline
+python twin_context.py context --set ER+ --set HER2- --set G2 --label "case A"
+```
+
+`twin_context.py clinvar` fetches **ClinVar's own** reported classification for
+a gene's variants (`Pathogenic`, `Likely pathogenic`, `Uncertain significance`,
+...) with its review status, when it was last evaluated, the conditions named,
+and a link, and caches it under `autonomous/clinvar/`. Every row is attributed
+to ClinVar and its submitters; the project never restates it as its own
+judgment, and a reported significance is not a treatment.
+
+`twin_context.py context` records reported tumour annotations for a case (ER,
+PR, HER2, triple-negative, grade G1-G3, stage 0-IV). Anything it does not
+recognise is refused rather than guessed at. **Context never changes the
+modeled edit**: receptor status describes which proteins a tumour makes and
+hormones change what a gene transcribes, not which bases it carries, so there
+is no step from an annotation to a base to change. What it does is choose
+which published research the twin shows first, through the tags below.
+
+Research tags cover that regulatory side too (`hormone_signalling`,
+`methylation`, `expression` alongside `crispr`, `base_editing`, `guide_rna`,
+...), so endocrine, epigenetic and expression research is linked and
+searchable next to the editing literature.
+
 ### DNA digital twin
 
 ```powershell
