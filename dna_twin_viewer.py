@@ -321,11 +321,15 @@ def strand_pair(sequence: str) -> dict:
     }
 
 
-def build_page(twin: dict, research: list[dict], guides: list[dict]) -> str:
+def build_page(twin: dict, research: list[dict], guides: list[dict], frame: int = 1) -> str:
     strands = {part: strand_pair(twin[part]) for part in ("reference", "sample", "edited")}
     data = {
         "twin": twin,
         "strands": strands,
+        "bit_plan": bit_edit_plan(twin["reference"], twin["sample"]),
+        "protein": protein_consequences(twin["reference"], twin["sample"], frame),
+        "protein_note": PROTEIN_NOTE,
+        "frame": frame,
         "reference_bits": strands["reference"]["forward_bits"],
         "sample_bits": strands["sample"]["forward_bits"],
         "edited_bits": strands["edited"]["forward_bits"],
@@ -336,6 +340,137 @@ def build_page(twin: dict, research: list[dict], guides: list[dict]) -> str:
         "guides": guides,
     }
     return PAGE.replace("__TWIN_DATA__", json.dumps(data, ensure_ascii=False))
+
+
+def apply_bit_mask(sequence: str, mask: str) -> str:
+    """`sequence` with every bit flipped where `mask` has a 1. The mask is one
+    bit per bit of the 2-bit encoding, so it is exactly two characters per
+    base."""
+    bits = "".join(binary_of(sequence))
+    if len(mask) != len(bits):
+        raise ValueError("the mask must have one character per bit (two per base)")
+    flipped = "".join(
+        ("1" if bit == "0" else "0") if flip == "1" else bit for bit, flip in zip(bits, mask)
+    )
+    codes = {code: base for base, code in BASE_TO_BITS.items()}
+    return "".join(codes[flipped[i:i + 2]] for i in range(0, len(flipped), 2))
+
+
+def bit_edit_plan(reference: str, sample: str) -> dict:
+    """The modeled edit expressed as bit flips: the level everything else is
+    built on. Each base is two bits, so restoring the baseline at a position
+    is an XOR with a 2-bit mask, and the whole edit is one XOR mask over the
+    sequence: sample bits XOR mask == baseline bits, exactly.
+
+    `verified` is that identity actually checked, not asserted. What this
+    does not do is find remission: flipping bits changes a string, and
+    whether a real cell would follow needs laboratory evidence."""
+    reference_bits, sample_bits = binary_of(reference), binary_of(sample)
+    steps, mask_codes = [], []
+    for index, (wanted, have) in enumerate(zip(reference_bits, sample_bits)):
+        code = "".join("1" if a != b else "0" for a, b in zip(have, wanted))
+        mask_codes.append(code)
+        if wanted == have:
+            continue
+        steps.append({
+            "position": index + 1,
+            "from_base": sample[index],
+            "to_base": reference[index],
+            "sample_bits": have,
+            "baseline_bits": wanted,
+            "xor_mask": code,
+            "bits_to_flip": code.count("1"),
+        })
+    mask = "".join(mask_codes)
+    return {
+        "steps": steps,
+        "mask": mask,
+        "bases_changed": len(steps),
+        "bits_flipped": mask.count("1"),
+        "total_bits": len(mask),
+        "verified": apply_bit_mask(sample, mask) == reference.upper(),
+    }
+
+
+# The standard genetic code (NCBI translation table 1): the published,
+# fixed mapping from a 3-base codon to an amino acid, with "*" for a stop.
+# This is what makes a DNA difference relatable to a protein: it is a lookup,
+# not a prediction, so every row below can be checked against the table.
+GENETIC_CODE = {
+    "TTT": "Phe", "TTC": "Phe", "TTA": "Leu", "TTG": "Leu",
+    "CTT": "Leu", "CTC": "Leu", "CTA": "Leu", "CTG": "Leu",
+    "ATT": "Ile", "ATC": "Ile", "ATA": "Ile", "ATG": "Met",
+    "GTT": "Val", "GTC": "Val", "GTA": "Val", "GTG": "Val",
+    "TCT": "Ser", "TCC": "Ser", "TCA": "Ser", "TCG": "Ser",
+    "CCT": "Pro", "CCC": "Pro", "CCA": "Pro", "CCG": "Pro",
+    "ACT": "Thr", "ACC": "Thr", "ACA": "Thr", "ACG": "Thr",
+    "GCT": "Ala", "GCC": "Ala", "GCA": "Ala", "GCG": "Ala",
+    "TAT": "Tyr", "TAC": "Tyr", "TAA": "*", "TAG": "*",
+    "CAT": "His", "CAC": "His", "CAA": "Gln", "CAG": "Gln",
+    "AAT": "Asn", "AAC": "Asn", "AAA": "Lys", "AAG": "Lys",
+    "GAT": "Asp", "GAC": "Asp", "GAA": "Glu", "GAG": "Glu",
+    "TGT": "Cys", "TGC": "Cys", "TGA": "*", "TGG": "Trp",
+    "CGT": "Arg", "CGC": "Arg", "CGA": "Arg", "CGG": "Arg",
+    "AGT": "Ser", "AGC": "Ser", "AGA": "Arg", "AGG": "Arg",
+    "GGT": "Gly", "GGC": "Gly", "GGA": "Gly", "GGG": "Gly",
+}
+PROTEIN_NOTE = (
+    "Protein consequence is a lookup in the standard genetic code for the codon each difference falls in. "
+    "It is only meaningful if the reading frame is the sequence's real one (--frame), and it describes what "
+    "the codon codes for, not whether the change causes disease or what would treat it."
+)
+
+
+def protein_consequences(reference: str, sample: str, frame: int = 1) -> list[dict]:
+    """For each position where `sample` differs from `reference`, the codon it
+    falls in and the amino acid each codon codes for, read in `frame` (1, 2 or
+    3: the base the first codon starts at).
+
+    This is the DNA-to-protein step of the central dogma as a table lookup.
+    It says a difference changes, say, Gly to Asp; it says nothing about
+    whether that matters clinically, which needs experimental evidence this
+    project does not have."""
+    if frame not in (1, 2, 3):
+        raise ValueError("reading frame must be 1, 2 or 3")
+    offset = frame - 1
+    consequences = []
+    for difference in differences(reference, sample):
+        index = difference["position"] - 1
+        if index < offset:
+            continue
+        codon_index = (index - offset) // 3
+        start = offset + codon_index * 3
+        reference_codon = reference[start:start + 3].upper()
+        sample_codon = sample[start:start + 3].upper()
+        if len(reference_codon) < 3 or len(sample_codon) < 3:
+            continue          # a partial codon at the end of the fragment
+        reference_aa = GENETIC_CODE.get(reference_codon, "?")
+        sample_aa = GENETIC_CODE.get(sample_codon, "?")
+        if "?" in (reference_aa, sample_aa):
+            consequence = "unknown_codon"
+        elif reference_aa == sample_aa:
+            consequence = "synonymous"      # the protein is unchanged
+        elif sample_aa == "*":
+            consequence = "nonsense"        # a stop appears where an amino acid was
+        elif reference_aa == "*":
+            consequence = "stop_lost"
+        elif reference_codon == "ATG" and start == offset:
+            consequence = "start_lost"
+        else:
+            consequence = "missense"        # a different amino acid
+        consequences.append({
+            "position": difference["position"],
+            "frame": frame,
+            "codon_number": codon_index + 1,
+            "codon_start": start + 1,
+            "reference_codon": reference_codon,
+            "sample_codon": sample_codon,
+            "reference_amino_acid": reference_aa,
+            "sample_amino_acid": sample_aa,
+            "consequence": consequence,
+            "restores": f"{sample_aa} → {reference_aa}" if reference_aa != sample_aa else "no change",
+        })
+    return consequences
 
 
 def read_fasta_or_plain(path: Path) -> str:
@@ -425,6 +560,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="build a cancer-free baseline twin from a reference sequence (plain or FASTA) "
                              "instead of a run; this baseline is what every modeled edit restores")
     parser.add_argument("--label", help="case label for the page and dataset")
+    parser.add_argument("--frame", type=int, default=1, choices=(1, 2, 3),
+                        help="reading frame for the protein consequence table (default 1); it must be the "
+                             "sequence's real frame for the amino acids to mean anything")
     parser.add_argument("--gene", action="append", default=[],
                         help="gene this case is about (repeatable); shows the chain's tagged research for it")
     parser.add_argument("--sequence-file", type=Path,
@@ -457,10 +595,17 @@ def main(argv: list[str] | None = None) -> int:
     guides = guides_near_mutations(scan_sequence or twin["sample"], twin["mutations"])
     research = linked_research(args.base_dir, args.gene)
 
-    args.output.write_text(build_page(twin, research, guides), encoding="utf-8")
+    args.output.write_text(build_page(twin, research, guides, args.frame), encoding="utf-8")
     print(f"Digital twin written to {args.output}  ({twin['source']})")
     print(f"{len(twin['sample'])} bases, {len(twin['mutations'])} difference(s) from reference; "
           f"{twin['modeled_status']}, {twin['clinical_status']}")
+    protein = protein_consequences(twin["reference"], twin["sample"], args.frame)
+    for entry in protein:
+        print(f"position {entry['position']}: codon {entry['reference_codon']}->{entry['sample_codon']} "
+              f"({entry['reference_amino_acid']}->{entry['sample_amino_acid']}, {entry['consequence']}); "
+              f"the modeled edit restores {entry['restores']}")
+    if protein:
+        print(PROTEIN_NOTE)
     if guides:
         print(f"{len(guides)} guide candidate(s) near a difference (efficiency heuristic, not validated)")
     if research:
@@ -531,6 +676,19 @@ button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 <h2>Differences and the modeled edit</h2>
 <div class="scroll"><table><thead><tr><th>Position</th><th>Reference</th><th>Cancer sample</th>
 <th>Binary</th><th>Modeled substitution</th></tr></thead><tbody id="muts"></tbody></table></div>
+
+<h2>The edit as bit flips</h2>
+<div class="muted small" id="bitNote"></div>
+<div class="cards" id="bitCards"></div>
+<div class="scroll"><table><thead><tr><th>Position</th><th>Base</th><th>Sample bits</th>
+<th>XOR mask</th><th>Baseline bits</th><th>Bits to flip</th></tr></thead>
+<tbody id="bits"></tbody></table></div>
+
+<h2>What the code means for the protein</h2>
+<div class="muted small" id="proteinNote"></div>
+<div class="scroll"><table><thead><tr><th>Position</th><th>Codon #</th><th>Reference codon</th>
+<th>Sample codon</th><th>Amino acid</th><th>Consequence</th><th>Modeled edit restores</th></tr></thead>
+<tbody id="protein"></tbody></table></div>
 
 <h2>Guide-RNA candidates near a difference</h2>
 <div class="muted small">A PAM-site scan with a GC-content efficiency heuristic. Reading for a human,
@@ -685,6 +843,36 @@ for (const m of T.mutations) {
     edit ? `${edit.from} → ${edit.to} (model substitution)` : "—"]);
 }
 if (!T.mutations.length) row(el("muts"), ["The sample matches the reference at every position."]);
+
+const plan = DATA.bit_plan;
+el("bitNote").textContent =
+  "Each base is two bits, so the edit back to the cancer-free baseline is one XOR mask over the sequence: "
+  + "flip the bits the mask marks and the sample's binary becomes the baseline's binary, exactly. "
+  + (plan.verified
+      ? "Verified here: applying this mask to the sample reproduces the baseline."
+      : "WARNING: applying this mask did not reproduce the baseline.");
+el("bitNote").className = plan.verified ? "muted small" : "bad small";
+for (const [label, value] of [["Bases changed", `${plan.bases_changed}`],
+                              ["Bits flipped", `${plan.bits_flipped} of ${plan.total_bits}`],
+                              ["Mask verified", plan.verified ? "yes" : "NO"]]) {
+  const d = document.createElement("div"); d.className = "card";
+  const s = document.createElement("span"); s.className = "muted small"; s.textContent = label;
+  const b = document.createElement("b"); b.textContent = value;
+  d.append(s, b); el("bitCards").append(d);
+}
+for (const s of plan.steps) {
+  row(el("bits"), [String(s.position), `${s.from_base} → ${s.to_base}`, s.sample_bits,
+    s.xor_mask, s.baseline_bits, String(s.bits_to_flip)]);
+}
+if (!plan.steps.length) row(el("bits"), ["No bit needs flipping: the sample already matches the baseline."]);
+
+el("proteinNote").textContent = `Reading frame ${DATA.frame}. ${DATA.protein_note}`;
+for (const p of DATA.protein) {
+  row(el("protein"), [String(p.position), String(p.codon_number), p.reference_codon, p.sample_codon,
+    `${p.reference_amino_acid} → ${p.sample_amino_acid}`, p.consequence, p.restores]);
+}
+if (!DATA.protein.length) row(el("protein"),
+  ["No complete codon carries a difference in this reading frame."]);
 
 for (const g of DATA.guides) {
   row(el("guides"), [g.guide_sequence, g.pam, g.strand, String(g.position + 1),

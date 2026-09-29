@@ -375,3 +375,94 @@ def test_cli_still_needs_exactly_one_source(tmp_path):
     reference.write_text(BRCA1_FRAGMENT, encoding="utf-8")
     with pytest.raises(SystemExit):
         twin.main(["run.json", "--baseline", str(reference)])
+
+
+# --------------------------------------- the bit template under everything
+
+def test_the_edit_is_an_xor_mask_that_restores_the_baseline():
+    plan = twin.bit_edit_plan("ACGTACGTACGT", "ACGTACATACGT")
+    assert plan["bases_changed"] == 1 and plan["bits_flipped"] == 1
+    assert plan["total_bits"] == 24                       # 2 bits per base
+    assert plan["verified"] is True
+    [step] = plan["steps"]
+    assert (step["position"], step["from_base"], step["to_base"]) == (7, "A", "G")
+    assert (step["sample_bits"], step["xor_mask"], step["baseline_bits"]) == ("00", "10", "10")
+    assert twin.apply_bit_mask("ACGTACATACGT", plan["mask"]) == "ACGTACGTACGT"
+
+
+@pytest.mark.parametrize("have, want, bits", [
+    ("A", "C", 1), ("A", "G", 1), ("A", "T", 2), ("C", "G", 2), ("C", "T", 1), ("G", "T", 1),
+    ("A", "A", 0),
+])
+def test_how_many_bits_each_substitution_flips(have, want, bits):
+    plan = twin.bit_edit_plan(want, have)
+    assert plan["bits_flipped"] == bits
+    assert plan["verified"] is True
+    assert twin.apply_bit_mask(have, plan["mask"]) == want
+
+
+def test_the_mask_is_verified_not_assumed():
+    plan = twin.bit_edit_plan(BRCA1_FRAGMENT, VARIANT)
+    assert plan["verified"] is True
+    assert twin.apply_bit_mask(VARIANT, plan["mask"]) == BRCA1_FRAGMENT
+    # an all-zero mask leaves the sample alone, so it cannot reach the baseline
+    assert twin.apply_bit_mask(VARIANT, "0" * plan["total_bits"]) == VARIANT
+    with pytest.raises(ValueError, match="one character per bit"):
+        twin.apply_bit_mask(VARIANT, "10")
+
+
+def test_an_identical_sample_needs_no_flips():
+    plan = twin.bit_edit_plan(BRCA1_FRAGMENT, BRCA1_FRAGMENT)
+    assert plan["steps"] == [] and plan["bits_flipped"] == 0 and plan["verified"] is True
+    assert set(plan["mask"]) == {"0"}
+
+
+def test_the_page_carries_the_verified_bit_plan():
+    data = twin.twin_from_run(run_result())
+    embedded = page_data(twin.build_page(data, [], []))
+    plan = embedded["bit_plan"]
+    assert plan["verified"] is True and plan["bases_changed"] == 1
+    assert [s["position"] for s in plan["steps"]] == [41]
+
+
+# ------------------------------------------------- DNA code to protein code
+
+def test_protein_consequence_is_a_genetic_code_lookup():
+    # GTC (Val) -> GAC (Asp) at position 41 of the fragment, frame 1
+    [entry] = twin.protein_consequences(BRCA1_FRAGMENT, VARIANT, frame=1)
+    assert entry["codon_number"] == 14 and entry["codon_start"] == 40
+    assert (entry["reference_codon"], entry["sample_codon"]) == ("GTC", "GAC")
+    assert (entry["reference_amino_acid"], entry["sample_amino_acid"]) == ("Val", "Asp")
+    assert entry["consequence"] == "missense"
+    assert entry["restores"] == "Asp → Val"
+
+
+@pytest.mark.parametrize("reference, sample, consequence", [
+    ("AAATTT", "AAGTTT", "synonymous"),      # AAA and AAG are both Lys
+    ("AAATTT", "TAATTT", "nonsense"),        # AAA (Lys) -> TAA (stop)
+    ("TAATTT", "AAATTT", "stop_lost"),
+    ("ATGTTT", "ACGTTT", "start_lost"),
+    ("AAATTT", "ACATTT", "missense"),        # Lys -> Thr
+])
+def test_consequence_classes(reference, sample, consequence):
+    [entry] = twin.protein_consequences(reference, sample, frame=1)
+    assert entry["consequence"] == consequence
+
+
+def test_the_genetic_code_table_is_the_standard_one():
+    assert len(twin.GENETIC_CODE) == 64
+    assert twin.GENETIC_CODE["ATG"] == "Met"
+    assert [c for c, aa in twin.GENETIC_CODE.items() if aa == "*"] == ["TAA", "TAG", "TGA"]
+    assert twin.GENETIC_CODE["TTT"] == "Phe" and twin.GENETIC_CODE["GGG"] == "Gly"
+
+
+def test_reading_frame_changes_the_codon_and_must_be_valid():
+    shifted = twin.protein_consequences(BRCA1_FRAGMENT, VARIANT, frame=2)
+    assert shifted and shifted[0]["codon_start"] != 40
+    with pytest.raises(ValueError, match="reading frame"):
+        twin.protein_consequences(BRCA1_FRAGMENT, VARIANT, frame=4)
+
+
+def test_protein_note_states_what_it_does_not_claim():
+    assert "reading frame" in twin.PROTEIN_NOTE
+    assert "not whether the change causes disease" in twin.PROTEIN_NOTE
