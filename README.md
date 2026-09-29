@@ -536,6 +536,31 @@ python research_timestamps.py status
 Proofs are stored as `autonomous/timestamps/<event_id>.ots` and served by the
 viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
 
+### Plain-language summaries (local AI)
+
+`research_summaries.py` rewrites each published record's title as one
+plain-language sentence with a local Ollama model (default `llama3.2:3b`,
+free, about 2 GB). It only ever talks to Ollama on this machine. Summaries
+are machine-generated and can be wrong; the viewer shows them under the real
+title, labelled "may be wrong, not evidence".
+
+```powershell
+ollama pull llama3.2:3b
+python research_summaries.py run --limit 5                          # local only
+python research_summaries.py run --limit 10 --confirm-publication   # also hash-only events on the chain
+python research_summaries.py status
+```
+
+Summaries live in `autonomous/summaries/summaries.json`. With
+`--confirm-publication`, each batch of up to 20 gets a hash-only provenance
+event (SHA-256 of the records and of the summaries, plus the model name, with
+no text on the chain), and the viewer marks a summary "hash on chain" once
+its batch verifies against the mined event. Runs use half the CPU threads
+and stop early when the PC is over 75% busy. While
+`autonomous/research-summaries.confirmed` exists, `node_supervisor.py` runs
+a batch of 10 every 10 minutes at below-normal priority; delete the file to
+stop.
+
 ### Corrections
 
 The chain is append-only, so a published record is fixed by publishing a
