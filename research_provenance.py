@@ -290,7 +290,10 @@ def _validate_public_research_records(event: dict) -> None:
 # These are keyword tags over a record's own published title: they say what
 # the title mentions, never that the research supports an edit or a
 # treatment. The method is recorded so a reader knows how a tag was derived.
-CRISPR_TAG_METHOD = "title-keywords-v1"
+CRISPR_TAG_METHOD = "title-keywords-v2"
+# Older events keep their own method value and must still validate, since the
+# chain is append-only and a published event cannot be re-tagged in place.
+CRISPR_TAG_METHODS = {"title-keywords-v1", CRISPR_TAG_METHOD}
 CRISPR_TAGS = {
     "crispr",           # CRISPR/Cas named at all
     "cas9",             # a specific nuclease
@@ -301,6 +304,12 @@ CRISPR_TAGS = {
     "screen",           # CRISPR screens
     "delivery",         # delivery vehicles
     "gene_therapy",     # gene therapy named without CRISPR
+    # Added in v2. These describe regulation of an existing gene rather than a
+    # change to its sequence, which is where hormone and expression research
+    # sits: hormones do not alter DNA bases, they change what is transcribed.
+    "hormone_signalling",   # oestrogen/androgen receptor signalling, endocrine therapy
+    "methylation",          # DNA methylation and other epigenetic marks
+    "expression",           # transcription, RNA-seq, up/downregulation
 }
 _GENE_RE = re.compile(r"^[A-Z][A-Z0-9-]{1,14}$")
 MAX_TAGGED_GENES = 8
@@ -351,7 +360,7 @@ def _validate_public_crispr_relevance(event: dict) -> None:
     if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
         raise ValueError("CRISPR relevance event has an invalid event ID")
     _require_timestamp(event["created_at"], "CRISPR relevance")
-    if event["method"] != CRISPR_TAG_METHOD:
+    if event["method"] not in CRISPR_TAG_METHODS:
         raise ValueError("CRISPR relevance event has an unknown tagging method")
     records = event["records"]
     if (

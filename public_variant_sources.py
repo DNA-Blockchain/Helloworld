@@ -245,6 +245,89 @@ def clinvar_records_by_id(uids: list[str]) -> list[dict]:
     ]
 
 
+CLINVAR_SIGNIFICANCES = (
+    "Pathogenic", "Likely pathogenic", "Uncertain significance",
+    "Likely benign", "Benign", "Conflicting interpretations of pathogenicity",
+)
+
+
+def clinvar_classifications(gene: str, *, max_results: int = 10,
+                            significance: str | None = None) -> list[dict]:
+    """ClinVar's own classification of variants in one gene.
+
+    Every field here is ClinVar's assessment (from its submitters), carried
+    with its review status, when it was last evaluated, and a link to the
+    record. It is attributed to ClinVar, never presented as this project's
+    judgment, and it describes a variant's reported significance, not what
+    would treat anyone.
+    """
+    symbol = gene.strip().upper()
+    if not symbol or not re.fullmatch(r"[A-Z][A-Z0-9-]{0,14}", symbol):
+        raise ValueError("gene must be a gene symbol such as BRCA1")
+    if not 1 <= max_results <= 100:
+        raise ValueError("max_results must be between 1 and 100")
+    term = f"{symbol}[gene]"
+    if significance is not None:
+        if significance not in CLINVAR_SIGNIFICANCES:
+            raise ValueError(f"significance must be one of {CLINVAR_SIGNIFICANCES}")
+        term += f' AND "{significance}"[Clinical_significance]'
+
+    search = _ncbi_get_json(NCBI_ESEARCH, {
+        "db": "clinvar", "term": term, "retmode": "json", "retmax": str(max_results),
+    })
+    ids = search.get("esearchresult", {}).get("idlist") or []
+    if not isinstance(ids, list) or not ids:
+        return []
+    summary = _ncbi_get_json(NCBI_ESUMMARY, {
+        "db": "clinvar", "id": ",".join(str(i) for i in ids), "retmode": "json",
+    }).get("result", {})
+    if not isinstance(summary, dict):
+        raise ValueError("NCBI clinvar response did not contain record summaries")
+    return [
+        _clinvar_classification(str(uid), summary[str(uid)], symbol)
+        for uid in ids
+        if isinstance(summary.get(str(uid)), dict)
+    ]
+
+
+def _clinvar_classification(uid: str, item: dict, gene: str) -> dict:
+    """One ClinVar summary reduced to its attributed classification."""
+    germline = item.get("germline_classification") or item.get("clinical_significance") or {}
+    if not isinstance(germline, dict):
+        germline = {"description": str(germline)}
+    traits = germline.get("trait_set") or item.get("trait_set") or []
+    conditions = sorted({
+        str(trait.get("trait_name") or "").strip()
+        for trait in traits if isinstance(trait, dict) and trait.get("trait_name")
+    })
+    variation = (item.get("variation_set") or [{}])[0]
+    if not isinstance(variation, dict):
+        variation = {}
+    genes = [
+        str(entry.get("symbol") or "").strip()
+        for entry in (item.get("genes") or []) if isinstance(entry, dict) and entry.get("symbol")
+    ]
+    return {
+        "source": "clinvar",
+        "uid": uid,
+        "accession": str(item.get("accession") or uid),
+        "gene": gene,
+        "gene_symbols": sorted({g for g in genes if g}) or [gene],
+        "title": str(item.get("title") or f"ClinVar variation {uid}"),
+        "variant_type": str(variation.get("variant_type") or item.get("obj_type") or ""),
+        "protein_change": str(item.get("protein_change") or ""),
+        "canonical_spdi": str(variation.get("canonical_spdi") or ""),
+        # ClinVar's own words, kept verbatim:
+        "clinvar_classification": str(germline.get("description") or "not provided"),
+        "clinvar_review_status": str(germline.get("review_status") or ""),
+        "clinvar_last_evaluated": str(germline.get("last_evaluated") or ""),
+        "conditions": conditions[:10],
+        "source_url": f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/",
+        "asserted_by": "ClinVar (NCBI) and its submitters, not this project",
+        "classification": "public",
+    }
+
+
 def _ncbi_variant_record(uid, item: dict, *, database: str) -> dict:
     if database == "clinvar":
         source = "clinvar"

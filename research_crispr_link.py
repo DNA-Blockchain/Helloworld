@@ -133,6 +133,20 @@ TAG_PHRASES: dict[str, tuple[str, ...]] = {
     "delivery": ("lipid nanoparticle", "adeno-associated virus", "aav vector", "electroporation",
                  "viral vector", "nanoparticle delivery"),
     "gene_therapy": ("gene therapy", "gene therapies", "cell and gene therapy"),
+    # Regulation of a gene rather than a change to its sequence. Hormone
+    # signalling and methylation change what a cell transcribes; they do not
+    # change which bases are present, so these tags sit beside the editing
+    # ones rather than feeding the modeled edit.
+    "hormone_signalling": ("oestrogen", "estrogen", "oestrogen receptor", "estrogen receptor",
+                           "androgen", "androgen receptor", "progesterone", "endocrine therapy",
+                           "aromatase inhibitor", "tamoxifen", "hormone receptor", "hormonal therapy",
+                           "er-positive", "er positive", "hormone-dependent"),
+    "methylation": ("methylation", "methylated", "hypermethylation", "hypomethylation",
+                    "epigenetic", "epigenetics", "dna methyltransferase", "cpg island"),
+    "expression": ("gene expression", "expression profile", "overexpression", "underexpression",
+                   "downregulation", "upregulation", "transcriptome", "transcriptomic", "rna-seq",
+                   "rna sequencing", "mrna expression", "transcriptional", "protein expression",
+                   "receptor expression", "expression levels", "expression level"),
 }
 # Cancer-related gene symbols this project already works with, so a title's
 # "BRCA1" is tagged but an ordinary capitalised word is not. Extend with
