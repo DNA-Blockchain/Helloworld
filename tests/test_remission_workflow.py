@@ -1,9 +1,7 @@
 import json
-import re
 
 import pytest
 
-import build_remission_bundle
 import remission_core
 import remission_workflow
 from dna_binary_codec import decode_from_dna
@@ -147,40 +145,3 @@ def test_host_report_and_vault(tmp_path, monkeypatch, capsys):
     saved = json.loads(out_file.read_text())
     assert set(saved["records"]) == {"vault"}
     assert list((tmp_path / "vault").iterdir())
-
-
-# --------------------------------------------------- kernel bundle contract
-
-FILE_NAME = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,14}$")
-IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,47}$")
-
-
-def test_bundle_is_up_to_date():
-    assert build_remission_bundle.stale_files(build_remission_bundle.build()) == []
-
-
-def test_bundle_manifests_follow_kernel_schemas():
-    files = build_remission_bundle.build()
-    task = json.loads(files["RMTASK.JSON"])
-    workflow = json.loads(files["RMFLOW.JSON"])
-
-    assert set(task) == {"schemaVersion", "taskId", "runtime", "entrypoint", "files", "capabilities", "limits"}
-    assert task["schemaVersion"] == "nosfs.task-bundle.v1" and task["runtime"] == "micropython"
-    assert IDENTIFIER.match(task["taskId"])
-    assert 16384 <= task["limits"]["memoryBytes"] <= 2097152
-    assert 1 <= task["limits"]["runtimeSeconds"] <= 300
-    assert task["entrypoint"] in [f["name"] for f in task["files"]]
-    for entry in task["files"]:
-        data = files[entry["name"]]
-        assert FILE_NAME.match(entry["name"])
-        assert entry["sizeBytes"] == len(data) <= 262144
-        assert entry["sha256"] == build_remission_bundle.hashlib.sha256(data).hexdigest()
-
-    assert workflow["schemaVersion"] == "nosfs.workflow.v1"
-    for block in workflow["blocks"]:
-        assert block["taskManifest"] in files
-        for name in block["inputFiles"] + block["outputFiles"] + [block["taskManifest"]]:
-            assert FILE_NAME.match(name)
-    for name in files:
-        assert len(name) <= 15
-    assert len(files["RMTASK.JSON"]) <= 4096 and len(files["RMFLOW.JSON"]) <= 4096

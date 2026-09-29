@@ -363,6 +363,11 @@ NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked m
         "Remission bundle verified in ring-3 MicroPython: MODELED_REFERENCE_MATCH, ledger verified, NOT_CLINICALLY_CONFIRMED; {}-byte RESULT.OUT written.",
         workflow_report.remission_result_bytes
     );
+    let _ = writeln!(
+        Serial,
+        "Research analysis verified in ring-3 MicroPython: 5 public records de-duplicated to 3, ranked and hashed; {}-byte RANKED.OUT written.",
+        workflow_report.research_result_bytes
+    );
     if user_dns_verified {
         let _ = writeln!(
             Serial,

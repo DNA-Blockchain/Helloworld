@@ -1,0 +1,1 @@
+{"schemaVersion":"nosfs.workflow.v1","workflowId":"research-analysis","failurePolicy":"stop","blocks":[{"blockId":"research-analysis","taskManifest":"RSTASK.JSON","dependsOn":[],"inputFiles":["RESEARCH.JSON"],"outputFiles":["RANKED.OUT"]}]}

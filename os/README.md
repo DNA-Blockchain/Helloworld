@@ -234,7 +234,10 @@ fails the block. The boot test runs the stored `TASK.PY` sample, a script that
 compares a synthetic sample to its reference (position 7, G to A), and a
 script that raises, then the real remission bundle from `os/tasks/remission`
 (its own `RMTASK.JSON` and `RMFLOW.JSON`), checking that `RESULT.OUT` reports
-`MODELED_REFERENCE_MATCH`, a verified ledger and `NOT_CLINICALLY_CONFIRMED`.
+`MODELED_REFERENCE_MATCH`, a verified ledger and `NOT_CLINICALLY_CONFIRMED`,
+and the research-analysis bundle from `os/tasks/research`, checking that
+`RANKED.OUT` de-duplicates its five synthetic public records to three and
+ranks the expected record first. Both outputs match CPython byte for byte.
 The interpreter has MicroPython's core features plus `json`, `hashlib.sha256`,
 `binascii` and `sys`; `open()` reads through syscall 2 and writes declared
 `.OUT` files through syscall 13 on close. It has no floats, no imports of

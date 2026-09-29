@@ -350,6 +350,9 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         || !output
             .iter()
             .any(|line| line.contains("Remission bundle verified in ring-3 MicroPython"))
+        || !output
+            .iter()
+            .any(|line| line.contains("Research analysis verified in ring-3 MicroPython"))
         || !output.iter().any(|line| {
             line.contains(
                 "Ring-3 UDP datagram verified: user bind/sendto/recvfrom resolved DNS through the kernel network owner",
@@ -527,8 +530,9 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                 saw_user_tcp_abi |= line.contains(
                     "Ring-3 TCP socket ABI verified: bounded connect/send/receive/close calls and invalid endpoint rejection",
                 );
+                // Printed last, from the same successful workflow result.
                 saw_workflow_execution |=
-                    line.contains("Remission bundle verified in ring-3 MicroPython");
+                    line.contains("Research analysis verified in ring-3 MicroPython");
                 saw_user_fault_recovery |= line.contains(
                     "Ring-3 protections verified: supervisor read, NX fetch, and read-only text write faults recovered",
                 );

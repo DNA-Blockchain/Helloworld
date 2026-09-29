@@ -84,8 +84,13 @@ confident-looking file imply more than it's actually verified.
   broader filesystem API, and network syscalls. It must not run as privileged
   kernel code. A ring-3 MicroPython (core features plus `json`,
   `hashlib.sha256`, `binascii`, `sys` and whole-file `open()`) runs workflow
-  scripts, including the remission bundle; it has no floats, imports of other
-  files or network access, so the full research agent cannot run there.
+  scripts, including the remission and research-analysis bundles; it has no
+  floats, imports of other files or network access. The research agent is
+  therefore split: `research_fetch.py` retrieves public records over HTTPS
+  on the host, and `research_analysis.py` ranks them in the kernel. The
+  kernel only runs the embedded synthetic sample at boot; there is not yet a
+  way to hand a freshly fetched `RESEARCH.JSON` to a running kernel, and
+  nothing is published to the node chain.
   The workflow dispatcher can execute static ELF tasks from digest-checked
   manifests, one at a time and synchronously, restricting reads to each
   block's declared inputs, writes to its declared `.OUT` outputs, denying

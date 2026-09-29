@@ -394,6 +394,29 @@ authentication bypasses are not supported. Downloads are local only;
 they are not automatically added to the catalog, vault, peer network,
 or any model prompt.
 
+## Split research agent (host fetch, kernel analysis)
+
+The kernel has no TLS, so the research agent is split. `research_fetch.py`
+retrieves public records on the host through
+`research_catalog.search_public_sources` (PubMed, Europe PMC,
+ClinicalTrials.gov, NIH RePORTER) and writes a bounded `RESEARCH.JSON`
+(public records only, abstracts trimmed, at most 64 KiB).
+`research_analysis.py` validates, de-duplicates (by source ID and by
+normalized title across sources), scores by query-term matches and recency,
+ranks, and hashes every record; the output is capped at 16 KiB.
+
+```powershell
+python research_fetch.py --query "CRISPR cancer" --term crispr --term cancer --analyze
+python research_fetch.py --query "CRISPR cancer" --output RESEARCH.JSON
+python research_analysis.py RESEARCH.JSON --output RANKED.OUT
+python research_fetch.py --fixture --analyze    # offline synthetic sample
+```
+
+`research_analysis.py` is MicroPython-compatible (integer scores, no project
+imports), and `build_task_bundles.py` packages it with the synthetic sample
+as `os/tasks/research/`, which the kernel runs at every boot check and whose
+ranking matches CPython byte for byte. Scores order reading, not evidence.
+
 ## Cancer -> modeled reference match workflow
 
 `remission_core.py` runs the whole computational workflow in one pass:
@@ -420,7 +443,7 @@ Insertions/deletions are not modeled (sequences must be equal length).
 The same file is packaged for the Network OS as a MicroPython task bundle
 in `os/tasks/remission/` (`REMISSION.PY`, `SAMPLE.JSON`, `RMTASK.JSON`,
 `RMFLOW.JSON`, following `os/schemas/`). Regenerate it after editing
-`remission_core.py` with `python build_remission_bundle.py`; the tests fail
+`remission_core.py` with `python build_task_bundles.py`; the tests fail
 if it is stale. The kernel embeds this bundle and runs it at every boot check:
 `REMISSION.PY` executes in its ring-3 MicroPython runtime, reads the declared
 `SAMPLE.JSON` input, and writes the declared `RESULT.OUT` output (on the OS,
