@@ -82,15 +82,22 @@ confident-looking file imply more than it's actually verified.
   address supervisor memory. The Python research agent remains a host
   application; running it on this OS requires an isolated user-space runtime,
   broader filesystem API, and network syscalls. It must not run as privileged
-  kernel code. A ring-3 MicroPython (core features plus `json`,
-  `hashlib.sha256`, `binascii`, `sys` and whole-file `open()`) runs workflow
-  scripts, including the remission and research-analysis bundles; it has no
-  floats, imports of other files or network access. The research agent is
+  kernel code. A ring-3 MicroPython (core features plus Unicode `str`,
+  `json`, `hashlib.sha256`, `binascii`, `sys` and whole-file `open()`) runs
+  workflow scripts, including the remission and research-analysis bundles; it
+  has no floats, imports of other files or network access. Its `str` methods
+  (`strip`, `split`, `lower`, `isalpha`, ...) only know ASCII, so the bundled
+  modules define their own text rules; each boot check requires both
+  bundles' output to match CPython's byte for byte. The research agent is
   therefore split: `research_fetch.py` retrieves public records over HTTPS
   on the host, and `research_analysis.py` ranks them in the kernel
-  (`cargo run -- research RESEARCH.JSON` stages fetched records on the data
-  disk before boot and reads the ranking back after). Records reach the
-  kernel only between boots, not while it runs.
+  (`cargo run -- research-batch IN_DIR OUT_DIR` stages up to 50 fetched
+  requests on the data disk before one boot and reads the rankings back
+  after). Records reach the kernel only between boots, not while it runs.
+  Before Unicode `str` was enabled, text above U+00FF reached the ranking
+  cut to one byte; three records published from kernel rankings were
+  affected, and `research_corrections.py` publishes corrections for them
+  (the chain keeps the original entries).
   The workflow dispatcher can execute static ELF tasks from digest-checked
   manifests, one at a time and synchronously, restricting reads to each
   block's declared inputs, writes to its declared `.OUT` outputs, denying

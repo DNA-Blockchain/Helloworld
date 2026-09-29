@@ -146,6 +146,93 @@ def sha256_hex(text):
     return binascii.hexlify(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii")
 
 
+# ---------------------------------------------------------------- text
+# The kernel's MicroPython implements str.strip/split/lower/isalpha/isdigit
+# for ASCII only, while CPython's follow Unicode. These helpers spell the
+# rules out so both runtimes give the same answer for every input:
+# whitespace is exactly the set CPython's str.isspace() accepts, case
+# folding and digits are ASCII, and an escaped surrogate pair counts as one
+# character (CPython's json joins the pair; MicroPython's keeps two halves).
+
+WHITESPACE = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0      "
+    "          　"
+)
+
+
+def join_surrogates(text):
+    if not text or max(text) < "\ud800":
+        return text
+    out = []
+    high = ""
+    for ch in text:
+        if high:
+            if "\udc00" <= ch <= "\udfff":
+                out.append(chr(0x10000 + ((ord(high) - 0xD800) << 10) + (ord(ch) - 0xDC00)))
+                high = ""
+                continue
+            out.append(high)
+            high = ""
+        if "\ud800" <= ch <= "\udbff":
+            high = ch
+        else:
+            out.append(ch)
+    if high:
+        out.append(high)
+    return "".join(out)
+
+
+def strip_ws(text):
+    """str.strip() with CPython's whitespace set."""
+    if not text or (text[0] not in WHITESPACE and text[-1] not in WHITESPACE):
+        return text
+    start = 0
+    end = len(text)
+    while start < end and text[start] in WHITESPACE:
+        start += 1
+    while end > start and text[end - 1] in WHITESPACE:
+        end -= 1
+    return text[start:end]
+
+
+def words(text):
+    """str.split() with no arguments, with CPython's whitespace set."""
+    found = []
+    word = []
+    for ch in text:
+        if ch in WHITESPACE:
+            if word:
+                found.append("".join(word))
+                word = []
+        else:
+            word.append(ch)
+    if word:
+        found.append("".join(word))
+    return found
+
+
+def ascii_lower(text):
+    """A-Z lower-cased; every other character kept as written."""
+    out = []
+    for ch in text:
+        if "A" <= ch <= "Z":
+            ch = chr(ord(ch) + 32)
+        out.append(ch)
+    return "".join(out)
+
+
+def _word_char(ch):
+    """Letters and digits for title_key: ASCII a-z and 0-9, and every other
+    character outside whitespace, the Latin-1 symbols (U+0080-U+00BF, U+00D7,
+    U+00F7) and the punctuation and symbol blocks U+2000-U+2BFF and
+    U+3000-U+303F."""
+    if ch < "\x80":
+        return "a" <= ch <= "z" or "0" <= ch <= "9"
+    if ch <= "\xbf" or ch == "\xd7" or ch == "\xf7" or ch == " ":
+        return False
+    return not (" " <= ch <= "⯿" or "　" <= ch <= "〿")
+
+
 # ---------------------------------------------------------------- records
 
 def _text(record, field, limit):
@@ -154,13 +241,13 @@ def _text(record, field, limit):
         return ""
     if not isinstance(value, str):
         raise ValueError("record field " + field + " must be text")
-    return value.strip()[:limit]
+    return strip_ws(join_surrogates(value))[:limit]
 
 
 def validate_record(record):
     if not isinstance(record, dict):
         raise ValueError("each record must be an object")
-    source = _text(record, "source", 32).lower()
+    source = ascii_lower(_text(record, "source", 32))
     if source not in PUBLIC_SOURCES:
         raise ValueError("record source is not an allowed public source: " + source)
     classification = _text(record, "classification", 16) or "public"
@@ -183,7 +270,7 @@ def publication_year(published_at):
     """First run of four digits (e.g. '2024 Mar 5' or '2023'), or 0."""
     digits = ""
     for ch in published_at:
-        if ch.isdigit():
+        if "0" <= ch <= "9":
             digits += ch
             if len(digits) == 4:
                 return int(digits)
@@ -193,31 +280,34 @@ def publication_year(published_at):
 
 
 def title_key(title):
-    """Lower-case letters and digits only, for cross-source duplicates."""
-    words = []
-    word = ""
-    for ch in title.lower():
-        if ch.isalpha() or ch.isdigit():
-            word += ch
+    """Lower-case words of letters and digits, for cross-source duplicates."""
+    found = []
+    word = []
+    for ch in ascii_lower(title):
+        if _word_char(ch):
+            word.append(ch)
         elif word:
-            words.append(word)
-            word = ""
+            found.append("".join(word))
+            word = []
     if word:
-        words.append(word)
-    return " ".join(words)
+        found.append("".join(word))
+    return " ".join(found)
 
 
 def query_terms(request):
     terms = request.get("terms")
     if terms is None:
-        terms = request.get("query", "").split()
+        query = request.get("query", "")
+        if not isinstance(query, str):
+            raise ValueError("query must be text")
+        terms = words(join_surrogates(query))
     if not isinstance(terms, list) or len(terms) > MAX_TERMS:
         raise ValueError("terms must be a list of at most " + str(MAX_TERMS))
     cleaned = []
     for term in terms:
         if not isinstance(term, str):
             raise ValueError("each term must be text")
-        term = term.strip().lower()
+        term = ascii_lower(strip_ws(join_surrogates(term)))
         if term and term not in cleaned:
             cleaned.append(term)
     if not cleaned:
@@ -226,8 +316,8 @@ def query_terms(request):
 
 
 def score(record, terms, newest_year):
-    title = record["title"].lower()
-    abstract = record["abstract"].lower()
+    title = ascii_lower(record["title"])
+    abstract = ascii_lower(record["abstract"])
     points = 0
     matched = []
     for term in terms:

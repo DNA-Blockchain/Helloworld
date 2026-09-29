@@ -58,7 +58,9 @@ research_viewer.py
 ==================
 Local, read-only viewer and JSON API for the replicated research ledgers
 (research_ledger.py): every public research record and dataset summary
-published on the node network, with how many nodes hold a copy.
+published on the node network, with how many nodes hold a copy. A record
+with a published correction (research_corrections.py) shows the corrected
+title and hash, and keeps the originally published ones under "correction".
 
     python research_viewer.py            # http://127.0.0.1:8791
     python research_viewer.py --port 8800
@@ -72,6 +74,7 @@ Endpoints (all GET, bound to 127.0.0.1 by default):
     /api/datasets/<dataset_id>/fasta    the local FASTA, served only if it matches its published hash
     /api/events                         published events with their replicas
     /api/export                         everything, with the original signed blocks
+    /api/timestamps/<event_id>.ots      an event's OpenTimestamps proof (research_timestamps.py)
 """
 
 from __future__ import annotations
@@ -113,13 +116,30 @@ def collect(base_dir: str) -> dict:
             })
             merged["replicas"].append(node_id)
 
+    # Latest correction of each published record (research_corrections.py).
+    corrections = {}
+    for event in sorted(events.values(), key=lambda e: e["block"]["research_provenance"]["created_at"]
+                        if e["kind"] == "public_research_correction" else ""):
+        if event["kind"] != "public_research_correction":
+            continue
+        payload = event["block"]["research_provenance"]
+        for record in payload["records"]:
+            corrections[(payload["corrects_event_id"], record["source"], record["external_id"])] = {
+                "event_id": event["event_id"], "reason": payload["reason"], "corrected_at": payload["created_at"],
+                "title": record["title"], "record_sha256": record["record_sha256"],
+                "published_record_sha256": record["published_record_sha256"],
+            }
+
     records, datasets = [], []
     for event in events.values():
         block = event["block"]
+        payload = block.get("research_provenance") or block.get("public_dataset_summary") or {}
+        event["time_anchor"] = payload.get("time_anchor")
+        event["timestamp_proof"] = _proof_state(base_dir, event["event_id"])
         if event["kind"] == "public_research_records":
             payload = block["research_provenance"]
             for record in payload["records"]:
-                records.append({
+                shown = {
                     **record,
                     "event_id": event["event_id"],
                     "published_at": payload["created_at"],
@@ -127,7 +147,18 @@ def collect(base_dir: str) -> dict:
                     "query": payload["query"],
                     "origin": event["origin"],
                     "replicas": sorted(event["replicas"]),
-                })
+                    "not_before_bitcoin_block": (payload.get("time_anchor") or {}).get("height"),
+                    "timestamp_proof": event["timestamp_proof"],
+                    "correction": None,
+                }
+                correction = corrections.get((event["event_id"], record["source"], record["external_id"]))
+                if correction and correction["published_record_sha256"] == record["record_sha256"]:
+                    shown["title"] = correction["title"]
+                    shown["record_sha256"] = correction["record_sha256"]
+                    shown["correction"] = {
+                        key: correction[key] for key in ("event_id", "reason", "corrected_at")
+                    } | {"published_title": record["title"], "published_record_sha256": record["record_sha256"]}
+                records.append(shown)
         elif event["kind"] == "public_dataset_summary":
             datasets.append({
                 **block["public_dataset_summary"],
@@ -153,6 +184,26 @@ def collect(base_dir: str) -> dict:
         "records": records,
         "datasets": datasets,
     }
+
+
+def _proof_path(base_dir: str, event_id: str) -> str:
+    # Event IDs are validated as 32 hex characters before reaching a ledger.
+    return os.path.join(base_dir, "timestamps", f"{event_id}.ots")
+
+
+def _proof_state(base_dir: str, event_id: str) -> str | None:
+    """"in Bitcoin block N", "pending", or None (no OpenTimestamps proof)."""
+    path = _proof_path(base_dir, event_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        import research_timestamps
+
+        with open(path, "rb") as stream:
+            state = research_timestamps.proof_state(research_timestamps.load_proof(stream.read()))
+    except Exception:   # library missing or unreadable proof: still offer the file
+        return "proof file"
+    return f"in Bitcoin block {state['bitcoin_heights'][0]}" if state["bitcoin_heights"] else "pending"
 
 
 def _local_fasta(base_dir: str, accession: str) -> str:
@@ -247,6 +298,17 @@ def make_handler(base_dir: str):
                     return self._json({"error": "local copy does not match the published SHA-256"}, 409)
                 self._send(200, raw, "text/plain; charset=utf-8", {
                     "Content-Disposition": f'attachment; filename="{dataset["accession"]}.fasta"'})
+            elif path.startswith("/api/timestamps/") and path.endswith(".ots"):
+                event_id = path[len("/api/timestamps/"):-len(".ots")]
+                if not event_id.isalnum() or len(event_id) != 32:
+                    return self._json({"error": "unknown event ID"}, 404)
+                try:
+                    with open(_proof_path(base_dir, event_id), "rb") as stream:
+                        proof = stream.read()
+                except OSError:
+                    return self._json({"error": "no OpenTimestamps proof for that event yet"}, 404)
+                self._send(200, proof, "application/octet-stream", {
+                    "Content-Disposition": f'attachment; filename="{event_id}.ots"'})
             elif path == "/api/events":
                 self._json([_public_event(event) for event in data["events"]])
             elif path == "/api/export":
@@ -302,9 +364,16 @@ async function load() {
   const params = new URLSearchParams({q: document.getElementById('q').value, source: document.getElementById('source').value});
   const records = await (await fetch('/api/records?' + params)).json();
   const body = document.getElementById('records'); body.textContent = '';
-  for (const r of records) { const row = body.insertRow(); cell(row, r.title, /^https?:/.test(r.source_url) ? r.source_url : null);
+  for (const r of records) { const row = body.insertRow();
+    const titleCell = cell(row, r.title, /^https?:/.test(r.source_url) ? r.source_url : null);
+    if (r.correction) { const note = document.createElement('div'); note.className = 'muted';
+      note.textContent = `Corrected ${r.correction.corrected_at.slice(0, 10)} (${r.correction.reason}); first published as: ${r.correction.published_title}`;
+      titleCell.append(note); }
     cell(row, `${r.source}:${r.external_id}`); cell(row, r.record_published_date);
-    cell(row, r.published_at.slice(0, 19).replace('T', ' ')); cell(row, `${r.replicas.length} (node ${r.replicas.join(', ')})`); }
+    const when = [r.published_at.slice(0, 19).replace('T', ' ') + ' UTC'];
+    if (r.not_before_bitcoin_block) when.push(`after Bitcoin block ${r.not_before_bitcoin_block}`);
+    if (r.timestamp_proof) when.push(`OpenTimestamps: ${r.timestamp_proof}`);
+    cell(row, when.join(' · ')); cell(row, `${r.replicas.length} (node ${r.replicas.join(', ')})`); }
   if (!records.length) cell(body.insertRow(), 'No matching records.');
   const datasets = await (await fetch('/api/datasets')).json();
   const dbody = document.getElementById('datasets'); dbody.textContent = '';

@@ -68,7 +68,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{Shutdown, TcpListener, TcpStream, UdpSocket},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, ExitCode, Stdio},
     sync::mpsc,
     thread,
@@ -87,16 +87,21 @@ const TEST_HOST_IPV4: [u8; 4] = [10, 0, 2, 2];
 /// starts and a 1-second runtime-limit test) before networking comes up.
 const BOOT_CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Names the kernel's host-research step reads and writes (task_bundle.rs).
-const HOST_RESEARCH_INPUT: &str = "HOSTIN.JSON";
-const HOST_RESEARCH_OUTPUT: &str = "HOSTOUT.JSON";
+/// The kernel's host-research batch (task_bundle.rs): requests are staged as
+/// HOSTIN00.JSON..HOSTIN49.JSON and rankings come back as HOSTOUTnn.JSON.
+const HOST_RESEARCH_MAX_BATCH: usize = 50;
 const HOST_RESEARCH_MAX_INPUT: usize = 64 * 1024;
+const HOST_RESEARCH_MAX_TOTAL: usize = 1024 * 1024;
+/// Extra boot-check time per staged request (each starts MicroPython once).
+const HOST_RESEARCH_TIME_PER_INPUT: Duration = Duration::from_secs(3);
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let mode = args.next().unwrap_or_else(|| "run".to_owned());
     if mode == "--help" || mode == "-h" {
-        println!("Usage: cargo run -- [run|check|check-slaac|research RESEARCH.JSON [RANKED.OUT]]");
+        println!(
+            "Usage: cargo run -- [run|check|check-slaac|research RESEARCH.JSON [RANKED.OUT]|research-batch IN_DIR OUT_DIR]"
+        );
         println!("Run boots the OS and keeps its HTTP health service running.");
         println!("Check boots the OS, verifies dual-stack connectivity, and tests /health.");
         println!(
@@ -106,25 +111,42 @@ fn main() -> ExitCode {
         println!(
             "Research copies a research_fetch.py RESEARCH.JSON onto the OS disk, runs the check, and saves the kernel's ranking."
         );
+        println!(
+            "Research-batch does the same for every *.json in IN_DIR (up to 50) in one boot, writing each ranking to OUT_DIR."
+        );
         return ExitCode::SUCCESS;
     }
-    let research = if mode == "research" {
-        let Some(input) = args.next() else {
-            eprintln!("Usage: cargo run -- research RESEARCH.JSON [RANKED.OUT]");
-            return ExitCode::from(2);
-        };
-        Some((
-            input,
-            args.next().unwrap_or_else(|| "RANKED.OUT".to_owned()),
-        ))
-    } else {
-        None
+    let research: Option<(Vec<PathBuf>, Vec<PathBuf>)> = match mode.as_str() {
+        "research" => {
+            let Some(input) = args.next() else {
+                eprintln!("Usage: cargo run -- research RESEARCH.JSON [RANKED.OUT]");
+                return ExitCode::from(2);
+            };
+            let output = args.next().unwrap_or_else(|| "RANKED.OUT".to_owned());
+            Some((vec![PathBuf::from(input)], vec![PathBuf::from(output)]))
+        }
+        "research-batch" => {
+            let (Some(input_dir), Some(output_dir)) = (args.next(), args.next()) else {
+                eprintln!("Usage: cargo run -- research-batch IN_DIR OUT_DIR");
+                return ExitCode::from(2);
+            };
+            match batch_paths(Path::new(&input_dir), Path::new(&output_dir)) {
+                Ok(paths) => Some(paths),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(1);
+                }
+            }
+        }
+        _ => None,
     };
-    if !matches!(mode.as_str(), "run" | "check" | "check-slaac" | "research")
-        || args.next().is_some()
+    if !matches!(
+        mode.as_str(),
+        "run" | "check" | "check-slaac" | "research" | "research-batch"
+    ) || args.next().is_some()
     {
         eprintln!(
-            "Usage: cargo run -- [run|check|check-slaac|research RESEARCH.JSON [RANKED.OUT]|--help]"
+            "Usage: cargo run -- [run|check|check-slaac|research RESEARCH.JSON [RANKED.OUT]|research-batch IN_DIR OUT_DIR|--help]"
         );
         return ExitCode::from(2);
     }
@@ -157,14 +179,30 @@ fn main() -> ExitCode {
     let network = "user,id=net0,ipv4=on,ipv6=on,ipv6-net=fd00::/64,ipv6-host=fd00::2,hostfwd=tcp:127.0.0.1:18080-:8080";
     let mut qemu = qemu_command(image, network, &data_disk);
 
-    if let Some((input, output)) = research {
-        let result = stage_host_research(&data_disk, Path::new(&input))
-            .and_then(|()| run_integration_check(&mut qemu))
-            .and_then(|()| collect_host_research(&data_disk, Path::new(&output)));
+    if let Some((inputs, outputs)) = research {
+        let extra_time = HOST_RESEARCH_TIME_PER_INPUT * inputs.len() as u32;
+        let result = stage_host_research(&data_disk, &inputs)
+            .and_then(|()| run_integration_check(&mut qemu, extra_time))
+            .and_then(|()| collect_host_research(&data_disk, &outputs));
         return match result {
-            Ok(bytes) => {
-                println!("Kernel research ranking ({bytes} bytes) written to {output}.");
-                ExitCode::SUCCESS
+            Ok(sizes) => {
+                for (output, size) in outputs.iter().zip(&sizes) {
+                    match size {
+                        Some(bytes) => println!(
+                            "Kernel research ranking ({bytes} bytes) written to {}.",
+                            output.display()
+                        ),
+                        None => println!(
+                            "No kernel ranking for {}; see 'Host research input ... rejected' in the serial log.",
+                            output.display()
+                        ),
+                    }
+                }
+                if sizes.iter().any(Option::is_some) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
             }
             Err(error) => {
                 eprintln!("{error}");
@@ -173,7 +211,7 @@ fn main() -> ExitCode {
         };
     }
     if mode == "check" {
-        match run_integration_check(&mut qemu) {
+        match run_integration_check(&mut qemu, Duration::ZERO) {
             Ok(()) => {
                 println!("QEMU dual-stack HTTP service check passed.");
                 ExitCode::SUCCESS
@@ -335,44 +373,126 @@ fn open_data_disk(path: &Path) -> Result<(ImageDevice, filesystem::Filesystem), 
     Ok((device, filesystem))
 }
 
-/// Copies fetched research records onto the data disk as HOSTIN.JSON for
+/// Requests in `input_dir` (*.json, sorted by name) and where each one's
+/// ranking goes: the same file name in `output_dir`.
+fn batch_paths(
+    input_dir: &Path,
+    output_dir: &Path,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
+    let mut inputs: Vec<PathBuf> = fs::read_dir(input_dir)
+        .map_err(|error| format!("Could not read {}: {error}", input_dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    inputs.sort();
+    fs::create_dir_all(output_dir)
+        .map_err(|error| format!("Could not create {}: {error}", output_dir.display()))?;
+    let outputs = inputs
+        .iter()
+        .map(|input| output_dir.join(input.file_name().unwrap_or_default()))
+        .collect();
+    Ok((inputs, outputs))
+}
+
+fn host_input_name(index: usize) -> String {
+    format!("HOSTIN{index:02}.JSON")
+}
+
+fn host_output_name(index: usize) -> String {
+    format!("HOSTOUT{index:02}.JSON")
+}
+
+/// Removes every staged request and ranking (and the pre-batch names) so a
+/// batch never sees leftovers from an interrupted run.
+fn clear_host_research(
+    device: &mut ImageDevice,
+    filesystem: &filesystem::Filesystem,
+) -> Result<(), String> {
+    let mut names = vec!["HOSTIN.JSON".to_owned(), "HOSTOUT.JSON".to_owned()];
+    for index in 0..HOST_RESEARCH_MAX_BATCH {
+        names.push(host_input_name(index));
+        names.push(host_output_name(index));
+    }
+    for name in names {
+        filesystem
+            .delete_file(device, &name)
+            .map_err(|error| format!("Could not clear {name} from the data disk: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Copies fetched research requests onto the data disk as HOSTINnn.JSON for
 /// the kernel's research task. They are data for the task, never code.
-fn stage_host_research(data_disk: &Path, input: &Path) -> Result<(), String> {
-    let contents =
-        fs::read(input).map_err(|error| format!("Could not read {}: {error}", input.display()))?;
-    if contents.is_empty() || contents.len() > HOST_RESEARCH_MAX_INPUT {
+fn stage_host_research(data_disk: &Path, inputs: &[PathBuf]) -> Result<(), String> {
+    if inputs.is_empty() || inputs.len() > HOST_RESEARCH_MAX_BATCH {
         return Err(format!(
-            "{} must be 1-{HOST_RESEARCH_MAX_INPUT} bytes (research_fetch.py enforces this).",
-            input.display()
+            "A research batch holds 1-{HOST_RESEARCH_MAX_BATCH} requests; got {}.",
+            inputs.len()
+        ));
+    }
+    let mut contents = Vec::new();
+    for input in inputs {
+        let data = fs::read(input)
+            .map_err(|error| format!("Could not read {}: {error}", input.display()))?;
+        if data.is_empty() || data.len() > HOST_RESEARCH_MAX_INPUT {
+            return Err(format!(
+                "{} must be 1-{HOST_RESEARCH_MAX_INPUT} bytes (research_fetch.py enforces this).",
+                input.display()
+            ));
+        }
+        contents.push(data);
+    }
+    let total: usize = contents.iter().map(Vec::len).sum();
+    if total > HOST_RESEARCH_MAX_TOTAL {
+        return Err(format!(
+            "The batch's requests total {total} bytes; the OS disk takes at most {HOST_RESEARCH_MAX_TOTAL} per batch."
         ));
     }
     let (mut device, filesystem) = open_data_disk(data_disk)?;
-    filesystem
-        .delete_file(&mut device, HOST_RESEARCH_OUTPUT)
-        .map_err(|error| format!("Could not clear an old ranking: {error}"))?;
-    filesystem
-        .write_file(&mut device, HOST_RESEARCH_INPUT, &contents)
-        .map_err(|error| format!("Could not stage research input on the data disk: {error}"))
+    clear_host_research(&mut device, &filesystem)?;
+    for (index, data) in contents.iter().enumerate() {
+        filesystem
+            .write_file(&mut device, &host_input_name(index), data)
+            .map_err(|error| {
+                format!(
+                    "Could not stage {} on the data disk: {error}",
+                    inputs[index].display()
+                )
+            })?;
+    }
+    Ok(())
 }
 
-/// Reads the kernel's ranking back from the data disk, saves it, and removes
-/// it from the disk. Returns its size.
-fn collect_host_research(data_disk: &Path, output: &Path) -> Result<usize, String> {
+/// Copies each HOSTOUTnn.JSON the kernel left to the matching output path
+/// (None where the kernel rejected the request), then clears the batch.
+fn collect_host_research(
+    data_disk: &Path,
+    outputs: &[PathBuf],
+) -> Result<Vec<Option<usize>>, String> {
     let (mut device, filesystem) = open_data_disk(data_disk)?;
     let mut ranking = vec![0; 16 * 1024];
-    let length = filesystem
-        .read_file(&mut device, HOST_RESEARCH_OUTPUT, &mut ranking)
-        .map_err(|error| {
-            format!(
-                "The kernel produced no ranking ({error}); see 'Host research input rejected' in the serial log."
-            )
-        })?;
-    fs::write(output, &ranking[..length])
-        .map_err(|error| format!("Could not write {}: {error}", output.display()))?;
-    filesystem
-        .delete_file(&mut device, HOST_RESEARCH_OUTPUT)
-        .map_err(|error| format!("Could not remove the ranking from the data disk: {error}"))?;
-    Ok(length)
+    let mut sizes = Vec::new();
+    for (index, output) in outputs.iter().enumerate() {
+        match filesystem.read_file(&mut device, &host_output_name(index), &mut ranking) {
+            Ok(length) => {
+                fs::write(output, &ranking[..length])
+                    .map_err(|error| format!("Could not write {}: {error}", output.display()))?;
+                sizes.push(Some(length));
+            }
+            Err("filesystem file does not exist") => sizes.push(None),
+            Err(error) => {
+                return Err(format!(
+                    "Could not read the kernel's ranking {}: {error}",
+                    host_output_name(index)
+                ));
+            }
+        }
+    }
+    clear_host_research(&mut device, &filesystem)?;
+    Ok(sizes)
 }
 
 fn prepare_data_disk() -> Result<std::path::PathBuf, String> {
@@ -431,7 +551,7 @@ fn qemu_command(image: &str, network: &str, data_disk: &Path) -> Command {
     qemu
 }
 
-fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
+fn run_integration_check(qemu: &mut Command, extra_time: Duration) -> Result<(), String> {
     qemu.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = qemu.spawn().map_err(|error| {
         report_qemu_start_error(error);
@@ -443,7 +563,8 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
     drop(sender);
 
     let mut output = Vec::new();
-    let deadline = Instant::now() + BOOT_CHECK_TIMEOUT;
+    let budget = BOOT_CHECK_TIMEOUT + extra_time;
+    let deadline = Instant::now() + budget;
     let mut service_ready = false;
     while Instant::now() < deadline {
         match receiver.recv_timeout(Duration::from_millis(250)) {
@@ -477,9 +598,10 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         let cleanup = terminate_qemu(&mut child, &mut output, &receiver);
         print_output(&output, "check-slaac");
         cleanup?;
-        return Err(
-            "QEMU did not reach the network-service-ready state within 120 seconds.".into(),
-        );
+        return Err(format!(
+            "QEMU did not reach the network-service-ready state within {} seconds.",
+            budget.as_secs()
+        ));
     }
 
     let first_response = request_health_endpoint();

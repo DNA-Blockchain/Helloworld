@@ -61,8 +61,14 @@
 #include <stdint.h>
 
 // Core features give the language surface remission_core.py relies on
-// (str % formatting, enumerate, str.encode, unicode strings, io).
+// (str % formatting, enumerate, str.encode, io).
 #define MICROPY_CONFIG_ROM_LEVEL          (MICROPY_CONFIG_ROM_LEVEL_CORE_FEATURES)
+
+// Unicode str: len, indexing and iteration by code point, and JSON \u
+// escapes decoded to UTF-8. Core features leave it off, which makes str a
+// byte string: json.loads truncated "θ" to one byte, so rankings of
+// non-Latin-1 text differed from CPython's.
+#define MICROPY_PY_BUILTINS_STR_UNICODE   (1)
 
 #define MICROPY_ENABLE_COMPILER           (1)
 #define MICROPY_ENABLE_GC                 (1)

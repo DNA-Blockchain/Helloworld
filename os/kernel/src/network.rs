@@ -416,25 +416,21 @@ NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked m
     );
     let _ = writeln!(
         Serial,
-        "Remission bundle verified in ring-3 MicroPython: MODELED_REFERENCE_MATCH, ledger verified, NOT_CLINICALLY_CONFIRMED; {}-byte RESULT.OUT written.",
+        "Remission bundle verified in ring-3 MicroPython: MODELED_REFERENCE_MATCH, ledger verified, NOT_CLINICALLY_CONFIRMED; {}-byte RESULT.OUT written, byte-identical to CPython.",
         workflow_report.remission_result_bytes
     );
     let _ = writeln!(
         Serial,
-        "Research analysis verified in ring-3 MicroPython: 5 public records de-duplicated to 3, ranked and hashed; {}-byte RANKED.OUT written.",
+        "Research analysis verified in ring-3 MicroPython: 5 public records (with non-ASCII text) de-duplicated to 3, ranked and hashed; {}-byte RANKED.OUT written, byte-identical to CPython.",
         workflow_report.research_result_bytes
     );
-    match workflow_report.host_research {
-        crate::task_bundle::HostResearch::NotProvided => {}
-        crate::task_bundle::HostResearch::Ranked(bytes) => {
-            let _ = writeln!(
-                Serial,
-                "Host research input analyzed in ring-3 MicroPython: {bytes}-byte ranking saved as HOSTOUT.JSON."
-            );
-        }
-        crate::task_bundle::HostResearch::Rejected(reason) => {
-            let _ = writeln!(Serial, "Host research input rejected: {reason}.");
-        }
+    let host = &workflow_report.host_research;
+    if host.ranked + host.rejected > 0 {
+        let _ = writeln!(
+            Serial,
+            "Host research batch analyzed in ring-3 MicroPython: {} ranked, {} rejected; {} bytes of rankings saved as HOSTOUTnn.JSON.",
+            host.ranked, host.rejected, host.output_bytes
+        );
     }
     if user_dns_verified {
         let _ = writeln!(

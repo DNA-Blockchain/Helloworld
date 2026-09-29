@@ -65,6 +65,16 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+TEST_TIME_ANCHOR = {"chain": "bitcoin", "height": 900000, "block_hash": "0" * 64, "source": "blockstream.info"}
+
+
+@pytest.fixture(autouse=True)
+def _offline_time_anchor(monkeypatch):
+    """Tests never contact public Bitcoin explorers for time anchors."""
+    import research_publish
+    monkeypatch.setattr(research_publish, "current_time_anchor", lambda: dict(TEST_TIME_ANCHOR))
+
+
 @pytest.fixture(autouse=True)
 def _isolate_real_backups(tmp_path_factory, monkeypatch):
     """Tests never see the user's real ~/network-os-backups or backup passphrase."""

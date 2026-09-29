@@ -96,6 +96,7 @@ from research_provenance import (
     ResearchProvenanceQueue,
     create_public_research_records_event,
 )
+import research_publish
 from research_publish import DEFAULT_OUTBOX
 
 ROOT = Path(__file__).resolve().parent
@@ -274,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
     batches, notes = plan(groups, published_record_keys(str(args.ledgers)))
     for note in notes:
         print(note)
-    events = [create_public_research_records_event(batch, confirm_publication=True)
+    anchor = research_publish.current_time_anchor() if batches else None
+    events = [create_public_research_records_event(batch, confirm_publication=True, time_anchor=anchor)
               for batch in batches if batch["ranked"]]
     total = sum(event["record_count"] for event in events)
     print(f"{total} records in {len(events)} event(s)")

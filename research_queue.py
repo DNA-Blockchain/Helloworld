@@ -88,6 +88,7 @@ import research_fetch
 from research_backfill import live_store_snapshots
 from research_ledger import published_queries, published_record_keys
 from research_provenance import ResearchProvenanceQueue, create_public_research_records_event
+import research_publish
 from research_publish import DEFAULT_OUTBOX
 
 ROOT = Path(__file__).resolve().parent
@@ -116,32 +117,57 @@ def queued_topics(store_paths: list[Path], live_store: Path | None) -> list[tupl
     return topics
 
 
-def rank_in_kernel(request: dict, timeout: int = 600) -> dict:
-    """Rank one topic inside the Network OS: stage the request on the QEMU
-    data disk, run the boot check, and read the kernel's ranking back."""
+# The kernel ranks at most this many requests per boot (task_bundle.rs).
+KERNEL_BATCH = 50
+
+
+def kernel_input(request: dict) -> bytes:
+    """UTF-8 JSON, as research_fetch.py writes it. A request holding a lone
+    surrogate (which UTF-8 cannot carry) falls back to \\u escapes, which the
+    kernel's research task decodes to the same text."""
+    try:
+        return json.dumps(request, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(request).encode("ascii")
+
+
+def rank_batch_in_kernel(requests: list[dict], timeout: int = 900) -> list[dict | None]:
+    """Rank every request inside the Network OS in one boot: stage them on the
+    QEMU data disk, run the boot check, and read each ranking back. None
+    marks a request the kernel's research task rejected."""
     with tempfile.TemporaryDirectory() as scratch:
-        source, ranked = Path(scratch) / "RESEARCH.JSON", Path(scratch) / "RANKED.OUT"
-        source.write_text(json.dumps(request), encoding="utf-8")
+        inputs, outputs = Path(scratch) / "in", Path(scratch) / "out"
+        inputs.mkdir()
+        for index, request in enumerate(requests):
+            (inputs / f"{index:02}.json").write_bytes(kernel_input(request))
         env = dict(os.environ)
         if os.name == "nt":
             env.setdefault("RUSTUP_TOOLCHAIN", WINDOWS_TOOLCHAIN)
             extra = [str(Path.home() / ".cargo" / "bin"), r"C:\Program Files\qemu"]
             env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
         result = subprocess.run(
-            ["cargo", "run", "--locked", "--", "research", str(source), str(ranked)],
+            ["cargo", "run", "--locked", "--", "research-batch", str(inputs), str(outputs)],
             cwd=ROOT / "os", env=env, capture_output=True, text=True, timeout=timeout,
         )
-        if result.returncode != 0 or not ranked.exists():
+        rankings = [
+            json.loads(path.read_text(encoding="utf-8")) if (path := outputs / f"{index:02}.json").exists() else None
+            for index in range(len(requests))
+        ]
+        if result.returncode != 0 and not any(rankings):
             tail = " | ".join((result.stdout + result.stderr).strip().splitlines()[-3:])
             raise RuntimeError(f"kernel ranking failed: {tail}")
-        return json.loads(ranked.read_text(encoding="utf-8"))
+        return rankings
 
 
-def plan(topics, *, sources, max_results, kernel, already_published, already_queried, limit=None):
+def plan(topics, *, sources, max_results, kernel, already_published, already_queried, limit=None,
+         time_anchor=None):
     """Returns (events, notes). Each event ranks one topic's not-yet-published
-    records; topics whose query is already on the chain are skipped."""
+    records; topics whose query is already on the chain are skipped. Every
+    topic is fetched first, then all are ranked together (with `kernel`, in
+    one OS boot per 50 topics). A record is claimed by the first topic that
+    fetches it, so no record is published twice in a run."""
     seen = set(already_published)
-    events, notes, processed = [], [], 0
+    pending, notes, processed = [], [], 0
     for condition, biomarker in topics:
         query = f"{condition} {biomarker}".strip()
         if query.lower() in already_queried:
@@ -163,16 +189,30 @@ def plan(topics, *, sources, max_results, kernel, already_published, already_que
         if not request["records"]:
             notes.append(f"{query}: {fetched} records fetched, none new")
             continue
-        try:
-            ranking = rank_in_kernel(request) if kernel else research_analysis.run(request)
-        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
-            notes.append(f"{query}: ranking failed ({error})")
+        seen.update((r["source"], r["external_id"]) for r in request["records"])
+        pending.append((query, request, fetched))
+
+    rankings: list[dict | None] = []
+    if kernel:
+        for start in range(0, len(pending), KERNEL_BATCH):
+            chunk = [request for _, request, _ in pending[start:start + KERNEL_BATCH]]
+            try:
+                rankings.extend(rank_batch_in_kernel(chunk))
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+                notes.append(f"kernel batch of {len(chunk)} failed ({error})")
+                rankings.extend([None] * len(chunk))
+    else:
+        rankings = [research_analysis.run(request) for _, request, _ in pending]
+
+    events = []
+    for (query, request, fetched), ranking in zip(pending, rankings):
+        if ranking is None:
+            notes.append(f"{query}: ranking failed (rejected by the kernel)")
             continue
         if not ranking["ranked"]:
             notes.append(f"{query}: nothing ranked")
             continue
-        event = create_public_research_records_event(ranking, confirm_publication=True)
-        seen.update((r["source"], r["external_id"]) for r in event["records"])
+        event = create_public_research_records_event(ranking, confirm_publication=True, time_anchor=time_anchor)
         events.append(event)
         notes.append(f"{query}: {fetched} fetched, {len(request['records'])} new, "
                      f"{event['record_count']} published ranked {'in the kernel' if kernel else 'on the host'}")
@@ -189,7 +229,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="public source to query (repeatable; default: pubmed, europe_pmc, clinicaltrials.gov)")
     parser.add_argument("--max-results", type=int, default=5, help="records per source per topic")
     parser.add_argument("--limit", type=int, help="process at most this many new topics")
-    parser.add_argument("--kernel", action="store_true", help="rank each topic inside the Network OS (QEMU)")
+    parser.add_argument("--kernel", action="store_true",
+                        help="rank the topics inside the Network OS (QEMU), one boot per 50 topics")
     parser.add_argument("--ledgers", type=Path, default=ROOT / "autonomous")
     parser.add_argument("--outbox", type=Path, default=DEFAULT_OUTBOX)
     parser.add_argument("--confirm-publication", action="store_true",
@@ -207,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         already_published=published_record_keys(str(args.ledgers)),
         already_queried=published_queries(str(args.ledgers)),
         limit=args.limit,
+        time_anchor=research_publish.current_time_anchor(),
     )
     for note in notes:
         print(note)

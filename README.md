@@ -414,8 +414,13 @@ python research_fetch.py --fixture --analyze    # offline synthetic sample
 
 `research_analysis.py` is MicroPython-compatible (integer scores, no project
 imports), and `build_task_bundles.py` packages it with the synthetic sample
-as `os/tasks/research/`, which the kernel runs at every boot check and whose
-ranking matches CPython byte for byte. Scores order reading, not evidence.
+as `os/tasks/research/`, which the kernel runs at every boot check. The
+sample includes Greek letters, dashes, Unicode spaces and characters outside
+the BMP, and the boot check fails unless the kernel's ranking matches
+CPython's byte for byte (`OUTPUT.SHA256`). The kernel's MicroPython `str`
+methods only know ASCII, so the module spells out its own text rules
+(CPython's whitespace set, ASCII case folding). Scores order reading, not
+evidence.
 
 To have the kernel rank freshly fetched records, run the OS in research mode:
 
@@ -423,15 +428,17 @@ To have the kernel rank freshly fetched records, run the OS in research mode:
 python research_fetch.py --query "CRISPR cancer" --output RESEARCH.JSON
 cd os
 cargo run -- research ..\RESEARCH.JSON ..\RANKED.OUT
+cargo run -- research-batch ..\requests ..\rankings   # every *.json (up to 50) in one boot
 ```
 
 The runner mounts the QEMU data disk with the kernel's own NOSFS code,
-stores the records as `HOSTIN.JSON`, and runs the full boot check. The
-kernel runs the research task on them in ring-3 MicroPython (a manifest that
-pins the script; the records are a declared data input), saves the ranking
-as `HOSTOUT.JSON`, and the runner copies it to `RANKED.OUT`. Input that the
-task rejects, such as a non-public source, is reported in the serial log and
-produces no ranking; the rest of the boot check still runs.
+stores the requests as `HOSTIN00.JSON`, `HOSTIN01.JSON`, ..., and runs the
+full boot check once. The kernel runs the research task on each in ring-3
+MicroPython (a manifest that pins the script; the records are a declared
+data input) and saves the rankings as `HOSTOUTnn.JSON`, which the runner
+copies out under each input's file name. A request that the task rejects,
+such as a non-public source, is reported in the serial log and produces no
+ranking; the others and the rest of the boot check still run.
 
 ### Publishing ranked records to the node chain
 
@@ -496,12 +503,45 @@ discovered (`research_store.json` and the mirrored stores' `queue`):
 
 ```powershell
 python research_queue.py                                  # dry run
-python research_queue.py --kernel --confirm-publication   # rank each topic in the OS kernel
+python research_queue.py --kernel --confirm-publication   # rank the topics in the OS kernel
 ```
 
-Each queued topic is fetched, ranked (in the kernel with `--kernel`, through
-`cargo run -- research`), and published without repeating topics or records
-already on the chain.
+Every queued topic is fetched first, then all are ranked (in the kernel with
+`--kernel`: one `cargo run -- research-batch` boot per 50 topics, about 30
+seconds instead of 35 per topic), and published without repeating topics or
+records already on the chain.
+
+### When was it published?
+
+Every event published by these tools carries a `time_anchor`: the Bitcoin
+block at the tip when it was created (from blockstream.info, or
+mempool.space), which proves the event is no older than that block.
+OpenTimestamps proves the other side, that the event existed by a later
+block:
+
+```powershell
+python research_timestamps.py stamp     # submit each ledger event's digest to public calendars
+python research_timestamps.py upgrade   # hours later: fetch the Bitcoin attestations
+python research_timestamps.py status
+```
+
+Proofs are stored as `autonomous/timestamps/<event_id>.ots` and served by the
+viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
+
+### Corrections
+
+The chain is append-only, so a published record is fixed by publishing a
+`public_research_correction` event that names the event and records it
+supersedes, the corrected title and hash, and the hash it replaces:
+
+```powershell
+python research_corrections.py                        # audit: re-fetch and check every record
+python research_corrections.py --confirm-publication  # queue corrections for proven damage
+```
+
+It corrects only records whose published hash is exactly what the kernel's
+earlier text-decoding fault computes from the source record. The viewer
+shows the corrected title and hash, and what was first published.
 
 Public reference datasets are published as metadata plus a hash; the
 sequence stays off the chain:
@@ -549,9 +589,9 @@ in `os/tasks/remission/` (`REMISSION.PY`, `SAMPLE.JSON`, `RMTASK.JSON`,
 if it is stale. The kernel embeds this bundle and runs it at every boot check:
 `REMISSION.PY` executes in its ring-3 MicroPython runtime, reads the declared
 `SAMPLE.JSON` input, and writes the declared `RESULT.OUT` output (on the OS,
-`main()` writes `RESULT.OUT`; elsewhere pass `--output PATH`). The ledger it
-produces there is byte-identical to CPython's. The bundle also runs under the
-WSL MicroPython Unix port.
+`main()` writes `RESULT.OUT`; elsewhere pass `--output PATH`). The boot check
+requires the output to be byte-identical to CPython's (`OUTPUT.SHA256`). The
+bundle also runs under the WSL MicroPython Unix port.
 
 ## Running the tests
 

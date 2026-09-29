@@ -125,29 +125,43 @@ def test_plan_skips_published_topics_and_records_and_honours_limit():
     assert any("Ovarian Neoplasms BRCA1: already published" in n for n in notes)
 
 
-def test_plan_can_rank_in_the_kernel(monkeypatch):
-    calls = []
+def test_plan_ranks_every_topic_in_one_kernel_boot(monkeypatch):
+    boots = []
 
-    def fake_kernel(request):
-        calls.append(request["query"])
-        return research_analysis.run(request)
+    def fake_batch(requests):
+        boots.append([request["query"] for request in requests])
+        return [research_analysis.run(request) for request in requests]
 
-    monkeypatch.setattr(research_queue, "rank_in_kernel", fake_kernel)
-    events, notes = run_plan(kernel=True, limit=2)
-    assert calls == ["Metastatic Breast Cancer BRCA1", "Ovarian Neoplasms BRCA1"]
-    assert all("in the kernel" in n for n in notes)
+    monkeypatch.setattr(research_queue, "rank_batch_in_kernel", fake_batch)
+    events, notes = run_plan(kernel=True)
+    assert boots == [["Metastatic Breast Cancer BRCA1", "Ovarian Neoplasms BRCA1", "Neoplasms BRCA1"]]
+    assert len(events) == 3 and all("in the kernel" in n for n in notes)
 
 
-def test_kernel_failure_is_reported_and_other_topics_continue(monkeypatch):
-    def flaky(request):
-        if request["query"].startswith("Ovarian"):
-            raise RuntimeError("kernel ranking failed: boom")
-        return research_analysis.run(request)
+def test_batches_are_split_at_the_kernel_limit(monkeypatch):
+    boots = []
+    monkeypatch.setattr(research_queue, "KERNEL_BATCH", 2)
+    monkeypatch.setattr(research_queue, "rank_batch_in_kernel",
+                        lambda requests: boots.append(len(requests)) or [research_analysis.run(r) for r in requests])
+    events, _ = run_plan(kernel=True)
+    assert boots == [2, 1] and len(events) == 3
 
-    monkeypatch.setattr(research_queue, "rank_in_kernel", flaky)
+
+def test_kernel_rejections_and_failed_boots_are_reported(monkeypatch):
+    def partly_rejected(requests):
+        return [None if r["query"].startswith("Ovarian") else research_analysis.run(r) for r in requests]
+
+    monkeypatch.setattr(research_queue, "rank_batch_in_kernel", partly_rejected)
     events, notes = run_plan(kernel=True)
     assert [e["query"] for e in events] == ["Metastatic Breast Cancer BRCA1", "Neoplasms BRCA1"]
-    assert any("ranking failed" in n for n in notes)
+    assert any("Ovarian Neoplasms BRCA1: ranking failed" in n for n in notes)
+
+    def boot_fails(requests):
+        raise RuntimeError("kernel ranking failed: boom")
+
+    monkeypatch.setattr(research_queue, "rank_batch_in_kernel", boot_fails)
+    events, notes = run_plan(kernel=True)
+    assert events == [] and any("kernel batch of 3 failed" in n for n in notes)
 
 
 def test_cli_dry_run_then_confirm(tmp_path, capsys):

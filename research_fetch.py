@@ -84,7 +84,10 @@ MAX_ABSTRACT_CHARS = 400
 KEPT_FIELDS = ("source", "external_id", "title", "abstract", "source_url", "published_at", "classification")
 
 # Synthetic, clearly labelled records for offline tests and the kernel boot
-# check. The IDs are not real PubMed, Europe PMC or trial identifiers.
+# check. The IDs are not real PubMed, Europe PMC or trial identifiers. The
+# non-ASCII text (Greek, dashes, Unicode spaces, characters outside the BMP,
+# a title longer than the ranking's 160-character cut) makes the boot check
+# prove the kernel's MicroPython handles text exactly as CPython does.
 FIXTURE_REQUEST = {
     "schema": research_analysis.INPUT_SCHEMA,
     "query": "CRISPR cancer G>A",
@@ -94,15 +97,20 @@ FIXTURE_REQUEST = {
         {"source": "pubmed", "external_id": "SYNTH-PM-1", "title": "CRISPR base editing of a G>A cancer variant",
          "abstract": "Synthetic record: correcting a G>A substitution with CRISPR base editors in cancer cells.",
          "source_url": "https://example.invalid/synth-pm-1", "published_at": "2025 Jan", "classification": "public"},
-        {"source": "europe_pmc", "external_id": "SYNTH-EU-1", "title": "CRISPR Base Editing of a G>A Cancer Variant.",
+        {"source": "europe_pmc", "external_id": "SYNTH-EU-1",
+         "title": "CRISPR Base‑Editing of a G>A Cancer Variant.",
          "abstract": "", "source_url": "https://example.invalid/synth-eu-1", "published_at": "2025",
          "classification": "public"},
-        {"source": "clinicaltrials.gov", "external_id": "SYNTH-CT-1", "title": "Trial of CRISPR-edited cells in solid cancer",
+        {"source": "clinicaltrials.gov", "external_id": "SYNTH-CT-1",
+         "title": " Trial of CRISPR-edited T cells in solid cancer – β‑catenin–high tumours, "
+                  "Δθ ≥ 2 °C, \U0001d6fd-cohort (Montréal), \U0001f9ec sequencing "
+                  "follow-up at twelve synthetic sites over two synthetic years　",
          "abstract": "", "source_url": "https://example.invalid/synth-ct-1", "published_at": "2023",
          "classification": "public"},
         {"source": "pubmed", "external_id": "SYNTH-PM-2", "title": "Survey of gene therapy delivery methods",
-         "abstract": "Synthetic record with no query terms in the title.", "source_url": "https://example.invalid/synth-pm-2",
-         "published_at": "2019", "classification": "public"},
+         "abstract": "Synthetic record with no query terms in the title — α/β vectors, "
+                     "≤ 5 µm particles.",
+         "source_url": "https://example.invalid/synth-pm-2", "published_at": "2019", "classification": "public"},
         {"source": "pubmed", "external_id": "SYNTH-PM-1", "title": "CRISPR base editing of a G>A cancer variant",
          "abstract": "Exact duplicate by source and ID.", "source_url": "https://example.invalid/synth-pm-1",
          "published_at": "2025 Jan", "classification": "public"},
@@ -174,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--query is required unless --fixture is given")
 
     if args.output:
-        args.output.write_text(json.dumps(request, indent=1) + "\n", encoding="utf-8")
+        args.output.write_text(json.dumps(request, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"wrote {len(request['records'])} records to {args.output}")
     if args.analyze or not args.output:
         print(format_ranking(research_analysis.run(request)))

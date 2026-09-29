@@ -93,7 +93,45 @@ def test_year_parsing_and_title_key():
     assert research_analysis.publication_year("2024 Mar 5") == 2024
     assert research_analysis.publication_year("FY 12, 2021") == 2021
     assert research_analysis.publication_year("") == 0
+    assert research_analysis.publication_year("٢٠٢٤ or 2023") == 2023  # ASCII digits only
     assert research_analysis.title_key("CRISPR: G>A, Base-Editing.") == "crispr g a base editing"
+
+
+# The kernel's MicroPython knows only ASCII for str.strip/split/lower/isalpha,
+# so the analysis defines its own text rules; these pin them down.
+
+def test_whitespace_is_exactly_cpythons():
+    assert set(research_analysis.WHITESPACE) == {chr(c) for c in range(0x110000) if chr(c).isspace()}
+    for text in ["", " ", "　a b ", " Trial of x　", "a​b", "\x1c\x1dz\x1e\x1f"]:
+        assert research_analysis.strip_ws(text) == text.strip()
+        assert research_analysis.words(text) == text.split()
+
+
+def test_case_folding_is_ascii_only():
+    assert research_analysis.ascii_lower("BRCA1 ΔΛ Étude") == "brca1 ΔΛ Étude"
+
+
+def test_title_key_joins_letters_and_splits_punctuation_in_any_script():
+    key = research_analysis.title_key
+    assert key("CRISPR Base‑Editing – a G>A Variant.") == key("CRISPR base-editing: a G>A variant")
+    assert key("β‑catenin in Montréal") == "β catenin in montréal"
+    assert key("α-catenin") != key("β-catenin")
+    assert key("IL–2 ≥ 10 ng × 2") == "il 2 10 ng 2"
+
+
+def test_escaped_surrogate_pairs_count_as_one_character():
+    join = research_analysis.join_surrogates
+    assert join("a𝛽b") == "a\U0001d6fdb"
+    assert join("lone \ud835 high, lone \udefd low") == "lone \ud835 high, lone \udefd low"
+    assert join("plain") == "plain"
+
+
+def test_title_cut_counts_characters_outside_the_bmp_once():
+    request = fixture()
+    request["records"] = [dict(request["records"][0], title="\U0001d6fd" + "x" * 200)]
+    escaped = dict(request, records=[dict(request["records"][0], title="𝛽" + "x" * 200)])
+    assert research_analysis.run(escaped) == research_analysis.run(request)
+    assert len(research_analysis.run(request)["ranked"][0]["title"]) == research_analysis.MAX_TITLE_CHARS
 
 
 @pytest.mark.parametrize("patch, message", [
@@ -157,5 +195,7 @@ def test_fetch_keeps_public_records_trims_and_fits_kernel_limit(monkeypatch):
 def test_fetch_cli_fixture_writes_input(tmp_path, capsys):
     output = tmp_path / "RESEARCH.JSON"
     assert research_fetch.main(["--fixture", "--output", str(output), "--analyze"]) == 0
-    assert json.loads(output.read_text())["schema"] == research_analysis.INPUT_SCHEMA
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written == research_fetch.FIXTURE_REQUEST
+    assert "θ".encode("utf-8") in output.read_bytes()  # raw UTF-8, as the kernel reads it
     assert "SYNTH-PM-1" in capsys.readouterr().out

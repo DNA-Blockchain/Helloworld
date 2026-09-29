@@ -154,6 +154,34 @@ def fetch_bitcoin_tip_height(deadline: float | None = None) -> dict:
     raise RuntimeError(f"all Bitcoin tip-height sources failed: {last_error}")
 
 
+_BITCOIN_API_SOURCES = [
+    ("https://blockstream.info/api", "blockstream.info"),
+    ("https://mempool.space/api", "mempool.space"),
+]
+
+
+def fetch_bitcoin_anchor(timeout: float = 10.0) -> dict:
+    """The current Bitcoin tip block's hash and height, read anonymously from
+    a public explorer. A block hash cannot be known before the block is
+    mined, so recording it in an event proves the event was created after
+    that block. Height comes from the block itself, so the two always match."""
+    last_error = None
+    for base, source_name in _BITCOIN_API_SOURCES:
+        try:
+            tip = requests.get(f"{base}/blocks/tip/hash", timeout=timeout)
+            tip.raise_for_status()
+            block_hash = tip.text.strip()
+            if len(block_hash) != 64 or any(c not in "0123456789abcdef" for c in block_hash):
+                raise ValueError("tip hash is not a 64-character lowercase hex string")
+            block = requests.get(f"{base}/block/{block_hash}", timeout=timeout)
+            block.raise_for_status()
+            height = int(block.json()["height"])
+            return {"chain": "bitcoin", "height": height, "block_hash": block_hash, "source": source_name}
+        except Exception as e:   # try the next independent source
+            last_error = e
+    raise RuntimeError(f"all Bitcoin anchor sources failed: {last_error}")
+
+
 def fetch_ethereum_block_number(deadline: float | None = None) -> dict:
     """Real, public, anonymous read: the current block number of the real
     Ethereum network, via a public JSON-RPC endpoint. No address, no

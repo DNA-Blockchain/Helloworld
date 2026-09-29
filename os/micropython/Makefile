@@ -21,6 +21,10 @@ CFLAGS += $(INC) -Wall -std=gnu99 -Os -DNDEBUG
 CFLAGS += -ffreestanding -fPIE -fvisibility=hidden -mgeneral-regs-only
 CFLAGS += -fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables
 CFLAGS += -fdata-sections -ffunction-sections
+# shared/libc/string0.c compares bytes as plain char: unsigned on the ARM
+# ports MicroPython is mostly run on, signed on x86-64, where bytes >= 0x80
+# would sort below ASCII and break str/bytes ordering for non-ASCII text.
+CFLAGS += -funsigned-char
 CSUPEROPT = -Os
 
 LD = $(CC)

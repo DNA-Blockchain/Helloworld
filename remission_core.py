@@ -156,12 +156,46 @@ def sha256_hex(text):
     return binascii.hexlify(digest).decode("ascii")
 
 
+# -------------------------------------------------------------------- text
+# The kernel's MicroPython strips and upper-cases ASCII only; CPython follows
+# Unicode. Spelling the rules out keeps both runtimes' results identical
+# (research_analysis.py has the same helpers).
+
+WHITESPACE = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0      "
+    "          　"
+)
+
+
+def strip_ws(text):
+    """str.strip() with CPython's whitespace set."""
+    if not text or (text[0] not in WHITESPACE and text[-1] not in WHITESPACE):
+        return text
+    start = 0
+    end = len(text)
+    while start < end and text[start] in WHITESPACE:
+        start += 1
+    while end > start and text[end - 1] in WHITESPACE:
+        end -= 1
+    return text[start:end]
+
+
+def ascii_upper(text):
+    """a-z upper-cased; every other character kept as written."""
+    out = []
+    for ch in text:
+        if "a" <= ch <= "z":
+            ch = chr(ord(ch) - 32)
+        out.append(ch)
+    return "".join(out)
+
+
 # --------------------------------------------------------------- sequences
 
 def validate_sequence(sequence, label):
     if not isinstance(sequence, str):
         raise ValueError(label + " must be a string")
-    sequence = sequence.strip().upper()
+    sequence = ascii_upper(strip_ws(sequence))
     if not sequence:
         raise ValueError(label + " is empty")
     if len(sequence) > MAX_BASES:
@@ -312,15 +346,15 @@ def _clinical_status(evidence):
         return {"status": NOT_CLINICALLY_CONFIRMED, "source": "none"}
     assessed_by = evidence.get("assessed_by")
     assessed_on = evidence.get("assessed_on")
-    if not isinstance(assessed_by, str) or not assessed_by.strip():
+    if not isinstance(assessed_by, str) or not strip_ws(assessed_by):
         raise ValueError("clinical_evidence.assessed_by is required when remission_confirmed is true")
-    if not isinstance(assessed_on, str) or not assessed_on.strip():
+    if not isinstance(assessed_on, str) or not strip_ws(assessed_on):
         raise ValueError("clinical_evidence.assessed_on is required when remission_confirmed is true")
     return {
         "status": CLINICALLY_CONFIRMED_REMISSION,
         "source": "externally_supplied",
-        "assessed_by": assessed_by.strip(),
-        "assessed_on": assessed_on.strip(),
+        "assessed_by": strip_ws(assessed_by),
+        "assessed_on": strip_ws(assessed_on),
     }
 
 

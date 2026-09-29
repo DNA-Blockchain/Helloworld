@@ -84,6 +84,7 @@ from pathlib import Path
 from dna_shell import _analyze_fasta
 from research_ledger import published_dataset_accessions
 from research_provenance import ResearchProvenanceQueue, create_public_dataset_record_event
+import research_publish
 from research_publish import DEFAULT_OUTBOX
 
 ROOT = Path(__file__).resolve().parent
@@ -139,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     already = published_dataset_accessions(str(args.ledgers))
+    anchor = research_publish.current_time_anchor()
     events = []
     for accession in dict.fromkeys(args.accessions):
         if accession in already:
@@ -157,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             total_bases=manifest["total_bases"],
             dataset_sha256=manifest["sha256"],
             confirm_publication=True,
+            time_anchor=anchor,
         ))
         print(f"{accession}: {manifest['total_bases']} bases, sha256 {manifest['sha256'][:16]}...  {manifest['title'][:80]}")
     if not args.confirm_publication:

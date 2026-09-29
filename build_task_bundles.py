@@ -64,9 +64,11 @@ Each bundle holds:
     <INPUT>        the synthetic input the kernel boot check uses
     <TASK>.JSON    task manifest with each file's size and SHA-256
     <FLOW>.JSON    one-block workflow: input -> task -> declared .OUT output
+    OUTPUT.SHA256  SHA-256 of the module's output for <INPUT> under CPython
 
-The kernel embeds these files and runs each bundle at boot. Generating them
-from the host modules keeps one source of truth.
+The kernel embeds these files and runs each bundle at boot, and requires its
+ring-3 MicroPython output to match OUTPUT.SHA256 byte for byte. Generating
+them from the host modules keeps one source of truth.
 
 Usage:
     python build_task_bundles.py          # (re)write every bundle
@@ -75,15 +77,24 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import importlib
+import io
 import json
+import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent
 TASKS_DIR = ROOT / "os" / "tasks"
+OUTPUT_DIGEST = "OUTPUT.SHA256"
+# Characters the sample writes as \u surrogate-pair escapes (the Mathematical
+# Alphanumeric Symbols block); every other character is raw UTF-8.
+ESCAPED_IN_SAMPLE = re.compile("[\U0001d400-\U0001d7ff]")
 
 
 @dataclass(frozen=True)
@@ -133,9 +144,35 @@ def _file_entry(name: str, role: str, data: bytes) -> dict:
     return {"name": name, "role": role, "sizeBytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def _surrogate_pair(match: re.Match) -> str:
+    code = ord(match.group()) - 0x10000
+    return "\\u%04x\\u%04x" % (0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF))
+
+
+def sample_bytes(request: dict) -> bytes:
+    """The input as UTF-8 JSON (as research_fetch.py writes it), with the
+    ESCAPED_IN_SAMPLE characters as surrogate-pair escapes, so the boot check
+    covers both ways a character outside the BMP can reach the kernel."""
+    text = json.dumps(request, indent=2, ensure_ascii=False)
+    return (ESCAPED_IN_SAMPLE.sub(_surrogate_pair, text) + "\n").encode("utf-8")
+
+
+def reference_output(bundle: Bundle, sample: bytes) -> bytes:
+    """What the module writes for `sample` under CPython, through the same
+    main() the kernel runs."""
+    module = importlib.import_module(bundle.module.removesuffix(".py"))
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / bundle.input_name
+        output = Path(scratch) / bundle.output_name
+        source.write_bytes(sample)
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.main(["task", str(source), "--output", str(output)])
+        return output.read_bytes()
+
+
 def build(bundle: Bundle) -> dict[str, bytes]:
     entry = _lf((ROOT / bundle.module).read_bytes())
-    sample = (json.dumps(bundle.input_request(), indent=2) + "\n").encode("ascii")
+    sample = sample_bytes(bundle.input_request())
     task = {
         "schemaVersion": "nosfs.task-bundle.v1",
         "taskId": bundle.task_id,
@@ -165,6 +202,7 @@ def build(bundle: Bundle) -> dict[str, bytes]:
         bundle.input_name: sample,
         bundle.task_manifest: (json.dumps(task, separators=(",", ":")) + "\n").encode("ascii"),
         bundle.workflow_manifest: (json.dumps(workflow, separators=(",", ":")) + "\n").encode("ascii"),
+        OUTPUT_DIGEST: (hashlib.sha256(reference_output(bundle, sample)).hexdigest() + "\n").encode("ascii"),
     }
 
 

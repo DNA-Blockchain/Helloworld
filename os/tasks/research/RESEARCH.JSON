@@ -20,7 +20,7 @@
     {
       "source": "europe_pmc",
       "external_id": "SYNTH-EU-1",
-      "title": "CRISPR Base Editing of a G>A Cancer Variant.",
+      "title": "CRISPR Base‑Editing of a G>A Cancer Variant.",
       "abstract": "",
       "source_url": "https://example.invalid/synth-eu-1",
       "published_at": "2025",
@@ -29,7 +29,7 @@
     {
       "source": "clinicaltrials.gov",
       "external_id": "SYNTH-CT-1",
-      "title": "Trial of CRISPR-edited cells in solid cancer",
+      "title": " Trial of CRISPR-edited T cells in solid cancer – β‑catenin–high tumours, Δθ ≥ 2 °C, \ud835\udefd-cohort (Montréal), 🧬 sequencing follow-up at twelve synthetic sites over two synthetic years　",
       "abstract": "",
       "source_url": "https://example.invalid/synth-ct-1",
       "published_at": "2023",
@@ -39,7 +39,7 @@
       "source": "pubmed",
       "external_id": "SYNTH-PM-2",
       "title": "Survey of gene therapy delivery methods",
-      "abstract": "Synthetic record with no query terms in the title.",
+      "abstract": "Synthetic record with no query terms in the title — α/β vectors, ≤ 5 µm particles.",
       "source_url": "https://example.invalid/synth-pm-2",
       "published_at": "2019",
       "classification": "public"

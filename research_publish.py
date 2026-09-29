@@ -84,6 +84,21 @@ from research_provenance import ResearchProvenanceQueue, create_public_research_
 DEFAULT_OUTBOX = Path(__file__).resolve().parent / "autonomous" / "research-outbox"
 
 
+def current_time_anchor() -> dict | None:
+    """The current Bitcoin block, recorded in the events created in this run
+    to prove they are no older than it. None (with a note) if no public
+    explorer is reachable; events are valid without an anchor."""
+    try:
+        from external_chain_bridge import fetch_bitcoin_anchor
+
+        anchor = fetch_bitcoin_anchor()
+    except Exception as error:
+        print(f"note: no Bitcoin time anchor ({error}); publishing without one")
+        return None
+    print(f"time anchor: created after Bitcoin block {anchor['height']} ({anchor['block_hash'][:16]}...)")
+    return anchor
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("ranking", type=Path, help="research-ranking.v1 JSON (RANKED.OUT)")
@@ -96,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # Build with confirmation so the event is fully validated even in a
         # dry run; it is only queued when the flag is given.
-        event = create_public_research_records_event(ranking, confirm_publication=True)
+        event = create_public_research_records_event(
+            ranking, confirm_publication=True, time_anchor=current_time_anchor())
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

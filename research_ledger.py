@@ -195,6 +195,30 @@ def published_queries(base_dir: str) -> set[str]:
     return queries
 
 
+def published_events(base_dir: str, kind: str) -> dict[str, dict]:
+    """Every published event of one kind across all node ledgers, by
+    event ID (each event appears once however many nodes replicate it)."""
+    events = {}
+    for ledger in load_all_ledgers(base_dir).values():
+        for entry in ledger.entries():
+            if entry.get("kind") == kind:
+                event = entry["block"]["research_provenance"]
+                events.setdefault(event["event_id"], event)
+    return events
+
+
+def published_corrections(base_dir: str) -> dict[tuple[str, str, str], dict]:
+    """The latest correction of each published record, keyed by
+    (corrected event ID, source, external_id)."""
+    corrections = {}
+    events = published_events(base_dir, "public_research_correction").values()
+    for event in sorted(events, key=lambda event: event["created_at"]):
+        for record in event["records"]:
+            key = (event["corrects_event_id"], record["source"], record["external_id"])
+            corrections[key] = dict(record, event_id=event["event_id"], reason=event["reason"])
+    return corrections
+
+
 def published_dataset_accessions(base_dir: str) -> set[str]:
     """Accessions of every public dataset record already published."""
     accessions = set()
