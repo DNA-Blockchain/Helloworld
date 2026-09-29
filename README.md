@@ -394,6 +394,37 @@ authentication bypasses are not supported. Downloads are local only;
 they are not automatically added to the catalog, vault, peer network,
 or any model prompt.
 
+## Cancer -> modeled reference match workflow
+
+`remission_core.py` runs the whole computational workflow in one pass:
+reference/sample comparison, `MUT-000001`-style mutation records, 2-bit
+binary DNA (`A=00 C=01 G=10 T=11`, matching `dna_binary_codec.py`), a
+string-level CRISPR edit model, post-edit verification, follow-up
+comparisons over time, and a SHA-256 hash-linked ledger of every stage.
+
+```powershell
+python remission_workflow.py                         # synthetic demo (ACGTACATACGT -> ACGTACGTACGT)
+python remission_workflow.py --input case.json --output result.json
+$env:REMISSION_VAULT_PASSPHRASE = "..."; python remission_workflow.py --vault
+```
+
+The ledger holds only digests; the full records (which contain sequences)
+are returned separately and `--vault` encrypts them with
+`EncryptedDataVault`, so sequences never go on a chain. The CRISPR step is
+a string transformation, not guide-RNA design or a biological edit.
+`MODELED_REFERENCE_MATCH` is kept separate from
+`CLINICALLY_CONFIRMED_REMISSION`, which is only ever copied from supplied,
+attributed clinical evidence (`clinical_evidence.assessed_by`/`assessed_on`).
+Insertions/deletions are not modeled (sequences must be equal length).
+
+The same file is packaged for the Network OS as a MicroPython task bundle
+in `os/tasks/remission/` (`REMISSION.PY`, `SAMPLE.JSON`, `RMTASK.JSON`,
+`RMFLOW.JSON`, following `os/schemas/`). Regenerate it after editing
+`remission_core.py` with `python build_remission_bundle.py`; the tests fail
+if it is stale. The kernel can validate these manifests today but cannot
+run MicroPython yet; the bundle runs under the WSL MicroPython Unix port
+with a 1-MiB heap.
+
 ## Running the tests
 
 ```bash
