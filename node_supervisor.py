@@ -109,6 +109,11 @@ TASK_NAME = "dna-chain-project nodes"
 # Present in base_dir: the nodes publish queued research topics between them
 # (run_node_cli.py --publish-research-topics). Delete it to stop.
 PUBLISH_TOPICS_CONFIRMATION = "publish-research-topics.confirmed"
+# Present in base_dir: every summary_every seconds, research_summaries.py
+# summarizes a few published records with the local model and queues their
+# hash-only provenance. Delete it to stop.
+SUMMARIES_CONFIRMATION = "research-summaries.confirmed"
+BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 
 
 @dataclass
@@ -119,6 +124,8 @@ class Config:
     host: str = "127.0.0.1"
     heartbeat_seconds: float = 60.0      # a node mines a plain block this often
     round_seconds: float = 300.0         # work-sharing round
+    summary_every: float = 600.0         # research_summaries.py batch interval
+    summary_batch: int = 10
     takeover_seconds: float = 20.0
     report_hour: int = 8                 # local time
     keep_archive_days: int = 30
@@ -415,6 +422,9 @@ class Supervisor:
         self.nodes = [NodeProc(i) for i in range(cfg.node_count)]
         self.keys: dict[int, str] = {}
         self.state = self._load_state()
+        self.summarizer: Optional[subprocess.Popen] = None
+        self.summarizer_log = None
+        self.last_summary_start = 0.0
 
     # -- persisted state --
 
@@ -527,7 +537,47 @@ class Supervisor:
             self._save_state()
             self.log.warning("node-%d exited with code %s; restarting in %.0fs", n.index, code, delay)
 
+    # -- local AI summaries --
+
+    def summary_command(self) -> list[str]:
+        return [self.cfg.python, os.path.join(PROJECT_DIR, "research_summaries.py"), "run",
+                "--limit", str(self.cfg.summary_batch), "--confirm-publication",
+                "--base-dir", self.cfg.base_dir, "--outbox", self.cfg.path("research-outbox")]
+
+    def maybe_summarize(self, now: float) -> None:
+        """Starts a summary batch when one is due and confirmed; batches run
+        at below-normal priority and never overlap."""
+        if self.summarizer is not None:
+            if self.summarizer.poll() is None:
+                return
+            self.summarizer_log.close()
+            self.summarizer = None
+        if not os.path.exists(self.cfg.path(SUMMARIES_CONFIRMATION)):
+            return
+        if now - self.last_summary_start < self.cfg.summary_every:
+            return
+        self.last_summary_start = now
+        self.summarizer_log = open(os.path.join(self.cfg.logs_dir, "summaries.log"), "a",
+                                   encoding="utf-8", buffering=1)
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        self.summarizer = subprocess.Popen(self.summary_command(), cwd=PROJECT_DIR, stdout=self.summarizer_log,
+                                           stderr=subprocess.STDOUT, env=env,
+                                           creationflags=NO_WINDOW | BELOW_NORMAL)
+
+    def stop_summarizer(self) -> None:
+        if self.summarizer is None:
+            return
+        if self.summarizer.poll() is None:
+            self.summarizer.terminate()   # progress is saved after every summary
+            try:
+                self.summarizer.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.summarizer.kill()
+        self.summarizer_log.close()
+        self.summarizer = None
+
     def stop_nodes(self, timeout: float = 90.0) -> None:
+        self.stop_summarizer()
         for n in self.nodes:
             if n.proc is not None:
                 open(self.stop_file(n.index), "w").close()
@@ -702,6 +752,7 @@ class Supervisor:
                             self.state["last_report_date"] = now.date().isoformat()
                             self._save_state()
                     self.check_nodes(time.time())
+                    self.maybe_summarize(time.time())
                     if time.time() - last_collect >= 60:
                         self.collect_status()
                         last_collect = time.time()

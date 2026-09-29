@@ -177,6 +177,20 @@ def collect(base_dir: str) -> dict:
                 "replicas": sorted(event["replicas"]),
                 "local_copy": os.path.exists(_local_fasta(base_dir, payload["accession"])),
             })
+    # Local plain-language summaries (research_summaries.py), shown only for
+    # the title they were written for.
+    try:
+        import research_summaries
+
+        provenance = {event["event_id"]: event["block"]["research_provenance"] for event in events.values()
+                      if event["kind"] == "public_research_provenance"}
+        summaries = research_summaries.summaries_for_viewer(base_dir, provenance)
+    except (OSError, ValueError, KeyError):
+        summaries = {}
+    for record in records:
+        summary = summaries.get(f"{record['source']}:{record['external_id']}")
+        fits = summary and summary["title_sha256"] == hashlib.sha256(record["title"].encode("utf-8")).hexdigest()
+        record["summary"] = summary if fits else None
     records.sort(key=lambda r: r["published_at"], reverse=True)
     return {
         "nodes": nodes,
@@ -226,7 +240,8 @@ def search_records(records: list[dict], query: str = "", source: str = "", limit
     for record in records:
         if source and record["source"] != source:
             continue
-        text = f"{record['title']} {record['external_id']} {record['query']}".lower()
+        summary = (record.get("summary") or {}).get("text", "")
+        text = f"{record['title']} {record['external_id']} {record['query']} {summary}".lower()
         if all(term in text for term in terms):
             matched.append(record)
     return matched[:limit]
@@ -338,6 +353,7 @@ input{flex:1;min-width:200px}button{cursor:pointer}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-size:13px;color:var(--muted);font-weight:600}a{color:var(--accent)}
 .scroll{overflow-x:auto}code{font-size:12px}
+.summary{margin-top:4px}.small{font-size:12px}
 </style></head><body><main>
 <h1>Research Ledger</h1>
 <div id="status" class="muted">Loading...</div>
@@ -369,6 +385,12 @@ async function load() {
     if (r.correction) { const note = document.createElement('div'); note.className = 'muted';
       note.textContent = `Corrected ${r.correction.corrected_at.slice(0, 10)} (${r.correction.reason}); first published as: ${r.correction.published_title}`;
       titleCell.append(note); }
+    if (r.summary) { const s = document.createElement('div'); s.className = 'summary';
+      s.textContent = r.summary.text;
+      const label = document.createElement('div'); label.className = 'muted small';
+      label.textContent = `AI summary (${r.summary.model}, local): may be wrong, not evidence` +
+        (r.summary.on_chain_event ? ' · hash on chain' : '');
+      titleCell.append(s, label); }
     cell(row, `${r.source}:${r.external_id}`); cell(row, r.record_published_date);
     const when = [r.published_at.slice(0, 19).replace('T', ' ') + ' UTC'];
     if (r.not_before_bitcoin_block) when.push(`after Bitcoin block ${r.not_before_bitcoin_block}`);

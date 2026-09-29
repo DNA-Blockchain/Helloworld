@@ -64,6 +64,29 @@ from urllib.parse import urlsplit
 from research_catalog import ResearchCatalog, render_cited_context
 
 
+def loopback_endpoint(endpoint: str) -> tuple[str, int]:
+    """(host, port) of a local Ollama URL; only numeric loopback IPs are
+    accepted, so prompts and records never leave this machine."""
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "http" or not parsed.hostname:
+        raise ValueError("endpoint must be an http URL using a numeric loopback IP")
+    if parsed.username or parsed.password or parsed.path not in ("", "/"):
+        raise ValueError("endpoint must not contain credentials or a path")
+    if parsed.query or parsed.fragment:
+        raise ValueError("endpoint must not contain a query or fragment")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+        parsed_port = parsed.port
+    except ValueError as error:
+        raise ValueError("endpoint must use a valid numeric loopback IP and port") from error
+    if not address.is_loopback:
+        raise ValueError("endpoint must use a numeric loopback IP")
+    port = 11434 if parsed_port is None else parsed_port
+    if not 1 <= port <= 65535:
+        raise ValueError("endpoint port must be between 1 and 65535")
+    return parsed.hostname, port
+
+
 class LocalResearchAssistant:
     def __init__(
         self,
@@ -72,29 +95,11 @@ class LocalResearchAssistant:
         endpoint: str = "http://127.0.0.1:11434",
         timeout: float = 120,
     ):
-        parsed = urlsplit(endpoint)
-        if parsed.scheme != "http" or not parsed.hostname:
-            raise ValueError("endpoint must be an http URL using a numeric loopback IP")
-        if parsed.username or parsed.password or parsed.path not in ("", "/"):
-            raise ValueError("endpoint must not contain credentials or a path")
-        if parsed.query or parsed.fragment:
-            raise ValueError("endpoint must not contain a query or fragment")
-        try:
-            address = ipaddress.ip_address(parsed.hostname)
-            parsed_port = parsed.port
-        except ValueError as error:
-            raise ValueError("endpoint must use a valid numeric loopback IP and port") from error
-        if not address.is_loopback:
-            raise ValueError("endpoint must use a numeric loopback IP")
-        port = 11434 if parsed_port is None else parsed_port
-        if not 1 <= port <= 65535:
-            raise ValueError("endpoint port must be between 1 and 65535")
+        self.host, self.port = loopback_endpoint(endpoint)
         if timeout <= 0:
             raise ValueError("timeout must be greater than zero")
 
         self.catalog = catalog
-        self.host = parsed.hostname
-        self.port = port
         self.timeout = timeout
 
     def answer(
