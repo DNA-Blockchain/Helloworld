@@ -1,3 +1,4 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -19,6 +20,31 @@ pub(crate) enum BlockStatus {
     Succeeded,
     Failed,
     Skipped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TaskRuntime {
+    MicroPython,
+    Elf,
+}
+
+impl TaskRuntime {
+    fn entrypoint_role(self) -> &'static str {
+        match self {
+            Self::MicroPython => "python",
+            Self::Elf => "elf",
+        }
+    }
+}
+
+/// What the dispatcher needs from a validated task manifest. The entrypoint
+/// digest lets the runner re-check the exact bytes it is about to execute.
+pub(crate) struct TaskManifestSummary {
+    pub(crate) runtime: TaskRuntime,
+    pub(crate) entrypoint: String,
+    pub(crate) entrypoint_size: usize,
+    pub(crate) entrypoint_sha256: [u8; 32],
+    pub(crate) network_requested: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +170,18 @@ impl WorkflowDispatcher {
         (0..self.block_count)
             .find(|index| self.block_id(*index) == Some(block_id))
             .map(|index| self.statuses[index])
+    }
+
+    fn block_index(&self, block_id: &str) -> Option<usize> {
+        (0..self.block_count).find(|index| self.block_id(*index) == Some(block_id))
+    }
+
+    fn block_field(&self, index: usize, field: &str) -> Option<&Value> {
+        self.manifest
+            .get("blocks")?
+            .as_array()?
+            .get(index)?
+            .get(field)
     }
 
     pub(crate) fn event_count(&self) -> usize {
@@ -311,6 +349,248 @@ pub(crate) fn verify_dispatcher_smoke(
     Ok(success_events)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BlockOutcome {
+    NotRun,
+    Exited(u64),
+    Refused(&'static str),
+}
+
+pub(crate) struct WorkflowRun {
+    dispatcher: WorkflowDispatcher,
+    outcomes: [BlockOutcome; MAX_WORKFLOW_BLOCKS],
+}
+
+impl WorkflowRun {
+    fn outcome(&self, block_id: &str) -> Option<(BlockOutcome, BlockStatus)> {
+        let index = self.dispatcher.block_index(block_id)?;
+        Some((self.outcomes[index], self.dispatcher.statuses[index]))
+    }
+
+    fn executed_count(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, BlockOutcome::Exited(_)))
+            .count()
+    }
+}
+
+/// Runs every block in dependency order. A block succeeds only when its ELF
+/// entrypoint exits with status 0. Each block's manifest and file digests are
+/// re-validated immediately before it runs, the bytes handed to the loader are
+/// hashed again, and tasks that need an unavailable runtime or request network
+/// access are refused (recorded as failed) instead of run. `run_elf` receives
+/// the image and the block's declared input files, which are the only files
+/// the task may read.
+pub(crate) fn execute_workflow(
+    workflow_manifest: &[u8],
+    available_task_manifests: &[&str],
+    available_files: &[&str],
+    mut read_file: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
+    mut run_elf: impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
+) -> Result<WorkflowRun, &'static str> {
+    let mut dispatcher =
+        WorkflowDispatcher::prepare(workflow_manifest, available_task_manifests, available_files)?;
+    let mut outcomes = [BlockOutcome::NotRun; MAX_WORKFLOW_BLOCKS];
+    while let Some(block_id) = dispatcher.next_ready_block() {
+        let block_id = String::from(block_id);
+        let index = dispatcher
+            .block_index(&block_id)
+            .ok_or("workflow ready block has no index")?;
+        let task_manifest = String::from(
+            dispatcher
+                .block_field(index, "taskManifest")
+                .and_then(Value::as_str)
+                .ok_or("workflow block task manifest must be a string")?,
+        );
+        let mut input_files = Vec::new();
+        for file in dispatcher
+            .block_field(index, "inputFiles")
+            .and_then(Value::as_array)
+            .ok_or("workflow input files must be an array")?
+        {
+            input_files.push(String::from(
+                file.as_str()
+                    .ok_or("workflow input file must be a filename")?,
+            ));
+        }
+        let input_names: Vec<&str> = input_files.iter().map(String::as_str).collect();
+        outcomes[index] =
+            match run_block(&task_manifest, &input_names, &mut read_file, &mut run_elf) {
+                Ok(exit_code) => BlockOutcome::Exited(exit_code),
+                Err(reason) => BlockOutcome::Refused(reason),
+            };
+        dispatcher.record_runtime_result(&block_id, outcomes[index] == BlockOutcome::Exited(0))?;
+    }
+    Ok(WorkflowRun {
+        dispatcher,
+        outcomes,
+    })
+}
+
+fn run_block(
+    task_manifest: &str,
+    input_files: &[&str],
+    read_file: &mut impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
+    run_elf: &mut impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
+) -> Result<u64, &'static str> {
+    let mut manifest = [0; MAX_MANIFEST_SIZE];
+    let length = read_file(task_manifest, &mut manifest)?;
+    let summary = validate_task_manifest(&manifest[..length], &mut *read_file)?;
+    if summary.runtime != TaskRuntime::Elf {
+        return Err("task runtime is not available in this kernel");
+    }
+    if summary.network_requested {
+        return Err("task requests network access, which task execution does not grant");
+    }
+    let mut image = Vec::new();
+    image
+        .try_reserve_exact(summary.entrypoint_size)
+        .map_err(|_| "not enough kernel memory to load a task entrypoint")?;
+    image.resize(summary.entrypoint_size, 0);
+    let image_length = read_file(&summary.entrypoint, &mut image)?;
+    if image_length != image.len() || sha256(&image) != summary.entrypoint_sha256 {
+        return Err("task entrypoint changed after validation");
+    }
+    run_elf(&image, input_files)
+}
+
+/// Builds an ELF-runtime task manifest whose single file is the entrypoint.
+pub(crate) fn elf_task_manifest(
+    task_id: &str,
+    entrypoint: &str,
+    image: &[u8],
+    dns: bool,
+) -> String {
+    let digest = sha256(image);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push(hex_digit(byte >> 4) as char);
+        hex.push(hex_digit(byte & 0x0f) as char);
+    }
+    format!(
+        r#"{{"schemaVersion":"nosfs.task-bundle.v1","taskId":"{task_id}","runtime":"elf","entrypoint":"{entrypoint}","files":[{{"name":"{entrypoint}","role":"elf","sizeBytes":{size},"sha256":"{hex}"}}],"capabilities":{{"network":{{"dns":{dns},"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}}}},"limits":{{"memoryBytes":65536,"runtimeSeconds":5}}}}"#,
+        size = image.len(),
+    )
+}
+
+pub(crate) struct WorkflowExecutionReport {
+    pub(crate) executed: usize,
+}
+
+/// Executes the stored ELF workflow, then a mixed workflow that must succeed,
+/// fail and refuse blocks for the right reasons.
+pub(crate) fn verify_workflow_execution(
+    elf_workflow: &[u8],
+    elf_task_manifest_name: &str,
+    elf_entrypoint_name: &str,
+    python_task_manifest_name: &str,
+    input_file_name: &str,
+    mut read_disk: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
+    mut run_elf: impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
+) -> Result<WorkflowExecutionReport, &'static str> {
+    let stored = execute_workflow(
+        elf_workflow,
+        &[elf_task_manifest_name],
+        &[input_file_name],
+        &mut read_disk,
+        &mut run_elf,
+    )?;
+    for block in ["inspect", "inspect-again"] {
+        if stored.outcome(block) != Some((BlockOutcome::Exited(0), BlockStatus::Succeeded)) {
+            return Err("stored ELF workflow block did not run to a successful exit");
+        }
+    }
+
+    let mut image = [0; 512];
+    let image_length = read_disk(elf_entrypoint_name, &mut image)?;
+    if image_length == 0 {
+        return Err("stored ELF task entrypoint is empty");
+    }
+    let mut altered = image;
+    altered[image_length - 1] ^= 0xff;
+    let tampered_manifest = elf_task_manifest(
+        "tampered",
+        elf_entrypoint_name,
+        &altered[..image_length],
+        false,
+    );
+    let network_manifest =
+        elf_task_manifest("network", elf_entrypoint_name, &image[..image_length], true);
+    let overlay = |name: &str, output: &mut [u8]| -> Option<Result<usize, &'static str>> {
+        let contents = match name {
+            "BAD.MF" => tampered_manifest.as_bytes(),
+            "NET.MF" => network_manifest.as_bytes(),
+            _ => return None,
+        };
+        Some(
+            output
+                .get_mut(..contents.len())
+                .map(|slot| {
+                    slot.copy_from_slice(contents);
+                    contents.len()
+                })
+                .ok_or("overlay file does not fit the read buffer"),
+        )
+    };
+    let mixed_workflow = format!(
+        r#"{{"schemaVersion":"nosfs.workflow.v1","workflowId":"mixed-check","failurePolicy":"continue","blocks":[{{"blockId":"python-task","taskManifest":"{python}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"tampered","taskManifest":"BAD.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"after-tampered","taskManifest":"{elf}","dependsOn":["tampered"],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"undeclared-input","taskManifest":"{elf}","dependsOn":[],"inputFiles":[],"outputFiles":[]}},{{"blockId":"network-task","taskManifest":"NET.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"independent","taskManifest":"{elf}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}}]}}"#,
+        python = python_task_manifest_name,
+        elf = elf_task_manifest_name,
+        input = input_file_name,
+    );
+    let mixed = execute_workflow(
+        mixed_workflow.as_bytes(),
+        &[
+            python_task_manifest_name,
+            elf_task_manifest_name,
+            "BAD.MF",
+            "NET.MF",
+        ],
+        &[input_file_name],
+        |name, output| overlay(name, output).unwrap_or_else(|| read_disk(name, output)),
+        &mut run_elf,
+    )?;
+    let expected = [
+        (
+            "python-task",
+            BlockOutcome::Refused("task runtime is not available in this kernel"),
+            BlockStatus::Failed,
+        ),
+        (
+            "tampered",
+            BlockOutcome::Refused("task bundle file SHA-256 does not match its manifest"),
+            BlockStatus::Failed,
+        ),
+        ("after-tampered", BlockOutcome::NotRun, BlockStatus::Skipped),
+        (
+            "undeclared-input",
+            BlockOutcome::Exited(1),
+            BlockStatus::Failed,
+        ),
+        (
+            "network-task",
+            BlockOutcome::Refused(
+                "task requests network access, which task execution does not grant",
+            ),
+            BlockStatus::Failed,
+        ),
+        (
+            "independent",
+            BlockOutcome::Exited(0),
+            BlockStatus::Succeeded,
+        ),
+    ];
+    for (block, outcome, status) in expected {
+        if mixed.outcome(block) != Some((outcome, status)) {
+            return Err("mixed workflow block did not reach its expected outcome");
+        }
+    }
+    Ok(WorkflowExecutionReport {
+        executed: stored.executed_count() + mixed.executed_count(),
+    })
+}
+
 struct UniqueValue(Value);
 
 impl<'de> Deserialize<'de> for UniqueValue {
@@ -398,7 +678,7 @@ impl<'de> Visitor<'de> for UniqueValueVisitor {
 pub(crate) fn validate_task_manifest(
     input: &[u8],
     mut read_file: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
-) -> Result<(), &'static str> {
+) -> Result<TaskManifestSummary, &'static str> {
     let root = parse_manifest(input)?;
     exact_keys(
         &root,
@@ -414,7 +694,11 @@ pub(crate) fn validate_task_manifest(
     )?;
     require_string(&root, "schemaVersion", "nosfs.task-bundle.v1")?;
     validate_identifier(require_string_value(&root, "taskId")?, 48)?;
-    require_string(&root, "runtime", "micropython")?;
+    let task_runtime = match require_string_value(&root, "runtime")? {
+        "micropython" => TaskRuntime::MicroPython,
+        "elf" => TaskRuntime::Elf,
+        _ => return Err("task bundle runtime is not supported"),
+    };
     let entrypoint = require_string_value(&root, "entrypoint")?;
     validate_filename(entrypoint)?;
 
@@ -425,7 +709,7 @@ pub(crate) fn validate_task_manifest(
     if files.is_empty() || files.len() > MAX_TASK_FILES {
         return Err("task bundle file count is outside its supported bounds");
     }
-    let mut entrypoint_is_python = false;
+    let mut entrypoint_digest = None;
     for (index, file) in files.iter().enumerate() {
         exact_keys(file, &["name", "role", "sizeBytes", "sha256"])?;
         let name = require_string_value(file, "name")?;
@@ -436,7 +720,7 @@ pub(crate) fn validate_task_manifest(
             }
         }
         let role = require_string_value(file, "role")?;
-        if !matches!(role, "python" | "json" | "data") {
+        if !matches!(role, "python" | "elf" | "json" | "data") {
             return Err("task bundle file has an unsupported role");
         }
         let size = file
@@ -462,13 +746,13 @@ pub(crate) fn validate_task_manifest(
         if !digest_matches_hex(&digest, expected_digest.as_bytes()) {
             return Err("task bundle file SHA-256 does not match its manifest");
         }
-        if name == entrypoint && role == "python" {
-            entrypoint_is_python = true;
+        if name == entrypoint && role == task_runtime.entrypoint_role() {
+            entrypoint_digest = Some((contents.len(), digest));
         }
     }
-    if !entrypoint_is_python {
-        return Err("task bundle entrypoint must name a declared Python file");
-    }
+    let Some((entrypoint_size, entrypoint_sha256)) = entrypoint_digest else {
+        return Err("task bundle entrypoint must name a declared file for its runtime");
+    };
 
     let capabilities = root
         .get("capabilities")
@@ -481,7 +765,7 @@ pub(crate) fn validate_task_manifest(
         network,
         &["dns", "udpDestinations", "tcpDestinations", "tlsHosts"],
     )?;
-    network
+    let mut network_requested = network
         .get("dns")
         .and_then(Value::as_bool)
         .ok_or("task bundle DNS capability must be boolean")?;
@@ -493,6 +777,7 @@ pub(crate) fn validate_task_manifest(
         if destinations.len() > 8 {
             return Err("task bundle has too many network destinations");
         }
+        network_requested |= !destinations.is_empty();
         for (index, destination) in destinations.iter().enumerate() {
             let host = destination
                 .as_str()
@@ -510,11 +795,17 @@ pub(crate) fn validate_task_manifest(
     let limits = root.get("limits").ok_or("task bundle limits are missing")?;
     exact_keys(limits, &["memoryBytes", "runtimeSeconds"])?;
     let memory = require_u64(limits, "memoryBytes")?;
-    let runtime = require_u64(limits, "runtimeSeconds")?;
-    if !(16_384..=2_097_152).contains(&memory) || !(1..=300).contains(&runtime) {
+    let runtime_seconds = require_u64(limits, "runtimeSeconds")?;
+    if !(16_384..=2_097_152).contains(&memory) || !(1..=300).contains(&runtime_seconds) {
         return Err("task bundle resource limits are outside supported bounds");
     }
-    Ok(())
+    Ok(TaskManifestSummary {
+        runtime: task_runtime,
+        entrypoint: String::from(entrypoint),
+        entrypoint_size,
+        entrypoint_sha256,
+        network_requested,
+    })
 }
 
 pub(crate) fn verify_rejected_manifests() -> Result<(), &'static str> {
@@ -533,7 +824,10 @@ pub(crate) fn verify_rejected_manifests() -> Result<(), &'static str> {
         output.copy_from_slice(b"x");
         Ok(output.len())
     });
-    if digest_result != Err("task bundle file SHA-256 does not match its manifest") {
+    if !matches!(
+        digest_result,
+        Err("task bundle file SHA-256 does not match its manifest")
+    ) {
         return Err("task bundle validator did not reject a mismatched file digest");
     }
 

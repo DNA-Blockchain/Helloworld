@@ -25,12 +25,24 @@ const MAX_DNS_NAME_BYTES: usize = 253;
 const MAX_SOCKET_IO_BYTES: usize = 1024;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
 const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
+const MAX_TASK_READABLE_FILES: usize = 8;
 
 struct StaticGdt(UnsafeCell<[u64; 7]>);
 struct StaticTss(UnsafeCell<[u8; 104]>);
 
 unsafe impl Sync for StaticGdt {}
 unsafe impl Sync for StaticTss {}
+
+/// Files a workflow task may read. Only consulted while TASK_POLICY_ACTIVE.
+struct TaskPolicy {
+    names: [[u8; MAX_FILENAME_BYTES]; MAX_TASK_READABLE_FILES],
+    lengths: [usize; MAX_TASK_READABLE_FILES],
+    count: usize,
+}
+
+struct StaticTaskPolicy(UnsafeCell<TaskPolicy>);
+
+unsafe impl Sync for StaticTaskPolicy {}
 
 #[repr(C, packed)]
 struct DescriptorTablePointer {
@@ -49,6 +61,12 @@ static OBSERVED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_PAGE_FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
 static USER_EXCEPTION_VECTOR: AtomicU64 = AtomicU64::new(0);
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+static TASK_POLICY: StaticTaskPolicy = StaticTaskPolicy(UnsafeCell::new(TaskPolicy {
+    names: [[0; MAX_FILENAME_BYTES]; MAX_TASK_READABLE_FILES],
+    lengths: [0; MAX_TASK_READABLE_FILES],
+    count: 0,
+}));
+static TASK_POLICY_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 static mut USER_TEST_RESUME_RSP: usize = 0;
@@ -245,6 +263,45 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
     Ok(exit_code)
 }
 
+/// Runs a workflow task in ring 3 under a restricted policy: the read-file
+/// syscall only accepts the listed files, and every network syscall fails.
+pub(crate) fn run_task_with_policy(
+    entry: usize,
+    user_stack: usize,
+    readable_files: &[&str],
+) -> Result<u64, &'static str> {
+    if readable_files.len() > MAX_TASK_READABLE_FILES {
+        return Err("workflow task declares too many readable files");
+    }
+    if TASK_POLICY_ACTIVE.load(Ordering::Acquire) {
+        return Err("a workflow task policy is already active");
+    }
+    let policy = unsafe { &mut *TASK_POLICY.0.get() };
+    policy.count = 0;
+    for name in readable_files {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes.len() >= MAX_FILENAME_BYTES {
+            return Err("workflow task readable file name is outside its bounds");
+        }
+        policy.names[policy.count][..bytes.len()].copy_from_slice(bytes);
+        policy.lengths[policy.count] = bytes.len();
+        policy.count += 1;
+    }
+    TASK_POLICY_ACTIVE.store(true, Ordering::Release);
+    let result = verify_user_exit(entry, user_stack);
+    TASK_POLICY_ACTIVE.store(false, Ordering::Release);
+    result
+}
+
+fn task_may_read(filename: &str) -> bool {
+    if !TASK_POLICY_ACTIVE.load(Ordering::Acquire) {
+        return true;
+    }
+    let policy = unsafe { &*TASK_POLICY.0.get() };
+    (0..policy.count)
+        .any(|index| &policy.names[index][..policy.lengths[index]] == filename.as_bytes())
+}
+
 pub(crate) fn verify_user_exception(
     entry: usize,
     user_stack: usize,
@@ -322,6 +379,11 @@ extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argu
         EXIT_CODE.store(argument1, Ordering::Release);
         return EXIT_SYSCALL_RETURN;
     }
+    if TASK_POLICY_ACTIVE.load(Ordering::Acquire)
+        && (SYSCALL_DNS_LOOKUP..=SYSCALL_UDP_CLOSE).contains(&number)
+    {
+        return SYSCALL_ERROR;
+    }
     if number == SYSCALL_READ_FILE {
         let Ok(capacity) = usize::try_from(argument3) else {
             return SYSCALL_ERROR;
@@ -352,7 +414,7 @@ extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argu
         let Ok(filename) = core::str::from_utf8(&filename[..filename_length]) else {
             return SYSCALL_ERROR;
         };
-        if filename.is_empty() {
+        if filename.is_empty() || !task_may_read(filename) {
             return SYSCALL_ERROR;
         }
         let output = unsafe { core::slice::from_raw_parts_mut(argument2 as *mut u8, capacity) };

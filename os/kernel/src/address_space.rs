@@ -243,7 +243,16 @@ pub(crate) fn verify_isolation() -> Result<(), &'static str> {
     verification
 }
 
-pub(crate) fn verify_user_syscall() -> Result<(u64, bool, bool, bool, bool), &'static str> {
+pub(crate) type UserSyscallReport = (
+    u64,
+    bool,
+    bool,
+    bool,
+    bool,
+    super::task_bundle::WorkflowExecutionReport,
+);
+
+pub(crate) fn verify_user_syscall() -> Result<UserSyscallReport, &'static str> {
     let user_code = user_test_address()?;
     let user_stack = user_code
         .checked_add(PAGE_SIZE)
@@ -548,16 +557,19 @@ pub(crate) fn verify_user_syscall() -> Result<(u64, bool, bool, bool, bool), &'s
                 unsafe { core::slice::from_raw_parts(udp_output as *const u8, response_length) };
             let endpoint =
                 unsafe { core::slice::from_raw_parts(udp_endpoint_output as *const u8, 6) };
-            let resolved = super::network::verify_user_udp_dns_probe(
+            let kernel_resolved =
+                unsafe { core::slice::from_raw_parts(file_output as *const u8, 4) };
+            super::network::verify_user_udp_dns_probe(
                 response,
                 [endpoint[0], endpoint[1], endpoint[2], endpoint[3]],
                 u16::from_be_bytes([endpoint[4], endpoint[5]]),
+                [
+                    kernel_resolved[0],
+                    kernel_resolved[1],
+                    kernel_resolved[2],
+                    kernel_resolved[3],
+                ],
             )?;
-            if resolved.octets()
-                != unsafe { core::slice::from_raw_parts(file_output as *const u8, 4) }
-            {
-                return Err("ring-3 UDP DNS result differs from the kernel resolver result");
-            }
             user_udp_verified = true;
         }
 
@@ -699,12 +711,17 @@ pub(crate) fn verify_user_syscall() -> Result<(u64, bool, bool, bool, bool), &'s
         if process_exit != 42 {
             return Err("ELF process lifecycle returned an unexpected exit status");
         }
+        let workflow_report =
+            super::storage::verify_workflow_execution(|image, readable_files| {
+                run_elf_task(image, readable_files, elf_load_base, process_stack, &space)
+            })?;
         Ok((
             exit_code,
             user_dns_verified,
             user_udp_verified,
             user_tcp_abi_verified,
             user_tcp_connected,
+            workflow_report,
         ))
     })();
 
@@ -716,6 +733,32 @@ pub(crate) fn verify_user_syscall() -> Result<(u64, bool, bool, bool, bool), &'s
     release_kernel_stack(kernel_stack_base, kernel_stack_pages)?;
     let result = result?;
     Ok(result)
+}
+
+/// Loads one workflow task into a fresh address space, runs it in ring 3
+/// under the task syscall policy, then restores `caller` and reclaims the
+/// task's pages whatever the outcome.
+fn run_elf_task(
+    image: &[u8],
+    readable_files: &[&str],
+    load_base: u64,
+    stack_page: u64,
+    caller: &AddressSpace,
+) -> Result<u64, &'static str> {
+    let mut task_space = create()?;
+    if let Err(error) = map_user_page(&mut task_space, stack_page) {
+        destroy(&mut task_space)?;
+        return Err(error);
+    }
+    let result = (|| {
+        activate(&task_space)?;
+        let loaded = super::elf::load(&mut task_space, image, load_base)?;
+        let stack_top = (stack_page + PAGE_SIZE - 16) as usize;
+        super::syscall::run_task_with_policy(loaded.entry as usize, stack_top, readable_files)
+    })();
+    activate(caller)?;
+    destroy(&mut task_space)?;
+    result
 }
 
 fn user_test_address() -> Result<u64, &'static str> {

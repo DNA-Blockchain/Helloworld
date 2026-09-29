@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "NOSFS MicroPython task bundle manifest v1",
-  "description": "Manifest contract for a bounded user-space task bundle. Guest validation does not execute the bundle or enforce its capabilities.",
+  "title": "NOSFS task bundle manifest v1",
+  "description": "Manifest contract for a bounded user-space task bundle. The guest runs `elf` tasks after re-checking every file digest; `micropython` tasks are validated but refused until a guest runtime exists. The entrypoint must be a declared file whose role matches the runtime (python or elf). Network capabilities are declared but tasks requesting any are refused; resource limits are not enforced yet.",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -21,7 +21,10 @@
       "pattern": "^[a-z0-9][a-z0-9._-]{0,47}$"
     },
     "runtime": {
-      "const": "micropython"
+      "enum": [
+        "micropython",
+        "elf"
+      ]
     },
     "entrypoint": {
       "$ref": "#/$defs/fileName"
@@ -45,6 +48,7 @@
           "role": {
             "enum": [
               "python",
+              "elf",
               "json",
               "data"
             ]

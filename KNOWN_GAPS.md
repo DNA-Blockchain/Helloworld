@@ -81,7 +81,12 @@ confident-looking file imply more than it's actually verified.
   address supervisor memory. The Python research agent remains a host
   application; running it on this OS requires an isolated user-space runtime,
   broader filesystem API, and network syscalls. It must not run as privileged
-  kernel code. MicroPython has not yet been ported or run in the guest.
+  kernel code. MicroPython has not yet been ported or run in the guest. The
+  workflow dispatcher can execute static ELF tasks from digest-checked
+  manifests, one at a time and synchronously, restricting file reads to each
+  block's declared inputs and denying network syscalls; it does not enforce
+  `runtimeSeconds`/`memoryBytes`, let tasks write output files, or keep a
+  persistent run log, and MicroPython tasks are refused.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a

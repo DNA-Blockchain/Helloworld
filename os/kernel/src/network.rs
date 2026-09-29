@@ -335,6 +335,7 @@ pub(crate) fn run(
         user_udp_verified,
         user_tcp_abi_verified,
         user_tcp_connected,
+        workflow_report,
     ) = user_process_result?;
     record_telemetry(telemetry, crate::telemetry::STAGE_USER_PROCESS_CHECKED);
     let _ = writeln!(
@@ -345,6 +346,12 @@ pub(crate) fn run(
     let _ = writeln!(
         Serial,
         "Ring-3 syscalls verified: bounded stdout echo of BOOT.JSON; supervisor read and write pointers rejected."
+    );
+    let _ = writeln!(
+        Serial,
+        "
+NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked manifests; undeclared input read failed; tampered, network-requesting and MicroPython tasks refused; dependent block skipped.",
+        workflow_report.executed
     );
     if user_dns_verified {
         let _ = writeln!(
@@ -660,16 +667,22 @@ pub(crate) fn build_user_udp_dns_probe(output: &mut [u8]) -> Result<usize, &'sta
     build_dns_query(output, DNS_TEST_ID, DNS_TEST_NAME)
 }
 
+/// Checks the ring-3 UDP DNS response against the kernel resolver's answer.
+/// Resolvers rotate multi-address answers, so the kernel's address must
+/// appear among the A records rather than be the first one.
 pub(crate) fn verify_user_udp_dns_probe(
     packet: &[u8],
     address: [u8; 4],
     port: u16,
+    kernel_resolved: [u8; 4],
 ) -> Result<Ipv4Address, &'static str> {
     if address != DNS_SERVER.octets() || port != 53 {
         return Err("user UDP smoke test received a response from the wrong endpoint");
     }
-    parse_dns_a_response(packet, DNS_TEST_ID, DNS_TEST_NAME)?
-        .ok_or("user UDP DNS response did not contain an IPv4 address")
+    find_dns_a_record(packet, DNS_TEST_ID, DNS_TEST_NAME, |record| {
+        record.octets() == kernel_resolved
+    })?
+    .ok_or("ring-3 UDP DNS response does not include the kernel resolver result")
 }
 
 pub(crate) fn user_dns_udp_endpoint_argument() -> u64 {
@@ -862,6 +875,16 @@ fn parse_dns_a_response(
     expected_identifier: u16,
     expected_hostname: &[u8],
 ) -> Result<Option<Ipv4Address>, &'static str> {
+    find_dns_a_record(response, expected_identifier, expected_hostname, |_| true)
+}
+
+/// Returns the first A record in a validated response that `accept` matches.
+fn find_dns_a_record(
+    response: &[u8],
+    expected_identifier: u16,
+    expected_hostname: &[u8],
+    mut accept: impl FnMut(Ipv4Address) -> bool,
+) -> Result<Option<Ipv4Address>, &'static str> {
     if response.len() < 12 {
         return Err("DNS response is shorter than its header");
     }
@@ -904,12 +927,15 @@ fn parse_dns_a_response(
             return Err("DNS answer data extends beyond the response");
         }
         if record_type == 1 && record_class == 1 && data_length == 4 {
-            return Ok(Some(Ipv4Address::new(
+            let record = Ipv4Address::new(
                 response[offset],
                 response[offset + 1],
                 response[offset + 2],
                 response[offset + 3],
-            )));
+            );
+            if accept(record) {
+                return Ok(Some(record));
+            }
         }
         offset = data_end;
     }

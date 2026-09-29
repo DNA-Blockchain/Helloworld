@@ -150,15 +150,34 @@ this kernel.
   builds a topological plan, tracks `Ready`, `Waiting`, `Succeeded`, `Failed`,
   and `Skipped` states, and records transitions in a fixed-size in-memory
   event log. Boot tests simulate runtime outcomes to check dependency wake-up
-  and both failure policies; no MicroPython task is launched. This is not a
-  persistent run history or task-level filesystem/network capability
-  enforcement.
+  and both failure policies. This is not a persistent run history.
+- Executes workflow blocks whose task manifests use the `elf` runtime. For
+  each ready block, in dependency order, the dispatcher re-reads and
+  re-validates the task manifest (including every file's size and SHA-256),
+  hashes the exact entrypoint bytes again before loading them, and runs the
+  static ELF in its own CR3 address space in ring 3. Exit status 0 marks the
+  block `Succeeded`; any other status, fault, or refusal marks it `Failed`, and
+  the failure policy then skips or preserves dependent work. While a task
+  runs, the read-file syscall accepts only the block's declared `inputFiles`
+  and every network syscall (4-12) fails. Tasks whose manifest requests any
+  network capability, or that need the `micropython` runtime, are refused
+  rather than run. The boot test stores `INSPECT.ELF`, its `INSPECT.MF`
+  manifest, and a two-block `RUN.MF` workflow; both blocks read `INPUT.JSON`,
+  echo it to the serial console, and exit 0. A second in-memory workflow
+  checks that a MicroPython task, a tampered-digest task, and a
+  network-requesting task are refused, that a task reading an undeclared file
+  fails with exit 1, that a dependent of a failed block is skipped, and that an
+  independent block still succeeds. This is sequential, synchronous execution
+  inside the boot test context: there is no preemption, so declared
+  `runtimeSeconds` and `memoryBytes` limits are not enforced yet, tasks cannot
+  write `outputFiles`, and there is no persistent run log.
   The names reflect current NOSFS constraints (15-byte flat filenames and
   256-KiB maximum file size); the 16-entry root directory is too small for a
   useful multi-task workflow alongside the current boot/test files. SHA-256
-  fields verify content integrity, not publisher identity. Execution will
-  require an approval/authenticity mechanism and enforcement of the declared
-  resource and network capabilities.
+  fields verify content integrity, not publisher identity, so executing a
+  task proves its bytes match its manifest, not that it was approved.
+  Broader execution still needs an approval/authenticity mechanism and
+  enforcement of the declared resource limits.
 - Persists bounded OS analytics locally on the QEMU data disk. Two rotating
   event-log snapshots and two alternating boot checkpoints are checksummed and
   read back after each update; startup selects the newest intact generation and
@@ -187,12 +206,12 @@ in QEMU, not on physical hardware or a production network.
 The Python research agent is still not executable in this kernel. The intended
 direction is a workflow dispatcher that loads approved task manifests and
 launches MicroPython in a separate ring-3 ELF process, never inside the kernel.
-The guest can validate and plan the initial task-bundle and workflow formats,
-but this does not execute them or persist run status. The current loader,
-process lifecycle, 256-KiB per-file limit, and minimal read-only file syscall
-are not sufficient to load MicroPython or dispatch these workflows. Before
-execution, the OS needs a stable process ABI, a user-space runtime, bounded
-data handoff, and enforced per-task capabilities. Only approved code may be
+The guest can now dispatch workflow blocks that run static ELF tasks, but
+MicroPython tasks are refused because no MicroPython runtime exists in the
+guest. The current loader, 256-KiB per-file limit, and minimal read-only file
+syscall are not sufficient to load MicroPython. Before Python tasks can run,
+the OS needs a stable process ABI, a user-space runtime, bounded data handoff
+(including task output files), and enforced resource limits. Only approved code may be
 executable; downloaded research records remain data, not code.
 
 The host research application has an optional local Ollama integration for
