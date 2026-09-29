@@ -376,7 +376,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         })
         || !output.iter().any(|line| {
             line.contains(
-                "Filesystem verified: NOSFS v2 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file",
+                "Filesystem verified: NOSFS v3 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file",
             )
         })
         || !output
@@ -540,7 +540,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     "Block device verified: 4096 sectors; persistent test record generation ",
                 );
                 saw_filesystem |= line.contains(
-                    "Filesystem verified: NOSFS v2 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file",
+                    "Filesystem verified: NOSFS v3 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file",
                 );
                 saw_ipv4_echo |= line.contains("ICMP echo reply from 10.0.2.2");
                 saw_slaac |= line.contains("IPv6 SLAAC configured: fd00::");

@@ -95,10 +95,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         }
     }
     match storage::verify_filesystem_record() {
-        Ok(()) => {
+        Ok(capacity_files) => {
             let _ = writeln!(
                 Serial,
-                "Filesystem verified: NOSFS v2 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file."
+                "Filesystem verified: NOSFS v3 persisted BOOT.JSON and a 24-KiB RUNTIME.TEST file; {} files created past the old 16-entry directory limit and removed.",
+                capacity_files
             );
         }
         Err(error) => {

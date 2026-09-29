@@ -123,7 +123,7 @@ const BOOT_TEST_TRANSIENT_FILES: [&str; 8] = [
     "RESULT.OUT",
 ];
 
-pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
+pub(crate) fn verify_filesystem_record() -> Result<usize, &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
     let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
     for leftover in BOOT_TEST_TRANSIENT_FILES {
@@ -168,6 +168,35 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
         return Err("filesystem runtime-sized file failed read-after-write verification");
     }
 
+    // NOSFS v3 holds MAX_DIRECTORY_ENTRIES files. Create enough to pass the
+    // old 16-entry limit even on an empty disk, read each back, remove them.
+    // This runs before the kernel heap exists, so names are built in place.
+    const CAPACITY_TEST_FILES: usize = 24;
+    const _: () = assert!(super::filesystem::MAX_DIRECTORY_ENTRIES > CAPACITY_TEST_FILES + 16);
+    let capacity_name = |index: usize| {
+        let mut name = *b"CAP00.TEST";
+        name[3] = b'0' + (index / 10) as u8;
+        name[4] = b'0' + (index % 10) as u8;
+        name
+    };
+    for index in 0..CAPACITY_TEST_FILES {
+        let name = capacity_name(index);
+        let name = core::str::from_utf8(&name).map_err(|_| "capacity test name is invalid")?;
+        filesystem.write_file(&mut device, name, name.as_bytes())?;
+    }
+    for index in 0..CAPACITY_TEST_FILES {
+        let name = capacity_name(index);
+        let name = core::str::from_utf8(&name).map_err(|_| "capacity test name is invalid")?;
+        let mut readback = [0; 16];
+        let length = filesystem.read_file(&mut device, name, &mut readback)?;
+        if &readback[..length] != name.as_bytes() {
+            return Err("filesystem capacity test file read back incorrectly");
+        }
+        if !filesystem.delete_file(&mut device, name)? {
+            return Err("filesystem capacity test file was missing before deletion");
+        }
+    }
+
     let mut missing = [0; 1];
     for scratch in [UPDATE_NAME, RUNTIME_TEST_NAME] {
         if !filesystem.delete_file(&mut device, scratch)? {
@@ -187,7 +216,7 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
     if elf_length != TEST_ELF_SIZE || stored_elf != test_elf {
         return Err("filesystem TEST.ELF read-after-write verification failed");
     }
-    Ok(())
+    Ok(CAPACITY_TEST_FILES)
 }
 
 pub(crate) fn verify_task_bundle() -> Result<(), &'static str> {

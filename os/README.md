@@ -135,9 +135,13 @@ this kernel.
 - Uses a QEMU-only secondary IDE disk image at
   `os/target/network-os-persistent.img`. ATA PIO access is routed through a
   bounded 512-byte `BlockDevice` sector interface with capacity checks and
-  explicit flush. A small `NOSFS v2` filesystem on that image provides a
-  checksummed allocation bitmap, fixed root directory with 16 entries,
-  contiguous extents up to 256 KiB per file, and read/write support. The boot
+  explicit flush. A small `NOSFS v3` filesystem on that image provides a
+  checksummed allocation bitmap, an 8-sector root directory with 128
+  entries, contiguous extents up to 256 KiB per file, and read/write/delete
+  support. A version-2 disk (one-sector, 16-entry directory) is upgraded in
+  place on first mount by copying its directory into a new 8-sector extent;
+  blank disks are formatted as version 3. The boot check creates 24 extra
+  files, reads them back and deletes them. The boot
   check reads back `BOOT.JSON` and a 24-KiB `RUNTIME.TEST` file across boots.
   This experimental filesystem has no journaling, directories, permissions, or
   general crash recovery; malformed or unknown metadata is rejected rather
@@ -189,8 +193,8 @@ this kernel.
   time inside the boot test context; `memoryBytes` is not enforced beyond the
   loader's page cap, and there is no persistent run log.
   The names reflect current NOSFS constraints (15-byte flat filenames and
-  256-KiB maximum file size); the 16-entry root directory is too small for a
-  useful multi-task workflow alongside the current boot/test files. SHA-256
+  256-KiB maximum file size); the disk image is 2 MiB, which bounds the total
+  size of stored workflows. SHA-256
   fields verify content integrity, not publisher identity, so executing a
   task proves its bytes match its manifest, not that it was approved.
   Broader execution still needs an approval/authenticity mechanism and

@@ -63,8 +63,8 @@ confident-looking file imply more than it's actually verified.
   exception vectors.
   A QEMU-only secondary IDE driver now sits behind a bounded sector-level
   block-device interface and verifies a checksummed sector counter across
-  emulator restarts. An experimental `NOSFS v2` filesystem now mounts that
-  image, validates its superblock and allocation bitmap, and stores up to 16
+  emulator restarts. An experimental `NOSFS v3` filesystem now mounts that
+  image, validates its superblock and allocation bitmap, and stores up to 128
   flat files of at most 256 KiB each with content checksums. A QEMU test
   round-trips a 24-KiB runtime-sized file. It has no journal,
   directories, permissions, safe concurrent writers, or general crash recovery;
@@ -90,8 +90,9 @@ confident-looking file imply more than it's actually verified.
   manifests, one at a time and synchronously, restricting reads to each
   block's declared inputs, writes to its declared `.OUT` outputs, denying
   network syscalls, and stopping tasks at their `runtimeSeconds` limit. It does
-  not enforce `memoryBytes` or keep a persistent run log. NOSFS can now delete files, but its root directory still holds
-  only 16 entries.
+  not enforce `memoryBytes` or keep a persistent run log. NOSFS v3 can delete files and
+  holds 128 flat entries, but the test disk is only 2 MiB and there are still
+  no subdirectories.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a
