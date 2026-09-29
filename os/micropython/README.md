@@ -38,7 +38,13 @@ file with `include_bytes!`.
 
 ## Limits
 
-This is the `MINIMUM` MicroPython configuration: no floats, no `import` of
-other files, and no `json`, `hashlib`, `binascii` or file objects, so
-`remission_core.py` cannot run here yet. Scripts cannot write files. ROM text
-compression is disabled because it inflates x86-64 code about tenfold.
+The configuration is MicroPython's `CORE_FEATURES` level plus `json`,
+`hashlib.sha256`, `binascii` (`hexlify`) and `sys` (`argv`, `exit`,
+`platform == "network-os"`), with a 512-KiB heap. That is enough for
+`remission_core.py`, which the kernel's boot check runs. `open()` supports
+whole-file reads (`"r"`/`"rb"`, at most 64 KiB, through syscall 2) and
+buffered writes that are stored on `close()` (`"w"`/`"wb"`, at most 16 KiB,
+through syscall 13), so the kernel's input and `.OUT` output policy applies.
+There are no floats, no `import` of other files, no seeking and no network
+access. `sys.exit(n)` exits with `n`. ROM text compression is disabled
+because it inflates x86-64 code about tenfold.

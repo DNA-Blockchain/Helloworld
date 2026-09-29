@@ -228,11 +228,15 @@ reads that digest-checked script, and runs it under the same read, write,
 network and runtime policy as ELF tasks; an uncaught exception exits 1 and
 fails the block. The boot test runs the stored `TASK.PY` sample, a script that
 compares a synthetic sample to its reference (position 7, G to A), and a
-script that raises. The interpreter uses MicroPython's minimum configuration,
-so the Python research agent and `remission_core.py` (which need `json`,
-`hashlib`, `binascii` and file objects) cannot run in the guest yet, and
-scripts cannot write files. Only approved code may be executable; downloaded
-research records remain data, not code.
+script that raises, then the real remission bundle from `os/tasks/remission`
+(its own `RMTASK.JSON` and `RMFLOW.JSON`), checking that `RESULT.OUT` reports
+`MODELED_REFERENCE_MATCH`, a verified ledger and `NOT_CLINICALLY_CONFIRMED`.
+The interpreter has MicroPython's core features plus `json`, `hashlib.sha256`,
+`binascii` and `sys`; `open()` reads through syscall 2 and writes declared
+`.OUT` files through syscall 13 on close. It has no floats, no imports of
+other files and no network access, so the full Python research agent cannot
+run in the guest. Only approved code may be executable; downloaded research
+records remain data, not code.
 
 The host research application has an optional local Ollama integration for
 citation-grounded answers (`local_ai_retrieval.py`), but the bare-metal guest

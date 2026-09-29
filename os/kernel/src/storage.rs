@@ -109,9 +109,26 @@ pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
     Ok(generation)
 }
 
+/// Files the boot tests create and delete. A boot that fails midway can
+/// leave them behind, so each boot clears them first; otherwise the 16-entry
+/// root directory can fill and every later boot fails.
+const BOOT_TEST_TRANSIENT_FILES: [&str; 8] = [
+    "UPDATE.TEST",
+    "RUNTIME.TEST",
+    "DNA.PY",
+    "FAIL.PY",
+    "COPY.OUT",
+    "REMISSION.PY",
+    "SAMPLE.JSON",
+    "RESULT.OUT",
+];
+
 pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
     let mut device = QemuAtaDevice::initialize()?;
     let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    for leftover in BOOT_TEST_TRANSIENT_FILES {
+        filesystem.delete_file(&mut device, leftover)?;
+    }
     let mut stored = [0; 512];
     match filesystem.read_file(&mut device, BOOT_JSON_NAME, &mut stored) {
         Ok(length) => {

@@ -385,16 +385,26 @@ def run(request):
 
 
 def main(argv):
-    """Task entrypoint. The kernel has no argv, so the default input is the
-    bundled SAMPLE.JSON; the ledger-only output (no sequences) is printed
-    unless --with-records is given."""
+    """Task entrypoint. The kernel passes no arguments, so the default input
+    is the bundled SAMPLE.JSON; the ledger-only output (no sequences) is
+    printed unless --with-records is given. `--output PATH` also writes the
+    output to PATH; on the Network OS it defaults to RESULT.OUT, the
+    workflow's declared output file."""
     path = "SAMPLE.JSON"
     with_records = False
-    for arg in argv[1:]:
+    output_path = "RESULT.OUT" if sys.platform == "network-os" else None
+    args = argv[1:]
+    index = 0
+    while index < len(args):
+        arg = args[index]
         if arg == "--with-records":
             with_records = True
+        elif arg == "--output" and index + 1 < len(args):
+            index += 1
+            output_path = args[index]
         else:
             path = arg
+        index += 1
     # Read in small chunks: MicroPython preallocates the whole buffer for
     # read(n), which exhausts a small task heap.
     chunks = []
@@ -420,7 +430,11 @@ def main(argv):
             "ledger": result["ledger"],
             "disclaimer": DISCLAIMER,
         }
-    print(canonical_json(result))
+    text = canonical_json(result)
+    print(text)
+    if output_path is not None:
+        with open(output_path, "w") as output:
+            output.write(text)
     return 0 if result["ledger"]["verified"] else 1
 
 

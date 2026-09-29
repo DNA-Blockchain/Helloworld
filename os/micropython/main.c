@@ -23,6 +23,7 @@
 #define SYS_EXIT             (1)
 #define SYS_READ_FILE        (2)
 #define SYS_WRITE            (3)
+#define SYS_WRITE_FILE       (13)
 #define SYS_TASK_ENTRYPOINT  (14)
 #define SYS_WRITE_MAX        (4096)
 #define R_X86_64_RELATIVE    (8)
@@ -104,9 +105,150 @@ static int run_script(const char *name, size_t length) {
         nlr_pop();
         return 0;
     }
-    mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(nlr.ret_val));
+    mp_obj_t exception = MP_OBJ_FROM_PTR(nlr.ret_val);
+    if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(mp_obj_get_type(exception)),
+        MP_OBJ_FROM_PTR(&mp_type_SystemExit))) {
+        // sys.exit(n) exits with n; sys.exit() exits 0; sys.exit("why")
+        // prints the message and exits 1, as CPython does.
+        mp_obj_t code = mp_obj_exception_get_value(exception);
+        mp_int_t status;
+        if (code == mp_const_none) {
+            return 0;
+        }
+        if (mp_obj_get_int_maybe(code, &status)) {
+            return (int)status;
+        }
+        mp_obj_print_helper(&mp_plat_print, code, PRINT_STR);
+        mp_print_str(&mp_plat_print, "\n");
+        return EXIT_UNCAUGHT_EXCEPTION;
+    }
+    mp_obj_print_exception(&mp_plat_print, exception);
     return EXIT_UNCAUGHT_EXCEPTION;
 }
+
+// open() for task scripts. Read modes load the whole file through syscall 2
+// (so the kernel's input-file policy applies); write modes buffer in memory
+// and store the file through syscall 13 on close (so only declared .OUT
+// outputs can be written).
+typedef struct {
+    mp_obj_base_t base;
+    vstr_t data;
+    size_t position;
+    bool binary;
+    bool writing;
+    bool closed;
+    char name[NAME_CAPACITY];
+} task_file_obj_t;
+
+static task_file_obj_t *task_file_open(mp_obj_t self_in) {
+    task_file_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (self->closed) {
+        mp_raise_ValueError(MP_ERROR_TEXT("I/O operation on closed file"));
+    }
+    return self;
+}
+
+static mp_obj_t task_file_read(size_t n_args, const mp_obj_t *args) {
+    task_file_obj_t *self = task_file_open(args[0]);
+    if (self->writing) {
+        mp_raise_OSError(MP_EBADF);
+    }
+    size_t count = self->data.len - self->position;
+    if (n_args > 1 && args[1] != mp_const_none) {
+        mp_int_t requested = mp_obj_get_int(args[1]);
+        if (requested >= 0 && (size_t)requested < count) {
+            count = (size_t)requested;
+        }
+    }
+    const char *start = self->data.buf + self->position;
+    self->position += count;
+    if (self->binary) {
+        return mp_obj_new_bytes((const byte *)start, count);
+    }
+    return mp_obj_new_str(start, count);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(task_file_read_obj, 1, 2, task_file_read);
+
+static mp_obj_t task_file_write(mp_obj_t self_in, mp_obj_t data) {
+    task_file_obj_t *self = task_file_open(self_in);
+    if (!self->writing) {
+        mp_raise_OSError(MP_EBADF);
+    }
+    mp_buffer_info_t buffer;
+    mp_get_buffer_raise(data, &buffer, MP_BUFFER_READ);
+    vstr_add_strn(&self->data, buffer.buf, buffer.len);
+    return MP_OBJ_NEW_SMALL_INT(buffer.len);
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(task_file_write_obj, task_file_write);
+
+static mp_obj_t task_file_close(mp_obj_t self_in) {
+    task_file_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (self->closed) {
+        return mp_const_none;
+    }
+    self->closed = true;
+    if (self->writing
+        && syscall3(SYS_WRITE_FILE, (long)self->name, (long)self->data.buf, (long)self->data.len) < 0) {
+        mp_raise_OSError(MP_EIO);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(task_file_close_obj, task_file_close);
+
+static mp_obj_t task_file_enter(mp_obj_t self_in) {
+    return self_in;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(task_file_enter_obj, task_file_enter);
+
+static mp_obj_t task_file_exit(size_t n_args, const mp_obj_t *args) {
+    (void)n_args;
+    return task_file_close(args[0]);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(task_file_exit_obj, 4, 4, task_file_exit);
+
+static const mp_rom_map_elem_t task_file_locals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&task_file_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&task_file_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&task_file_close_obj) },
+    { MP_ROM_QSTR(MP_QSTR___enter__), MP_ROM_PTR(&task_file_enter_obj) },
+    { MP_ROM_QSTR(MP_QSTR___exit__), MP_ROM_PTR(&task_file_exit_obj) },
+};
+static MP_DEFINE_CONST_DICT(task_file_locals, task_file_locals_table);
+
+static MP_DEFINE_CONST_OBJ_TYPE(
+    task_file_type,
+    MP_QSTR_TaskFile,
+    MP_TYPE_FLAG_NONE,
+    locals_dict, &task_file_locals
+    );
+
+mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+    (void)kwargs;
+    const char *name = mp_obj_str_get_str(args[0]);
+    const char *mode = n_args > 1 ? mp_obj_str_get_str(args[1]) : "r";
+    size_t name_length = strlen(name);
+    if (name_length == 0 || name_length >= NAME_CAPACITY) {
+        mp_raise_OSError(MP_ENOENT);
+    }
+    task_file_obj_t *self = mp_obj_malloc(task_file_obj_t, &task_file_type);
+    memcpy(self->name, name, name_length + 1);
+    self->position = 0;
+    self->closed = false;
+    self->binary = strchr(mode, 'b') != NULL;
+    self->writing = strchr(mode, 'w') != NULL;
+    if (self->writing) {
+        vstr_init(&self->data, 256);
+        return MP_OBJ_FROM_PTR(self);
+    }
+    vstr_init(&self->data, SCRIPT_CAPACITY);
+    long length = syscall3(SYS_READ_FILE, (long)self->name, (long)self->data.buf, SCRIPT_CAPACITY);
+    if (length < 0) {
+        mp_raise_OSError(MP_ENOENT);
+    }
+    self->data.len = (size_t)length;
+    return MP_OBJ_FROM_PTR(self);
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 static MP_NORETURN void network_os_main(void) {
     char name[NAME_CAPACITY];
@@ -124,6 +266,7 @@ static MP_NORETURN void network_os_main(void) {
     mp_stack_set_limit(STACK_BYTES - 8 * 1024);
     gc_init(heap, heap + sizeof(heap));
     mp_init();
+    mp_obj_list_append(mp_sys_argv, mp_obj_new_str(name, (size_t)name_length));
     int status = run_script(name, (size_t)length);
     mp_deinit();
     task_exit(status);

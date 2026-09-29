@@ -36,6 +36,12 @@ SRC_C = \
 	shared/libc/abort_.c \
 	shared/runtime/stdout_helpers.c \
 	shared/runtime/gchelper_generic.c \
+	extmod/modjson.c \
+	extmod/modhashlib.c \
+	extmod/modbinascii.c \
+
+# Scan the port and the extra modules for qstrs and module registrations.
+SRC_QSTR += main.c extmod/modjson.c extmod/modhashlib.c extmod/modbinascii.c
 
 OBJ += $(PY_CORE_O)
 OBJ += $(addprefix $(BUILD)/, $(SRC_C:.c=.o))

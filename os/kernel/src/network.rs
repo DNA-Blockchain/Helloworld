@@ -358,6 +358,11 @@ pub(crate) fn run(
 NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked manifests; output file written and read by a dependent block; undeclared read and write denied; missing output failed; runtime limit stopped a spinning task; MicroPython tasks ran in ring 3 and an uncaught exception failed its block; tampered and network-requesting tasks refused; dependent block skipped.",
         workflow_report.executed
     );
+    let _ = writeln!(
+        Serial,
+        "Remission bundle verified in ring-3 MicroPython: MODELED_REFERENCE_MATCH, ledger verified, NOT_CLINICALLY_CONFIRMED; {}-byte RESULT.OUT written.",
+        workflow_report.remission_result_bytes
+    );
     if user_dns_verified {
         let _ = writeln!(
             Serial,

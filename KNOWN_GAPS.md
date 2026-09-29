@@ -82,9 +82,10 @@ confident-looking file imply more than it's actually verified.
   address supervisor memory. The Python research agent remains a host
   application; running it on this OS requires an isolated user-space runtime,
   broader filesystem API, and network syscalls. It must not run as privileged
-  kernel code. A minimum-configuration MicroPython runs ring-3 workflow
-  scripts, but without `json`, `hashlib`, `binascii`, floats, imports or file
-  objects, so the research agent and `remission_core.py` cannot run there yet.
+  kernel code. A ring-3 MicroPython (core features plus `json`,
+  `hashlib.sha256`, `binascii`, `sys` and whole-file `open()`) runs workflow
+  scripts, including the remission bundle; it has no floats, imports of other
+  files or network access, so the full research agent cannot run there.
   The workflow dispatcher can execute static ELF tasks from digest-checked
   manifests, one at a time and synchronously, restricting reads to each
   block's declared inputs, writes to its declared `.OUT` outputs, denying

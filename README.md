@@ -421,9 +421,12 @@ The same file is packaged for the Network OS as a MicroPython task bundle
 in `os/tasks/remission/` (`REMISSION.PY`, `SAMPLE.JSON`, `RMTASK.JSON`,
 `RMFLOW.JSON`, following `os/schemas/`). Regenerate it after editing
 `remission_core.py` with `python build_remission_bundle.py`; the tests fail
-if it is stale. The kernel can validate these manifests today but cannot
-run MicroPython yet; the bundle runs under the WSL MicroPython Unix port
-with a 1-MiB heap.
+if it is stale. The kernel embeds this bundle and runs it at every boot check:
+`REMISSION.PY` executes in its ring-3 MicroPython runtime, reads the declared
+`SAMPLE.JSON` input, and writes the declared `RESULT.OUT` output (on the OS,
+`main()` writes `RESULT.OUT`; elsewhere pass `--output PATH`). The ledger it
+produces there is byte-identical to CPython's. The bundle also runs under the
+WSL MicroPython Unix port.
 
 ## Running the tests
 

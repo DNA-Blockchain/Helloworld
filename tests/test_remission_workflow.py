@@ -122,6 +122,19 @@ def test_task_entrypoint_prints_ledger_only(tmp_path, monkeypatch, capsys):
     assert "records" not in output and "ACGT" not in json.dumps(output)
 
 
+def test_task_entrypoint_writes_declared_output(tmp_path, monkeypatch, capsys):
+    (tmp_path / "SAMPLE.JSON").write_text(json.dumps(remission_workflow.DEMO_REQUEST))
+    monkeypatch.chdir(tmp_path)
+    assert remission_core.main(["REMISSION.PY", "--output", "COPY.OUT"]) == 0
+    assert json.loads((tmp_path / "COPY.OUT").read_text()) == json.loads(capsys.readouterr().out)
+
+    monkeypatch.setattr(remission_core.sys, "platform", "network-os")
+    assert remission_core.main(["REMISSION.PY"]) == 0
+    written = json.loads((tmp_path / "RESULT.OUT").read_text())
+    assert written["modeled_status"] == remission_core.MODELED_REFERENCE_MATCH
+    assert written["ledger"]["verified"] is True
+
+
 def test_host_report_and_vault(tmp_path, monkeypatch, capsys):
     pytest.importorskip("cryptography")
     monkeypatch.setenv(remission_workflow.PASSPHRASE_ENV, "test-passphrase")
