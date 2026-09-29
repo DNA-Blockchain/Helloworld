@@ -16,6 +16,7 @@ mod storage;
 mod syscall;
 mod task;
 mod task_bundle;
+mod task_programs;
 mod telemetry;
 mod timer;
 mod virtual_memory;

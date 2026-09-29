@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::{
     cell::UnsafeCell,
     mem::size_of,
@@ -17,6 +18,7 @@ const SYSCALL_UDP_BIND: u64 = 9;
 const SYSCALL_UDP_SEND: u64 = 10;
 const SYSCALL_UDP_RECEIVE: u64 = 11;
 const SYSCALL_UDP_CLOSE: u64 = 12;
+const SYSCALL_WRITE_FILE: u64 = 13;
 const SYSCALL_ERROR: u64 = u64::MAX - 1;
 const MAX_FILENAME_BYTES: usize = 16;
 const MAX_WRITE_BYTES: usize = 4096;
@@ -25,7 +27,8 @@ const MAX_DNS_NAME_BYTES: usize = 253;
 const MAX_SOCKET_IO_BYTES: usize = 1024;
 const EXIT_NOT_CALLED: u64 = u64::MAX;
 const EXIT_SYSCALL_RETURN: u64 = u64::MAX;
-const MAX_TASK_READABLE_FILES: usize = 8;
+const MAX_TASK_FILES: usize = 8;
+const MAX_TASK_OUTPUT_BYTES: usize = 16 * 1024;
 
 struct StaticGdt(UnsafeCell<[u64; 7]>);
 struct StaticTss(UnsafeCell<[u8; 104]>);
@@ -33,11 +36,53 @@ struct StaticTss(UnsafeCell<[u8; 104]>);
 unsafe impl Sync for StaticGdt {}
 unsafe impl Sync for StaticTss {}
 
-/// Files a workflow task may read. Only consulted while TASK_POLICY_ACTIVE.
-struct TaskPolicy {
-    names: [[u8; MAX_FILENAME_BYTES]; MAX_TASK_READABLE_FILES],
-    lengths: [usize; MAX_TASK_READABLE_FILES],
+struct FileList {
+    names: [[u8; MAX_FILENAME_BYTES]; MAX_TASK_FILES],
+    lengths: [usize; MAX_TASK_FILES],
     count: usize,
+}
+
+impl FileList {
+    const EMPTY: Self = Self {
+        names: [[0; MAX_FILENAME_BYTES]; MAX_TASK_FILES],
+        lengths: [0; MAX_TASK_FILES],
+        count: 0,
+    };
+
+    fn set(&mut self, names: &[&str]) -> Result<(), &'static str> {
+        if names.len() > MAX_TASK_FILES {
+            return Err("workflow task declares too many files");
+        }
+        self.count = 0;
+        for name in names {
+            let bytes = name.as_bytes();
+            if bytes.is_empty() || bytes.len() >= MAX_FILENAME_BYTES {
+                return Err("workflow task file name is outside its bounds");
+            }
+            self.names[self.count] = [0; MAX_FILENAME_BYTES];
+            self.names[self.count][..bytes.len()].copy_from_slice(bytes);
+            self.lengths[self.count] = bytes.len();
+            self.count += 1;
+        }
+        Ok(())
+    }
+
+    fn position(&self, name: &str) -> Option<usize> {
+        (0..self.count).find(|index| &self.names[*index][..self.lengths[*index]] == name.as_bytes())
+    }
+}
+
+/// What the running workflow task may touch. Only consulted while
+/// TASK_POLICY_ACTIVE; `written` records which outputs were written.
+struct TaskPolicy {
+    readable: FileList,
+    writable: FileList,
+    written: u8,
+}
+
+pub(crate) struct TaskRunResult {
+    pub(crate) exit_code: u64,
+    pub(crate) outputs_written: bool,
 }
 
 struct StaticTaskPolicy(UnsafeCell<TaskPolicy>);
@@ -62,11 +107,13 @@ static OBSERVED_PAGE_FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
 static USER_EXCEPTION_VECTOR: AtomicU64 = AtomicU64::new(0);
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TASK_POLICY: StaticTaskPolicy = StaticTaskPolicy(UnsafeCell::new(TaskPolicy {
-    names: [[0; MAX_FILENAME_BYTES]; MAX_TASK_READABLE_FILES],
-    lengths: [0; MAX_TASK_READABLE_FILES],
-    count: 0,
+    readable: FileList::EMPTY,
+    writable: FileList::EMPTY,
+    written: 0,
 }));
 static TASK_POLICY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static TASK_DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
+static USER_TIMED_OUT: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 static mut USER_TEST_RESUME_RSP: usize = 0;
@@ -244,11 +291,15 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
     EXIT_CODE.store(EXIT_NOT_CALLED, Ordering::Relaxed);
     USER_PAGE_FAULTED.store(false, Ordering::Relaxed);
     USER_EXCEPTION_VECTOR.store(0, Ordering::Relaxed);
+    USER_TIMED_OUT.store(false, Ordering::Relaxed);
     USER_MODE_ACTIVE.store(true, Ordering::Release);
     unsafe {
         enter_user_mode(entry, user_stack);
     }
     USER_MODE_ACTIVE.store(false, Ordering::Release);
+    if USER_TIMED_OUT.swap(false, Ordering::AcqRel) {
+        return Err("ring-3 task exceeded its runtime limit");
+    }
     if USER_PAGE_FAULTED.swap(false, Ordering::AcqRel) {
         return Err("ring-3 process terminated after an unhandled user page fault");
     }
@@ -264,33 +315,53 @@ pub(crate) fn verify_user_exit(entry: usize, user_stack: usize) -> Result<u64, &
 }
 
 /// Runs a workflow task in ring 3 under a restricted policy: the read-file
-/// syscall only accepts the listed files, and every network syscall fails.
+/// syscall only accepts `readable_files`, the write-file syscall only
+/// `writable_files`, every network syscall fails, and the timer interrupt
+/// stops the task once `runtime_seconds` have elapsed.
 pub(crate) fn run_task_with_policy(
     entry: usize,
     user_stack: usize,
     readable_files: &[&str],
-) -> Result<u64, &'static str> {
-    if readable_files.len() > MAX_TASK_READABLE_FILES {
-        return Err("workflow task declares too many readable files");
-    }
+    writable_files: &[&str],
+    runtime_seconds: u64,
+) -> Result<TaskRunResult, &'static str> {
     if TASK_POLICY_ACTIVE.load(Ordering::Acquire) {
         return Err("a workflow task policy is already active");
     }
-    let policy = unsafe { &mut *TASK_POLICY.0.get() };
-    policy.count = 0;
-    for name in readable_files {
-        let bytes = name.as_bytes();
-        if bytes.is_empty() || bytes.len() >= MAX_FILENAME_BYTES {
-            return Err("workflow task readable file name is outside its bounds");
-        }
-        policy.names[policy.count][..bytes.len()].copy_from_slice(bytes);
-        policy.lengths[policy.count] = bytes.len();
-        policy.count += 1;
+    if runtime_seconds == 0 {
+        return Err("workflow task runtime limit must be positive");
     }
+    let policy = unsafe { &mut *TASK_POLICY.0.get() };
+    policy.readable.set(readable_files)?;
+    policy.writable.set(writable_files)?;
+    policy.written = 0;
+    let deadline =
+        super::timer::milliseconds().saturating_add(runtime_seconds.saturating_mul(1_000));
+    TASK_DEADLINE_MS.store(deadline, Ordering::Release);
     TASK_POLICY_ACTIVE.store(true, Ordering::Release);
     let result = verify_user_exit(entry, user_stack);
     TASK_POLICY_ACTIVE.store(false, Ordering::Release);
-    result
+    TASK_DEADLINE_MS.store(0, Ordering::Release);
+    let all_outputs = ((1u16 << policy.writable.count) - 1) as u8;
+    Ok(TaskRunResult {
+        exit_code: result?,
+        outputs_written: policy.written == all_outputs,
+    })
+}
+
+/// Called on every timer tick. Abandons a ring-3 workflow task that is past
+/// its deadline, returning to the harness exactly like a user page fault.
+pub(crate) fn user_timer_tick(code_segment: u64) {
+    let deadline = TASK_DEADLINE_MS.load(Ordering::Acquire);
+    if code_segment & 0b11 != 0b11 || deadline == 0 || super::timer::milliseconds() < deadline {
+        return;
+    }
+    if USER_MODE_ACTIVE.swap(false, Ordering::AcqRel) {
+        USER_TIMED_OUT.store(true, Ordering::Release);
+        unsafe {
+            user_test_resume();
+        }
+    }
 }
 
 fn task_may_read(filename: &str) -> bool {
@@ -298,8 +369,22 @@ fn task_may_read(filename: &str) -> bool {
         return true;
     }
     let policy = unsafe { &*TASK_POLICY.0.get() };
-    (0..policy.count)
-        .any(|index| &policy.names[index][..policy.lengths[index]] == filename.as_bytes())
+    policy.readable.position(filename).is_some()
+}
+
+fn copy_user_filename(pointer: u64, buffer: &mut [u8; MAX_FILENAME_BYTES]) -> Option<&str> {
+    let mut length = None;
+    for index in 0..MAX_FILENAME_BYTES {
+        let address = pointer.checked_add(index as u64)?;
+        super::address_space::copy_from_user(address, core::slice::from_mut(&mut buffer[index]))
+            .ok()?;
+        if buffer[index] == 0 {
+            length = Some(index);
+            break;
+        }
+    }
+    let name = core::str::from_utf8(&buffer[..length?]).ok()?;
+    (!name.is_empty()).then_some(name)
 }
 
 pub(crate) fn verify_user_exception(
@@ -394,33 +479,51 @@ extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argu
         if super::address_space::validate_user_buffer(argument2, capacity, true).is_err() {
             return SYSCALL_ERROR;
         }
-        let mut filename = [0; MAX_FILENAME_BYTES];
-        let mut filename_length = None;
-        for (index, byte) in filename.iter_mut().enumerate() {
-            let Some(address) = argument1.checked_add(index as u64) else {
-                return SYSCALL_ERROR;
-            };
-            if super::address_space::copy_from_user(address, core::slice::from_mut(byte)).is_err() {
-                return SYSCALL_ERROR;
-            }
-            if *byte == 0 {
-                filename_length = Some(index);
-                break;
-            }
-        }
-        let Some(filename_length) = filename_length else {
+        let mut filename_buffer = [0; MAX_FILENAME_BYTES];
+        let Some(filename) = copy_user_filename(argument1, &mut filename_buffer) else {
             return SYSCALL_ERROR;
         };
-        let Ok(filename) = core::str::from_utf8(&filename[..filename_length]) else {
-            return SYSCALL_ERROR;
-        };
-        if filename.is_empty() || !task_may_read(filename) {
+        if !task_may_read(filename) {
             return SYSCALL_ERROR;
         }
         let output = unsafe { core::slice::from_raw_parts_mut(argument2 as *mut u8, capacity) };
         return super::storage::read_named_file(filename, output)
             .map(|length| length as u64)
             .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_WRITE_FILE {
+        if !TASK_POLICY_ACTIVE.load(Ordering::Acquire) {
+            return SYSCALL_ERROR;
+        }
+        let Ok(length) = usize::try_from(argument3) else {
+            return SYSCALL_ERROR;
+        };
+        if length == 0
+            || length > MAX_TASK_OUTPUT_BYTES
+            || super::address_space::validate_user_buffer(argument2, length, false).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        let mut filename_buffer = [0; MAX_FILENAME_BYTES];
+        let Some(filename) = copy_user_filename(argument1, &mut filename_buffer) else {
+            return SYSCALL_ERROR;
+        };
+        let policy = unsafe { &mut *TASK_POLICY.0.get() };
+        let Some(index) = policy.writable.position(filename) else {
+            return SYSCALL_ERROR;
+        };
+        let mut contents = Vec::new();
+        if contents.try_reserve_exact(length).is_err() {
+            return SYSCALL_ERROR;
+        }
+        contents.resize(length, 0);
+        if super::address_space::copy_from_user(argument2, &mut contents).is_err()
+            || super::storage::write_named_file(filename, &contents).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        policy.written |= 1 << index;
+        return length as u64;
     }
     if number == SYSCALL_WRITE {
         let Ok(length) = usize::try_from(argument2) else {

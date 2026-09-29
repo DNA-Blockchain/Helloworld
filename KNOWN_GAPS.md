@@ -83,10 +83,12 @@ confident-looking file imply more than it's actually verified.
   broader filesystem API, and network syscalls. It must not run as privileged
   kernel code. MicroPython has not yet been ported or run in the guest. The
   workflow dispatcher can execute static ELF tasks from digest-checked
-  manifests, one at a time and synchronously, restricting file reads to each
-  block's declared inputs and denying network syscalls; it does not enforce
-  `runtimeSeconds`/`memoryBytes`, let tasks write output files, or keep a
-  persistent run log, and MicroPython tasks are refused.
+  manifests, one at a time and synchronously, restricting reads to each
+  block's declared inputs, writes to its declared `.OUT` outputs, denying
+  network syscalls, and stopping tasks at their `runtimeSeconds` limit. It does
+  not enforce `memoryBytes` or keep a persistent run log, and MicroPython tasks
+  are refused. NOSFS can now delete files, but its root directory still holds
+  only 16 entries.
   The driver only supports the
   QEMU 82540EM model; the
   kernel does not run the Python research application and is not a

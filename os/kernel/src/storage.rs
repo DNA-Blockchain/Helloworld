@@ -1,6 +1,5 @@
 use super::block_device::{BlockDevice, SECTOR_SIZE, Sector};
 use crate::{port_read, port_read_u16, port_write, port_write_u16};
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const IO_BASE: u16 = 0x170;
@@ -31,7 +30,7 @@ const RUNTIME_TEST_SIZE: usize = 24 * 1024;
 const TASK_MANIFEST_NAME: &str = "TASK.MF";
 const TASK_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.task-bundle.v1","taskId":"offline-smoke","runtime":"micropython","entrypoint":"TASK.PY","files":[{"name":"TASK.PY","role":"python","sizeBytes":32,"sha256":"eb6cbf91a38220fe9ab3bcb02dd0ae95b938e08ee1b7a54686244b9ddeb2d94c"},{"name":"INPUT.JSON","role":"json","sizeBytes":20,"sha256":"1ae0badf27f751acdba98773e30e45d08351ee156bdf97c99e888add3fd5e790"}],"capabilities":{"network":{"dns":false,"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}},"limits":{"memoryBytes":65536,"runtimeSeconds":5}}"#;
 const WORKFLOW_MANIFEST_NAME: &str = "FLOW.MF";
-const WORKFLOW_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"offline-smoke","failurePolicy":"stop","blocks":[{"blockId":"inspect-input","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":["INPUT.JSON"],"outputFiles":["OUTPUT.JSON"]},{"blockId":"summarize-input","taskManifest":"TASK.MF","dependsOn":["inspect-input"],"inputFiles":["INPUT.JSON"],"outputFiles":["SUMMARY.JSON"]}]}"#;
+const WORKFLOW_MANIFEST: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"offline-smoke","failurePolicy":"stop","blocks":[{"blockId":"inspect-input","taskManifest":"TASK.MF","dependsOn":[],"inputFiles":["INPUT.JSON"],"outputFiles":["OUTPUT.OUT"]},{"blockId":"summarize-input","taskManifest":"TASK.MF","dependsOn":["inspect-input"],"inputFiles":["INPUT.JSON"],"outputFiles":["SUMMARY.OUT"]}]}"#;
 const TASK_PYTHON_NAME: &str = "TASK.PY";
 const TASK_PYTHON: &[u8] = b"print(\"task bundle smoke test\")\n";
 const TASK_INPUT_NAME: &str = "INPUT.JSON";
@@ -40,36 +39,6 @@ const ELF_TASK_NAME: &str = "INSPECT.ELF";
 const ELF_TASK_MANIFEST_NAME: &str = "INSPECT.MF";
 const ELF_WORKFLOW_NAME: &str = "RUN.MF";
 const ELF_WORKFLOW: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"elf-run","failurePolicy":"stop","blocks":[{"blockId":"inspect","taskManifest":"INSPECT.MF","dependsOn":[],"inputFiles":["INPUT.JSON"],"outputFiles":[]},{"blockId":"inspect-again","taskManifest":"INSPECT.MF","dependsOn":["inspect"],"inputFiles":["INPUT.JSON"],"outputFiles":[]}]}"#;
-// Position-independent ring-3 task: reads INPUT.JSON (syscall 2) into a
-// 1-KiB stack buffer, echoes it to stdout (syscall 3) and exits 0; exits 1
-// if either call fails or the file is empty.
-const INSPECT_TASK_CODE: [u8; 95] = [
-    0x48, 0x81, 0xec, 0x00, 0x04, 0x00, 0x00, // sub rsp, 0x400
-    0x48, 0x8d, 0x3d, 0x46, 0x00, 0x00, 0x00, // lea rdi, [rip + filename]
-    0x48, 0x89, 0xe6, // mov rsi, rsp
-    0xba, 0x00, 0x04, 0x00, 0x00, // mov edx, 0x400
-    0xb8, 0x02, 0x00, 0x00, 0x00, // mov eax, 2 (read file)
-    0xcd, 0x80, // int 0x80
-    0x48, 0x83, 0xf8, 0xfe, // cmp rax, -2
-    0x74, 0x23, // je fail
-    0x48, 0x85, 0xc0, // test rax, rax
-    0x74, 0x1e, // je fail
-    0x48, 0x89, 0xc6, // mov rsi, rax
-    0x48, 0x89, 0xe7, // mov rdi, rsp
-    0xb8, 0x03, 0x00, 0x00, 0x00, // mov eax, 3 (stdout)
-    0xcd, 0x80, // int 0x80
-    0x48, 0x83, 0xf8, 0xfe, // cmp rax, -2
-    0x74, 0x0b, // je fail
-    0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1 (exit)
-    0x31, 0xff, // xor edi, edi
-    0xcd, 0x80, // int 0x80
-    0x0f, 0x0b, // ud2
-    0xb8, 0x01, 0x00, 0x00, 0x00, // fail: mov eax, 1 (exit)
-    0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
-    0xcd, 0x80, // int 0x80
-    0x0f, 0x0b, // ud2
-    b'I', b'N', b'P', b'U', b'T', b'.', b'J', b'S', b'O', b'N', 0, // filename
-];
 const TEST_ELF_CODE: [u8; 14] = [
     0xb8, 0x01, 0x00, 0x00, 0x00, 0xbf, 0x2a, 0x00, 0x00, 0x00, 0xcd, 0x80, 0x0f, 0x0b,
 ];
@@ -182,6 +151,18 @@ pub(crate) fn verify_filesystem_record() -> Result<(), &'static str> {
         return Err("filesystem runtime-sized file failed read-after-write verification");
     }
 
+    let mut missing = [0; 1];
+    for scratch in [UPDATE_NAME, RUNTIME_TEST_NAME] {
+        if !filesystem.delete_file(&mut device, scratch)? {
+            return Err("filesystem scratch file was missing before deletion");
+        }
+        if filesystem.read_file(&mut device, scratch, &mut missing)
+            != Err("filesystem file does not exist")
+        {
+            return Err("filesystem delete left the file readable");
+        }
+    }
+
     let test_elf = create_test_elf();
     filesystem.write_file(&mut device, TEST_ELF_NAME, &test_elf)?;
     let mut stored_elf = [0; TEST_ELF_SIZE];
@@ -223,9 +204,14 @@ pub(crate) fn verify_task_bundle() -> Result<(), &'static str> {
         &[TASK_PYTHON_NAME, TASK_INPUT_NAME],
     )?;
 
-    let inspect_elf = build_static_elf(&INSPECT_TASK_CODE);
-    let inspect_manifest =
-        super::task_bundle::elf_task_manifest("inspect-input", ELF_TASK_NAME, &inspect_elf, false);
+    let inspect_elf = super::task_programs::copy_program(TASK_INPUT_NAME, None);
+    let inspect_manifest = super::task_bundle::elf_task_manifest(
+        "inspect-input",
+        ELF_TASK_NAME,
+        &inspect_elf,
+        false,
+        5,
+    );
     filesystem.write_file(&mut device, ELF_TASK_NAME, &inspect_elf)?;
     filesystem.write_file(
         &mut device,
@@ -257,43 +243,21 @@ pub(crate) fn verify_task_bundle() -> Result<(), &'static str> {
 /// Runs the stored ELF workflow and the mixed success/failure/refusal
 /// workflow. `run_elf` executes one task image in ring 3.
 pub(crate) fn verify_workflow_execution(
-    run_elf: impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
+    run_elf: impl FnMut(
+        &[u8],
+        &super::task_bundle::TaskGrant,
+    ) -> Result<super::syscall::TaskRunResult, &'static str>,
 ) -> Result<super::task_bundle::WorkflowExecutionReport, &'static str> {
     let mut workflow = [0; 4096];
     let length = read_named_file(ELF_WORKFLOW_NAME, &mut workflow)?;
     super::task_bundle::verify_workflow_execution(
         &workflow[..length],
         ELF_TASK_MANIFEST_NAME,
-        ELF_TASK_NAME,
         TASK_MANIFEST_NAME,
         TASK_INPUT_NAME,
         read_named_file,
         run_elf,
     )
-}
-
-fn build_static_elf(code: &[u8]) -> Vec<u8> {
-    let mut image = Vec::new();
-    image.resize(120 + code.len(), 0);
-    image[..7].copy_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1]);
-    write_u16(&mut image, 16, 3);
-    write_u16(&mut image, 18, 62);
-    write_u32(&mut image, 20, 1);
-    write_u64(&mut image, 24, 0);
-    write_u64(&mut image, 32, 64);
-    write_u16(&mut image, 52, 64);
-    write_u16(&mut image, 54, 56);
-    write_u16(&mut image, 56, 1);
-
-    write_u32(&mut image, 64, 1);
-    write_u32(&mut image, 68, 5);
-    write_u64(&mut image, 72, 120);
-    write_u64(&mut image, 80, 0);
-    write_u64(&mut image, 96, code.len() as u64);
-    write_u64(&mut image, 104, code.len() as u64);
-    write_u64(&mut image, 112, 1);
-    image[120..].copy_from_slice(code);
-    image
 }
 
 pub(crate) fn read_test_elf(output: &mut [u8]) -> Result<usize, &'static str> {

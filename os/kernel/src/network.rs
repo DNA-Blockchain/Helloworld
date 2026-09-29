@@ -350,7 +350,7 @@ pub(crate) fn run(
     let _ = writeln!(
         Serial,
         "
-NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked manifests; undeclared input read failed; tampered, network-requesting and MicroPython tasks refused; dependent block skipped.",
+NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked manifests; output file written and read by a dependent block; undeclared read and write denied; missing output failed; runtime limit stopped a spinning task; tampered, network-requesting and MicroPython tasks refused; dependent block skipped.",
         workflow_report.executed
     );
     if user_dns_verified {

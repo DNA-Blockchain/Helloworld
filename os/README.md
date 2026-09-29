@@ -158,8 +158,15 @@ this kernel.
   static ELF in its own CR3 address space in ring 3. Exit status 0 marks the
   block `Succeeded`; any other status, fault, or refusal marks it `Failed`, and
   the failure policy then skips or preserves dependent work. While a task
-  runs, the read-file syscall accepts only the block's declared `inputFiles`
-  and every network syscall (4-12) fails. Tasks whose manifest requests any
+  runs, the read-file syscall accepts only the block's declared `inputFiles`,
+  syscall 13 (write-file: `RDI` = filename, `RSI` = readable buffer, `RDX` =
+  length, at most 16 KiB) accepts only its declared `outputFiles`, and every
+  network syscall (4-12) fails. A block succeeds only if it exits 0 and wrote
+  every declared output. Output names must end in `.OUT`, so a task cannot
+  overwrite manifests, programs, or system files, and a block may read an
+  output of a block it directly depends on. The PIT interrupt stops a task
+  that runs past its manifest's `runtimeSeconds` and returns to the kernel
+  the same way an unhandled user page fault does. Tasks whose manifest requests any
   network capability, or that need the `micropython` runtime, are refused
   rather than run. The boot test stores `INSPECT.ELF`, its `INSPECT.MF`
   manifest, and a two-block `RUN.MF` workflow; both blocks read `INPUT.JSON`,
@@ -167,10 +174,15 @@ this kernel.
   checks that a MicroPython task, a tampered-digest task, and a
   network-requesting task are refused, that a task reading an undeclared file
   fails with exit 1, that a dependent of a failed block is skipped, and that an
-  independent block still succeeds. This is sequential, synchronous execution
-  inside the boot test context: there is no preemption, so declared
-  `runtimeSeconds` and `memoryBytes` limits are not enforced yet, tasks cannot
-  write `outputFiles`, and there is no persistent run log.
+  independent block still succeeds. A third workflow copies `INPUT.JSON` to
+  `COPY.OUT` in one block and reads it back in a dependent block, and checks
+  that an undeclared write fails, that exiting without a declared output
+  fails, and that a `jmp $` task is stopped by its 1-second limit. Its extra
+  programs and manifests are built in memory rather than stored, to save
+  root-directory slots; the boot test also deletes its `UPDATE.TEST` and
+  `RUNTIME.TEST` scratch files after verifying them. Tasks still run one at a
+  time inside the boot test context; `memoryBytes` is not enforced beyond the
+  loader's page cap, and there is no persistent run log.
   The names reflect current NOSFS constraints (15-byte flat filenames and
   256-KiB maximum file size); the 16-entry root directory is too small for a
   useful multi-task workflow alongside the current boot/test files. SHA-256
@@ -210,8 +222,8 @@ The guest can now dispatch workflow blocks that run static ELF tasks, but
 MicroPython tasks are refused because no MicroPython runtime exists in the
 guest. The current loader, 256-KiB per-file limit, and minimal read-only file
 syscall are not sufficient to load MicroPython. Before Python tasks can run,
-the OS needs a stable process ABI, a user-space runtime, bounded data handoff
-(including task output files), and enforced resource limits. Only approved code may be
+the OS needs a stable process ABI, a user-space runtime, and enforced memory
+limits. Only approved code may be
 executable; downloaded research records remain data, not code.
 
 The host research application has an optional local Ollama integration for

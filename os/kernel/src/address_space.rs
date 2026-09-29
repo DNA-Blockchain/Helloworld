@@ -711,10 +711,9 @@ pub(crate) fn verify_user_syscall() -> Result<UserSyscallReport, &'static str> {
         if process_exit != 42 {
             return Err("ELF process lifecycle returned an unexpected exit status");
         }
-        let workflow_report =
-            super::storage::verify_workflow_execution(|image, readable_files| {
-                run_elf_task(image, readable_files, elf_load_base, process_stack, &space)
-            })?;
+        let workflow_report = super::storage::verify_workflow_execution(|image, grant| {
+            run_elf_task(image, grant, elf_load_base, process_stack, &space)
+        })?;
         Ok((
             exit_code,
             user_dns_verified,
@@ -740,11 +739,11 @@ pub(crate) fn verify_user_syscall() -> Result<UserSyscallReport, &'static str> {
 /// task's pages whatever the outcome.
 fn run_elf_task(
     image: &[u8],
-    readable_files: &[&str],
+    grant: &super::task_bundle::TaskGrant,
     load_base: u64,
     stack_page: u64,
     caller: &AddressSpace,
-) -> Result<u64, &'static str> {
+) -> Result<super::syscall::TaskRunResult, &'static str> {
     let mut task_space = create()?;
     if let Err(error) = map_user_page(&mut task_space, stack_page) {
         destroy(&mut task_space)?;
@@ -754,7 +753,13 @@ fn run_elf_task(
         activate(&task_space)?;
         let loaded = super::elf::load(&mut task_space, image, load_base)?;
         let stack_top = (stack_page + PAGE_SIZE - 16) as usize;
-        super::syscall::run_task_with_policy(loaded.entry as usize, stack_top, readable_files)
+        super::syscall::run_task_with_policy(
+            loaded.entry as usize,
+            stack_top,
+            grant.readable,
+            grant.writable,
+            grant.runtime_seconds,
+        )
     })();
     activate(caller)?;
     destroy(&mut task_space)?;

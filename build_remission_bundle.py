@@ -65,7 +65,7 @@ def build() -> dict[str, bytes]:
             "taskManifest": "RMTASK.JSON",
             "dependsOn": [],
             "inputFiles": ["SAMPLE.JSON"],
-            "outputFiles": ["RESULT.JSON"],
+            "outputFiles": ["RESULT.OUT"],
         }],
     }
     return {

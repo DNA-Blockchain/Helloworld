@@ -68,11 +68,12 @@ static IDT: StaticIdt = StaticIdt(UnsafeCell::new([IdtEntry::MISSING; 256]));
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 #[unsafe(no_mangle)]
-extern "C" fn timer_interrupt_handler() {
+extern "C" fn timer_interrupt_handler(code_segment: u64) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     unsafe {
         port_write(PIC1_COMMAND, 0x20);
     }
+    crate::syscall::user_timer_tick(code_segment);
 }
 
 #[unsafe(no_mangle)]
@@ -159,6 +160,7 @@ core::arch::global_asm!(
     "push r14",
     "push r15",
     "mov r12, rsp",
+    "mov rdi, [r12 + 128]",
     "and rsp, -16",
     "sub rsp, 32",
     "call timer_interrupt_handler",

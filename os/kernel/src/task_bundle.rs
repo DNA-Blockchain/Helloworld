@@ -1,3 +1,4 @@
+use super::syscall::TaskRunResult;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -45,6 +46,7 @@ pub(crate) struct TaskManifestSummary {
     pub(crate) entrypoint_size: usize,
     pub(crate) entrypoint_sha256: [u8; 32],
     pub(crate) network_requested: bool,
+    pub(crate) runtime_seconds: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -353,7 +355,16 @@ pub(crate) fn verify_dispatcher_smoke(
 pub(crate) enum BlockOutcome {
     NotRun,
     Exited(u64),
+    /// The block was refused before running or stopped without a usable
+    /// exit (fault, runtime limit, missing declared output).
     Refused(&'static str),
+}
+
+/// What a running task is allowed to do.
+pub(crate) struct TaskGrant<'a> {
+    pub(crate) readable: &'a [&'a str],
+    pub(crate) writable: &'a [&'a str],
+    pub(crate) runtime_seconds: u64,
 }
 
 pub(crate) struct WorkflowRun {
@@ -376,18 +387,20 @@ impl WorkflowRun {
 }
 
 /// Runs every block in dependency order. A block succeeds only when its ELF
-/// entrypoint exits with status 0. Each block's manifest and file digests are
-/// re-validated immediately before it runs, the bytes handed to the loader are
-/// hashed again, and tasks that need an unavailable runtime or request network
-/// access are refused (recorded as failed) instead of run. `run_elf` receives
-/// the image and the block's declared input files, which are the only files
-/// the task may read.
+/// entrypoint exits with status 0 after writing every declared output file.
+/// Each block's manifest and file digests are re-validated immediately before
+/// it runs, the bytes handed to the loader are hashed again, and tasks that
+/// need an unavailable runtime or request network access are refused
+/// (recorded as failed) instead of run. `run_elf` receives the image and the
+/// block's grant: its declared input files are the only files it may read,
+/// its declared output files the only ones it may write, and the manifest's
+/// `runtimeSeconds` its time limit.
 pub(crate) fn execute_workflow(
     workflow_manifest: &[u8],
     available_task_manifests: &[&str],
     available_files: &[&str],
     mut read_file: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
-    mut run_elf: impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
+    mut run_elf: impl FnMut(&[u8], &TaskGrant) -> Result<TaskRunResult, &'static str>,
 ) -> Result<WorkflowRun, &'static str> {
     let mut dispatcher =
         WorkflowDispatcher::prepare(workflow_manifest, available_task_manifests, available_files)?;
@@ -403,23 +416,20 @@ pub(crate) fn execute_workflow(
                 .and_then(Value::as_str)
                 .ok_or("workflow block task manifest must be a string")?,
         );
-        let mut input_files = Vec::new();
-        for file in dispatcher
-            .block_field(index, "inputFiles")
-            .and_then(Value::as_array)
-            .ok_or("workflow input files must be an array")?
-        {
-            input_files.push(String::from(
-                file.as_str()
-                    .ok_or("workflow input file must be a filename")?,
-            ));
-        }
+        let input_files = block_file_names(&dispatcher, index, "inputFiles")?;
+        let output_files = block_file_names(&dispatcher, index, "outputFiles")?;
         let input_names: Vec<&str> = input_files.iter().map(String::as_str).collect();
-        outcomes[index] =
-            match run_block(&task_manifest, &input_names, &mut read_file, &mut run_elf) {
-                Ok(exit_code) => BlockOutcome::Exited(exit_code),
-                Err(reason) => BlockOutcome::Refused(reason),
-            };
+        let output_names: Vec<&str> = output_files.iter().map(String::as_str).collect();
+        outcomes[index] = match run_block(
+            &task_manifest,
+            &input_names,
+            &output_names,
+            &mut read_file,
+            &mut run_elf,
+        ) {
+            Ok(exit_code) => BlockOutcome::Exited(exit_code),
+            Err(reason) => BlockOutcome::Refused(reason),
+        };
         dispatcher.record_runtime_result(&block_id, outcomes[index] == BlockOutcome::Exited(0))?;
     }
     Ok(WorkflowRun {
@@ -428,11 +438,31 @@ pub(crate) fn execute_workflow(
     })
 }
 
+fn block_file_names(
+    dispatcher: &WorkflowDispatcher,
+    index: usize,
+    field: &str,
+) -> Result<Vec<String>, &'static str> {
+    let mut names = Vec::new();
+    for file in dispatcher
+        .block_field(index, field)
+        .and_then(Value::as_array)
+        .ok_or("workflow file references must be arrays")?
+    {
+        names.push(String::from(
+            file.as_str()
+                .ok_or("workflow file reference must be a filename")?,
+        ));
+    }
+    Ok(names)
+}
+
 fn run_block(
     task_manifest: &str,
     input_files: &[&str],
+    output_files: &[&str],
     read_file: &mut impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
-    run_elf: &mut impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
+    run_elf: &mut impl FnMut(&[u8], &TaskGrant) -> Result<TaskRunResult, &'static str>,
 ) -> Result<u64, &'static str> {
     let mut manifest = [0; MAX_MANIFEST_SIZE];
     let length = read_file(task_manifest, &mut manifest)?;
@@ -452,7 +482,18 @@ fn run_block(
     if image_length != image.len() || sha256(&image) != summary.entrypoint_sha256 {
         return Err("task entrypoint changed after validation");
     }
-    run_elf(&image, input_files)
+    let result = run_elf(
+        &image,
+        &TaskGrant {
+            readable: input_files,
+            writable: output_files,
+            runtime_seconds: summary.runtime_seconds,
+        },
+    )?;
+    if result.exit_code == 0 && !result.outputs_written {
+        return Err("task exited without writing its declared output files");
+    }
+    Ok(result.exit_code)
 }
 
 /// Builds an ELF-runtime task manifest whose single file is the entrypoint.
@@ -461,6 +502,7 @@ pub(crate) fn elf_task_manifest(
     entrypoint: &str,
     image: &[u8],
     dns: bool,
+    runtime_seconds: u64,
 ) -> String {
     let digest = sha256(image);
     let mut hex = String::with_capacity(64);
@@ -469,7 +511,7 @@ pub(crate) fn elf_task_manifest(
         hex.push(hex_digit(byte & 0x0f) as char);
     }
     format!(
-        r#"{{"schemaVersion":"nosfs.task-bundle.v1","taskId":"{task_id}","runtime":"elf","entrypoint":"{entrypoint}","files":[{{"name":"{entrypoint}","role":"elf","sizeBytes":{size},"sha256":"{hex}"}}],"capabilities":{{"network":{{"dns":{dns},"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}}}},"limits":{{"memoryBytes":65536,"runtimeSeconds":5}}}}"#,
+        r#"{{"schemaVersion":"nosfs.task-bundle.v1","taskId":"{task_id}","runtime":"elf","entrypoint":"{entrypoint}","files":[{{"name":"{entrypoint}","role":"elf","sizeBytes":{size},"sha256":"{hex}"}}],"capabilities":{{"network":{{"dns":{dns},"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}}}},"limits":{{"memoryBytes":65536,"runtimeSeconds":{runtime_seconds}}}}}"#,
         size = image.len(),
     )
 }
@@ -478,51 +520,31 @@ pub(crate) struct WorkflowExecutionReport {
     pub(crate) executed: usize,
 }
 
-/// Executes the stored ELF workflow, then a mixed workflow that must succeed,
-/// fail and refuse blocks for the right reasons.
-pub(crate) fn verify_workflow_execution(
-    elf_workflow: &[u8],
-    elf_task_manifest_name: &str,
-    elf_entrypoint_name: &str,
-    python_task_manifest_name: &str,
-    input_file_name: &str,
-    mut read_disk: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
-    mut run_elf: impl FnMut(&[u8], &[&str]) -> Result<u64, &'static str>,
-) -> Result<WorkflowExecutionReport, &'static str> {
-    let stored = execute_workflow(
-        elf_workflow,
-        &[elf_task_manifest_name],
-        &[input_file_name],
-        &mut read_disk,
-        &mut run_elf,
-    )?;
-    for block in ["inspect", "inspect-again"] {
-        if stored.outcome(block) != Some((BlockOutcome::Exited(0), BlockStatus::Succeeded)) {
-            return Err("stored ELF workflow block did not run to a successful exit");
-        }
+struct Overlay {
+    files: Vec<(&'static str, Vec<u8>)>,
+}
+
+impl Overlay {
+    fn add_elf_task(
+        &mut self,
+        manifest: &'static str,
+        entrypoint: &'static str,
+        image: Vec<u8>,
+        dns: bool,
+        runtime_seconds: u64,
+    ) {
+        let task_id = manifest
+            .split('.')
+            .next()
+            .unwrap_or("task")
+            .to_ascii_lowercase();
+        let manifest_text = elf_task_manifest(&task_id, entrypoint, &image, dns, runtime_seconds);
+        self.files.push((manifest, manifest_text.into_bytes()));
+        self.files.push((entrypoint, image));
     }
 
-    let mut image = [0; 512];
-    let image_length = read_disk(elf_entrypoint_name, &mut image)?;
-    if image_length == 0 {
-        return Err("stored ELF task entrypoint is empty");
-    }
-    let mut altered = image;
-    altered[image_length - 1] ^= 0xff;
-    let tampered_manifest = elf_task_manifest(
-        "tampered",
-        elf_entrypoint_name,
-        &altered[..image_length],
-        false,
-    );
-    let network_manifest =
-        elf_task_manifest("network", elf_entrypoint_name, &image[..image_length], true);
-    let overlay = |name: &str, output: &mut [u8]| -> Option<Result<usize, &'static str>> {
-        let contents = match name {
-            "BAD.MF" => tampered_manifest.as_bytes(),
-            "NET.MF" => network_manifest.as_bytes(),
-            _ => return None,
-        };
+    fn read(&self, name: &str, output: &mut [u8]) -> Option<Result<usize, &'static str>> {
+        let (_, contents) = self.files.iter().find(|(file, _)| *file == name)?;
         Some(
             output
                 .get_mut(..contents.len())
@@ -532,7 +554,91 @@ pub(crate) fn verify_workflow_execution(
                 })
                 .ok_or("overlay file does not fit the read buffer"),
         )
+    }
+}
+
+fn expect_outcomes(
+    run: &WorkflowRun,
+    expected: &[(&str, BlockOutcome, BlockStatus)],
+    error: &'static str,
+) -> Result<(), &'static str> {
+    for (block, outcome, status) in expected {
+        if run.outcome(block) != Some((*outcome, *status)) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// Executes the stored ELF workflow, a mixed workflow whose blocks must
+/// succeed, fail and be refused for the right reasons, and an output-file
+/// workflow that also checks write permissions and the runtime limit.
+/// Programs and manifests other than the stored workflow live in an
+/// in-memory overlay so they do not use root-directory slots.
+pub(crate) fn verify_workflow_execution(
+    elf_workflow: &[u8],
+    elf_task_manifest_name: &str,
+    python_task_manifest_name: &str,
+    input_file_name: &'static str,
+    mut read_disk: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
+    mut run_elf: impl FnMut(&[u8], &TaskGrant) -> Result<TaskRunResult, &'static str>,
+) -> Result<WorkflowExecutionReport, &'static str> {
+    use BlockOutcome::{Exited, NotRun, Refused};
+    use BlockStatus::{Failed, Skipped, Succeeded};
+
+    let stored = execute_workflow(
+        elf_workflow,
+        &[elf_task_manifest_name],
+        &[input_file_name],
+        &mut read_disk,
+        &mut run_elf,
+    )?;
+    expect_outcomes(
+        &stored,
+        &[
+            ("inspect", Exited(0), Succeeded),
+            ("inspect-again", Exited(0), Succeeded),
+        ],
+        "stored ELF workflow block did not run to a successful exit",
+    )?;
+
+    let echo = super::task_programs::copy_program(input_file_name, None);
+    let mut tampered = echo.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0xff;
+    let mut overlay = Overlay { files: Vec::new() };
+    overlay.add_elf_task("NET.MF", "ECHO.ELF", echo.clone(), true, 5);
+    let tampered_manifest = elf_task_manifest("tampered", "ECHO.ELF", &tampered, false, 5);
+    overlay
+        .files
+        .push(("BAD.MF", tampered_manifest.into_bytes()));
+    overlay.add_elf_task(
+        "COPY.MF",
+        "COPY.ELF",
+        super::task_programs::copy_program(input_file_name, Some("COPY.OUT")),
+        false,
+        5,
+    );
+    overlay.add_elf_task(
+        "CHECK.MF",
+        "CHECK.ELF",
+        super::task_programs::copy_program("COPY.OUT", None),
+        false,
+        5,
+    );
+    overlay.add_elf_task(
+        "SPIN.MF",
+        "SPIN.ELF",
+        super::task_programs::spin_program(),
+        false,
+        1,
+    );
+    let mut read_file = |name: &str, output: &mut [u8]| {
+        overlay
+            .read(name, output)
+            .unwrap_or_else(|| read_disk(name, output))
     };
+
     let mixed_workflow = format!(
         r#"{{"schemaVersion":"nosfs.workflow.v1","workflowId":"mixed-check","failurePolicy":"continue","blocks":[{{"blockId":"python-task","taskManifest":"{python}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"tampered","taskManifest":"BAD.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"after-tampered","taskManifest":"{elf}","dependsOn":["tampered"],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"undeclared-input","taskManifest":"{elf}","dependsOn":[],"inputFiles":[],"outputFiles":[]}},{{"blockId":"network-task","taskManifest":"NET.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}},{{"blockId":"independent","taskManifest":"{elf}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":[]}}]}}"#,
         python = python_task_manifest_name,
@@ -548,46 +654,75 @@ pub(crate) fn verify_workflow_execution(
             "NET.MF",
         ],
         &[input_file_name],
-        |name, output| overlay(name, output).unwrap_or_else(|| read_disk(name, output)),
+        &mut read_file,
         &mut run_elf,
     )?;
-    let expected = [
-        (
-            "python-task",
-            BlockOutcome::Refused("task runtime is not available in this kernel"),
-            BlockStatus::Failed,
-        ),
-        (
-            "tampered",
-            BlockOutcome::Refused("task bundle file SHA-256 does not match its manifest"),
-            BlockStatus::Failed,
-        ),
-        ("after-tampered", BlockOutcome::NotRun, BlockStatus::Skipped),
-        (
-            "undeclared-input",
-            BlockOutcome::Exited(1),
-            BlockStatus::Failed,
-        ),
-        (
-            "network-task",
-            BlockOutcome::Refused(
-                "task requests network access, which task execution does not grant",
+    expect_outcomes(
+        &mixed,
+        &[
+            (
+                "python-task",
+                Refused("task runtime is not available in this kernel"),
+                Failed,
             ),
-            BlockStatus::Failed,
-        ),
-        (
-            "independent",
-            BlockOutcome::Exited(0),
-            BlockStatus::Succeeded,
-        ),
-    ];
-    for (block, outcome, status) in expected {
-        if mixed.outcome(block) != Some((outcome, status)) {
-            return Err("mixed workflow block did not reach its expected outcome");
-        }
+            (
+                "tampered",
+                Refused("task bundle file SHA-256 does not match its manifest"),
+                Failed,
+            ),
+            ("after-tampered", NotRun, Skipped),
+            ("undeclared-input", Exited(1), Failed),
+            (
+                "network-task",
+                Refused("task requests network access, which task execution does not grant"),
+                Failed,
+            ),
+            ("independent", Exited(0), Succeeded),
+        ],
+        "mixed workflow block did not reach its expected outcome",
+    )?;
+
+    let output_workflow = format!(
+        r#"{{"schemaVersion":"nosfs.workflow.v1","workflowId":"output-check","failurePolicy":"continue","blocks":[{{"blockId":"copy","taskManifest":"COPY.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":["COPY.OUT"]}},{{"blockId":"check-copy","taskManifest":"CHECK.MF","dependsOn":["copy"],"inputFiles":["COPY.OUT"],"outputFiles":[]}},{{"blockId":"undeclared-write","taskManifest":"COPY.MF","dependsOn":["check-copy"],"inputFiles":["{input}"],"outputFiles":["OTHER.OUT"]}},{{"blockId":"missing-output","taskManifest":"{elf}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":["NONE.OUT"]}},{{"blockId":"spin","taskManifest":"SPIN.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}}]}}"#,
+        elf = elf_task_manifest_name,
+        input = input_file_name,
+    );
+    let output_run = execute_workflow(
+        output_workflow.as_bytes(),
+        &[elf_task_manifest_name, "COPY.MF", "CHECK.MF", "SPIN.MF"],
+        &[input_file_name],
+        &mut read_file,
+        &mut run_elf,
+    )?;
+    expect_outcomes(
+        &output_run,
+        &[
+            ("copy", Exited(0), Succeeded),
+            ("check-copy", Exited(0), Succeeded),
+            ("undeclared-write", Exited(1), Failed),
+            (
+                "missing-output",
+                Refused("task exited without writing its declared output files"),
+                Failed,
+            ),
+            (
+                "spin",
+                Refused("ring-3 task exceeded its runtime limit"),
+                Failed,
+            ),
+        ],
+        "output workflow block did not reach its expected outcome",
+    )?;
+    let mut input = [0; 1024];
+    let mut copied = [0; 1024];
+    let input_length = read_file(input_file_name, &mut input)?;
+    let copied_length = read_file("COPY.OUT", &mut copied)?;
+    if input[..input_length] != copied[..copied_length] {
+        return Err("task output file does not match the copied input");
     }
+
     Ok(WorkflowExecutionReport {
-        executed: stored.executed_count() + mixed.executed_count(),
+        executed: stored.executed_count() + mixed.executed_count() + output_run.executed_count(),
     })
 }
 
@@ -805,6 +940,7 @@ pub(crate) fn validate_task_manifest(
         entrypoint_size,
         entrypoint_sha256,
         network_requested,
+        runtime_seconds,
     })
 }
 
@@ -891,15 +1027,15 @@ pub(crate) fn validate_workflow_manifest(
         }
         validate_file_list(block, "inputFiles")?;
         validate_file_list(block, "outputFiles")?;
-        let input_files = block
-            .get("inputFiles")
+        let outputs = block
+            .get("outputFiles")
             .and_then(Value::as_array)
-            .ok_or("workflow input files must be an array")?;
-        if input_files.iter().any(|file| {
-            file.as_str()
-                .is_none_or(|name| !available_files.contains(&name))
-        }) {
-            return Err("workflow references an input file that is not available");
+            .ok_or("workflow output files must be an array")?;
+        if outputs
+            .iter()
+            .any(|file| file.as_str().is_none_or(|name| !name.ends_with(".OUT")))
+        {
+            return Err("workflow output files must use the .OUT suffix");
         }
     }
 
@@ -923,6 +1059,29 @@ pub(crate) fn validate_workflow_manifest(
             }
             if !block_ids.contains(&Some(dependency)) {
                 return Err("workflow dependency references an unknown block");
+            }
+        }
+        let input_files = block
+            .get("inputFiles")
+            .and_then(Value::as_array)
+            .ok_or("workflow input files must be an array")?;
+        for file in input_files {
+            let name = file
+                .as_str()
+                .ok_or("workflow input file must be a filename")?;
+            let produced_by_dependency = dependencies.iter().any(|dependency| {
+                blocks.iter().any(|candidate| {
+                    candidate.get("blockId") == Some(dependency)
+                        && candidate
+                            .get("outputFiles")
+                            .and_then(Value::as_array)
+                            .is_some_and(|outputs| {
+                                outputs.iter().any(|output| output.as_str() == Some(name))
+                            })
+                })
+            });
+            if !available_files.contains(&name) && !produced_by_dependency {
+                return Err("workflow references an input file that is not available");
             }
         }
     }

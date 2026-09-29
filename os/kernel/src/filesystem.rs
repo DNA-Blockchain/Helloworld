@@ -78,6 +78,32 @@ impl Filesystem {
         Ok(length)
     }
 
+    /// Removes a file: clears its directory entry first, then frees its
+    /// extent, so an interruption can leak sectors but never leave an entry
+    /// pointing at free space. Returns false if the file did not exist.
+    pub(crate) fn delete_file(
+        &self,
+        device: &mut dyn BlockDevice,
+        name: &str,
+    ) -> Result<bool, &'static str> {
+        validate_name(name)?;
+        let mut bitmap = self.read_bitmap(device)?;
+        let mut root = Self::read_root(device, self.sector_count)?;
+        validate_directory(&root, &bitmap, self.sector_count)?;
+        let Some(entry_index) = find_entry(&root, name)? else {
+            return Ok(false);
+        };
+        let entry = &mut root[entry_index * DIRECTORY_ENTRY_SIZE..][..DIRECTORY_ENTRY_SIZE];
+        let start = u32::from_le_bytes(entry[16..20].try_into().unwrap());
+        let length = u32::from_le_bytes(entry[20..24].try_into().unwrap()) as usize;
+        let sectors = sectors_for_length(length)?;
+        entry.fill(0);
+        self.write_root(device, &root)?;
+        mark_extent(&mut bitmap, start, sectors, false)?;
+        self.write_bitmap(device, &bitmap)?;
+        Ok(true)
+    }
+
     pub(crate) fn write_file(
         &self,
         device: &mut dyn BlockDevice,
