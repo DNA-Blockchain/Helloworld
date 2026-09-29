@@ -1,0 +1,12 @@
+{
+  "case_label": "demo-synthetic-001",
+  "reference": "ACGTACGTACGT",
+  "sample": "ACGTACATACGT",
+  "follow_ups": [
+    {
+      "label": "TIME 3",
+      "collected_on": "synthetic",
+      "sequence": "ACGTACGTACGT"
+    }
+  ]
+}

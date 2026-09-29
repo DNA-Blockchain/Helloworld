@@ -1,0 +1,1 @@
+{"schemaVersion":"nosfs.workflow.v1","workflowId":"remission-model","failurePolicy":"stop","blocks":[{"blockId":"remission-model","taskManifest":"RMTASK.JSON","dependsOn":[],"inputFiles":["SAMPLE.JSON"],"outputFiles":["RESULT.JSON"]}]}
