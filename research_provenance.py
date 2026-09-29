@@ -247,9 +247,92 @@ def _validate_public_research_records(event: dict) -> None:
         raise ValueError("research records event exceeds the 32-KiB block payload limit")
 
 
+# Public reference-sequence databases a dataset record may point to. Only
+# metadata, a hash and the public link are published, never the sequence.
+_DATASET_SOURCES = {"ncbi_nuccore": "https://www.ncbi.nlm.nih.gov/nuccore/"}
+_ACCESSION_RE = re.compile(r"^[A-Z]{1,2}_?[0-9]{5,9}\.[0-9]{1,3}$")
+
+
+def create_public_dataset_record_event(
+    *,
+    dataset_id: str,
+    accession: str,
+    title: str,
+    sequence_count: int,
+    total_bases: int,
+    dataset_sha256: str,
+    source: str = "ncbi_nuccore",
+    confirm_publication: bool = False,
+) -> dict:
+    """Metadata for a public reference dataset (e.g. an NCBI RefSeq FASTA)
+    so anyone can pull it from its public source and verify it by hash.
+    The sequence itself never goes on the chain."""
+    if confirm_publication is not True:
+        raise PermissionError("explicit confirmation is required before publishing a dataset record")
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_dataset_record",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "dataset_id": dataset_id,
+        "format": "FASTA",
+        "source": source,
+        "accession": accession,
+        "title": title[:200],
+        "source_url": _DATASET_SOURCES.get(source, "") + accession,
+        "sequence_count": sequence_count,
+        "total_bases": total_bases,
+        "dataset_sha256": dataset_sha256,
+    }
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_dataset_record(event: dict) -> None:
+    expected = {
+        "schema_version", "event_type", "event_id", "created_at", "classification", "dataset_id",
+        "format", "source", "accession", "title", "source_url", "sequence_count", "total_bases",
+        "dataset_sha256",
+    }
+    if set(event) != expected:
+        raise ValueError("dataset record event contains unsupported fields")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION:
+        raise ValueError("unsupported dataset record event schema version")
+    if event["classification"] != "public" or event["format"] != "FASTA":
+        raise ValueError("only public FASTA dataset records may be queued")
+    if not isinstance(event["event_id"], str) or not _EVENT_RE.fullmatch(event["event_id"]):
+        raise ValueError("dataset record event has an invalid event ID")
+    try:
+        timestamp = datetime.fromisoformat(event["created_at"])
+        dataset_id = uuid.UUID(event["dataset_id"])
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ValueError("dataset record event has an invalid timestamp or dataset ID") from error
+    if timestamp.tzinfo is None:
+        raise ValueError("dataset record event timestamp must include a timezone")
+    if str(dataset_id) != event["dataset_id"] or dataset_id.version != 4:
+        raise ValueError("dataset record event dataset ID must be a canonical random ID")
+    if event["source"] not in _DATASET_SOURCES:
+        raise ValueError("dataset record event source is not an allowed public database")
+    if not isinstance(event["accession"], str) or not _ACCESSION_RE.fullmatch(event["accession"]):
+        raise ValueError("dataset record event has an invalid accession")
+    if event["source_url"] != _DATASET_SOURCES[event["source"]] + event["accession"]:
+        raise ValueError("dataset record event source URL does not match its accession")
+    if not isinstance(event["title"], str) or not 0 < len(event["title"]) <= 200:
+        raise ValueError("dataset record event has an invalid title")
+    for field, limit in (("sequence_count", 100_000), ("total_bases", 10_000_000_000)):
+        if type(event[field]) is not int or not 0 < event[field] <= limit:
+            raise ValueError(f"dataset record event has an invalid {field}")
+    if not isinstance(event["dataset_sha256"], str) or not _HASH_RE.fullmatch(event["dataset_sha256"]):
+        raise ValueError("dataset record event has an invalid SHA-256 digest")
+
+
 def validate_public_provenance(event: dict) -> None:
     if isinstance(event, dict) and event.get("event_type") == "public_research_records":
         _validate_public_research_records(event)
+        return
+    if isinstance(event, dict) and event.get("event_type") == "public_dataset_record":
+        _validate_public_dataset_record(event)
         return
     if isinstance(event, dict) and event.get("event_type") == "public_data_hash":
         expected_hash_fields = {
@@ -378,3 +461,23 @@ class ResearchProvenanceQueue:
         ):
             raise ValueError("invalid provenance queue acknowledgement")
         queue_path.unlink()
+
+    def reject_invalid(self) -> list[Path]:
+        """Move entries that cannot be read or validated into rejected/ so a
+        bad entry never blocks the queue. Returns the new locations."""
+        moved = []
+        if not self.directory.exists():
+            return moved
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                event = json.loads(path.read_text(encoding="utf-8"))
+                validate_public_provenance(event)
+                if path.name != f"{event['event_id']}.json":
+                    raise ValueError("filename does not match event ID")
+            except (OSError, ValueError, KeyError, TypeError):
+                rejected = self.directory / "rejected"
+                rejected.mkdir(exist_ok=True)
+                destination = rejected / path.name
+                os.replace(path, destination)
+                moved.append(destination)
+        return moved

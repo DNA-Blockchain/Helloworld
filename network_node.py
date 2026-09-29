@@ -863,11 +863,19 @@ class NetworkNode:
         background = [asyncio.create_task(loop(stop_event)) for loop in self.background]
         next_provenance_retry = 0.0
         while not stop_event.is_set():
-            queued = (
-                self.provenance_queue.peek()
-                if self.provenance_queue and self.peers
-                else None
-            )
+            try:
+                queued = (
+                    self.provenance_queue.peek()
+                    if self.provenance_queue and self.peers
+                    else None
+                )
+            except ValueError as e:
+                # An entry this node cannot validate must not stop it: set it
+                # aside (outbox/rejected/) and keep publishing the rest.
+                moved = self.provenance_queue.reject_invalid()
+                self.log(f"research outbox: {e}; set aside {len(moved)} entry(s) in rejected/")
+                queued = None
+            published = False
             if queued and time.monotonic() >= next_provenance_retry:
                 event, path = queued
                 accepted = await self.mine_and_gossip(
@@ -876,12 +884,15 @@ class NetworkNode:
                 )
                 if accepted:
                     self.provenance_queue.acknowledge(path, event["event_id"])
+                    published = True
                 else:
                     next_provenance_retry = time.monotonic() + 5.0
             else:
                 await self.mine_and_gossip()
+            # After publishing, check the outbox again soon so a batch of
+            # queued events drains in seconds rather than one per heartbeat.
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=self.mine_interval)
+                await asyncio.wait_for(stop_event.wait(), timeout=1.0 if published else self.mine_interval)
             except asyncio.TimeoutError:
                 pass
         for task in background:

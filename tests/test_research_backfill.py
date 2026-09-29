@@ -111,26 +111,69 @@ def fake_sources(monkeypatch):
     return calls
 
 
+def store_groups():
+    return research_backfill.groups_from_store(STORE, "research_store.json")
+
+
 def test_plan_fetches_by_bare_id_and_batches_twenty_per_event(fake_sources):
-    batches, notes = research_backfill.plan(STORE, set())
+    batches, notes = research_backfill.plan(store_groups(), set())
 
     assert ("pubmed", [str(100 + i) for i in range(25)]) in fake_sources
     assert ("clinvar", ["555"]) in fake_sources
     sizes = [(b["ranked"][0]["source"], len(b["ranked"])) for b in batches]
     assert sizes == [("pubmed", 20), ("pubmed", 4), ("clinicaltrials.gov", 2), ("clinvar", 1)]
     assert any("stjude IDs skipped" in note for note in notes)
-    assert any("pubmed 24 of 25 IDs found" in note for note in notes)
+    assert any("pubmed 25 IDs, 0 already published, 24 fetched, 24 to publish" in note for note in notes)
     for batch in batches:
         validate_public_provenance(
             research_backfill.create_public_research_records_event(batch, confirm_publication=True))
 
 
-def test_plan_skips_records_already_published(fake_sources):
+def test_plan_skips_published_ids_before_fetching(fake_sources):
     published = {("pubmed", str(100 + i)) for i in range(20)} | {("clinvar", "VCV000000555")}
-    batches, notes = research_backfill.plan(STORE, published)
+    batches, notes = research_backfill.plan(store_groups(), published)
     sizes = [(b["ranked"][0]["source"], len(b["ranked"])) for b in batches]
     assert sizes == [("pubmed", 4), ("clinicaltrials.gov", 2)]
+    assert ("pubmed", [str(120 + i) for i in range(5)]) in fake_sources   # only the unpublished ones
     assert any("20 already published" in note for note in notes)
+
+
+def test_records_planned_from_one_source_are_not_repeated_from_another(fake_sources):
+    corpus = [{"condition": "breast cancer", "biomarker": "BRCA1",
+               "new_ids": ["NCT00000001", "NCT00000003", "PMID:100", "ClinVar:555", "odd-id"]}]
+    groups = store_groups() + research_backfill.groups_from_corpus(corpus, "live_store corpus")
+    batches, notes = research_backfill.plan(groups, set())
+    corpus_batches = batches[4:]
+    assert [(b["ranked"][0]["source"], [r["external_id"] for r in b["ranked"]]) for b in corpus_batches] == [
+        ("clinicaltrials.gov", ["NCT00000003"])]
+    assert any("1 unrecognized IDs skipped" in note for note in notes)
+
+
+def test_classify_id():
+    assert research_backfill.classify_id("NCT01234567") == "clinicaltrials"
+    assert research_backfill.classify_id("PMID:42801735") == "pubmed"
+    assert research_backfill.classify_id("ClinVar:4935332") == "clinvar"
+    assert research_backfill.classify_id("SJ-1") is None
+
+
+def test_live_store_groups_read_research_stores_and_corpus(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "live_store.db"
+    connection = sqlite3.connect(db)
+    connection.execute("CREATE TABLE snapshots (stream TEXT, key TEXT, updated_at REAL, sha256 TEXT, data TEXT)")
+    connection.executemany("INSERT INTO snapshots VALUES (?, ?, 0, '', ?)", [
+        ("research", "crispr_store", json.dumps(STORE)),
+        ("corpus", "corpus", json.dumps([{"condition": "c", "biomarker": "b", "new_ids": ["NCT00000009"]}])),
+        ("os", "check", json.dumps({"ignored": True})),
+    ])
+    connection.commit()
+    connection.close()
+
+    groups = research_backfill.live_store_groups(db)
+    assert [g.label for g in groups] == ["live_store corpus c b", "live_store crispr_store breast cancer|brca1"]
+    assert groups[0].ids == {"clinicaltrials": ["NCT00000009"]}
+    assert research_backfill.live_store_groups(tmp_path / "missing.db") == []
 
 
 def test_unreachable_source_is_reported_and_others_continue(fake_sources, monkeypatch):
@@ -138,7 +181,7 @@ def test_unreachable_source_is_reported_and_others_continue(fake_sources, monkey
         raise OSError("network unreachable")
 
     research_backfill.FETCHERS["clinicaltrials"] = ("clinicaltrials.gov", down)
-    batches, notes = research_backfill.plan(STORE, set())
+    batches, notes = research_backfill.plan(store_groups(), set())
     assert [b["ranked"][0]["source"] for b in batches] == ["pubmed", "pubmed", "clinvar"]
     assert any("fetch failed" in note for note in notes)
 
@@ -147,7 +190,7 @@ def test_cli_dry_run_then_confirm(tmp_path, fake_sources, capsys):
     store = tmp_path / "store.json"
     store.write_text(json.dumps(STORE))
     outbox = tmp_path / "outbox"
-    args = ["--store", str(store), "--ledgers", str(tmp_path), "--outbox", str(outbox)]
+    args = ["--store", str(store), "--no-live-store", "--ledgers", str(tmp_path), "--outbox", str(outbox)]
 
     assert research_backfill.main(args) == 0
     assert "27 records in 4 event(s)" in capsys.readouterr().out

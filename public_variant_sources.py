@@ -124,8 +124,8 @@ def _post_json(url: str, payload: dict) -> dict:
     return data
 
 
-def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
-    global _NCBI_LAST_REQUEST
+def _ncbi_prepare(params: dict[str, str]) -> dict[str, str]:
+    """Wait out NCBI's request-rate guideline and add the optional API key."""
     now = time.monotonic()
     wait = 0.11 if os.environ.get("NCBI_API_KEY", "").strip() else 0.36
     delay = wait - (now - _NCBI_LAST_REQUEST)
@@ -135,8 +135,45 @@ def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
     request_params = dict(params)
     if api_key:
         request_params["api_key"] = api_key
-    data = _get_json(f"{url}?{urllib.parse.urlencode(request_params)}")
+    return request_params
+
+
+def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
+    global _NCBI_LAST_REQUEST
+    data = _get_json(f"{url}?{urllib.parse.urlencode(_ncbi_prepare(params))}")
     _NCBI_LAST_REQUEST = time.monotonic()
+    return data
+
+
+NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+MAX_FASTA_BYTES = 8 * 1024 * 1024
+_NUCCORE_ACCESSION_RE = re.compile(r"[A-Z]{1,2}_?[0-9]{5,9}\.[0-9]{1,3}")
+
+
+def fetch_nuccore_fasta(accession: str) -> bytes:
+    """FASTA for one versioned NCBI nucleotide accession (e.g. the RefSeq
+    transcript NM_007294.4). Public reference data only; raises on request
+    failure or a non-FASTA reply."""
+    global _NCBI_LAST_REQUEST
+    if not _NUCCORE_ACCESSION_RE.fullmatch(accession):
+        raise ValueError("accession must be a versioned NCBI nucleotide accession such as NM_007294.4")
+    params = _ncbi_prepare({"db": "nuccore", "id": accession, "rettype": "fasta", "retmode": "text"})
+    request = urllib.request.Request(
+        f"{NCBI_EFETCH}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=SSL_CONTEXT) as response:
+            data = response.read(MAX_FASTA_BYTES + 1)
+    except HTTPError as error:
+        raise RuntimeError(f"NCBI returned HTTP {error.code} for {accession}") from None
+    except (URLError, OSError, TimeoutError) as error:
+        raise RuntimeError(f"request to NCBI failed ({type(error).__name__})") from None
+    finally:
+        _NCBI_LAST_REQUEST = time.monotonic()
+    if len(data) > MAX_FASTA_BYTES:
+        raise ValueError(f"{accession} FASTA exceeds {MAX_FASTA_BYTES} bytes")
+    if not data.startswith(b">"):
+        raise ValueError(f"NCBI did not return FASTA for {accession}")
     return data
 
 

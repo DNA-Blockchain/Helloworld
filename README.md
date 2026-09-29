@@ -484,9 +484,40 @@ python research_backfill.py --confirm-publication    # queue for node-0
 `research_store.json` keeps only IDs, so `research_backfill.py` re-fetches
 each record's title, date and link by ID (`pubmed_summaries`,
 `trials_by_id`, `clinvar_records_by_id`), ranks each source's records with
-`research_analysis.py`, and queues one event per 20 records. Records already
-in any node's ledger are skipped, so it can be re-run safely; sources
-without a fetch-by-ID connector (such as `stjude`) are reported and skipped.
+`research_analysis.py`, and queues one event per 20 records. Besides
+`research_store.json` it reads the research stores and the research corpus
+of past live runs mirrored in `live_store.db` (such as the CRISPR suite's
+`crispr_store`). Records already in any node's ledger are skipped, so it can
+be re-run safely; sources without a fetch-by-ID connector (such as `stjude`)
+are reported and skipped.
+
+New research comes from the agent's own queue of related topics it
+discovered (`research_store.json` and the mirrored stores' `queue`):
+
+```powershell
+python research_queue.py                                  # dry run
+python research_queue.py --kernel --confirm-publication   # rank each topic in the OS kernel
+```
+
+Each queued topic is fetched, ranked (in the kernel with `--kernel`, through
+`cargo run -- research`), and published without repeating topics or records
+already on the chain.
+
+Public reference datasets are published as metadata plus a hash; the
+sequence stays off the chain:
+
+```powershell
+python dataset_publish.py NM_007294.4 NM_000059.4 NM_000546.6 --confirm-publication
+```
+
+`dataset_publish.py` downloads each NCBI nucleotide accession as FASTA into
+`autonomous/datasets/`, validates it with `dna_shell.py`'s FASTA checks, and
+queues a `public_dataset_record` (accession, title, counts, SHA-256, NCBI
+link). The viewer lists datasets and serves the local FASTA at
+`/api/datasets/<dataset_id>/fasta` only while it matches the published hash.
+Node-0 publishes queued events about one per second, and sets aside any
+outbox entry it cannot validate in `research-outbox/rejected/` instead of
+stopping.
 
 ## Cancer -> modeled reference match workflow
 

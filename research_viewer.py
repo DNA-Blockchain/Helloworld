@@ -68,7 +68,8 @@ Endpoints (all GET, bound to 127.0.0.1 by default):
     /api/status                         nodes, ledger integrity, counts
     /api/records?q=crispr&source=pubmed published records (newest first)
     /api/records/<source>/<external_id> one record and every event that published it
-    /api/datasets                       published dataset summaries
+    /api/datasets                       published dataset records and summaries
+    /api/datasets/<dataset_id>/fasta    the local FASTA, served only if it matches its published hash
     /api/events                         published events with their replicas
     /api/export                         everything, with the original signed blocks
 """
@@ -76,6 +77,7 @@ Endpoints (all GET, bound to 127.0.0.1 by default):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -132,6 +134,18 @@ def collect(base_dir: str) -> dict:
                 "origin": event["origin"],
                 "replicas": sorted(event["replicas"]),
             })
+        elif event["kind"] == "public_dataset_record":
+            payload = block["research_provenance"]
+            datasets.append({
+                **{key: payload[key] for key in (
+                    "dataset_id", "accession", "title", "format", "source", "source_url",
+                    "sequence_count", "total_bases", "dataset_sha256")},
+                "published_at": payload["created_at"],
+                "event_id": event["event_id"],
+                "origin": event["origin"],
+                "replicas": sorted(event["replicas"]),
+                "local_copy": os.path.exists(_local_fasta(base_dir, payload["accession"])),
+            })
     records.sort(key=lambda r: r["published_at"], reverse=True)
     return {
         "nodes": nodes,
@@ -139,6 +153,12 @@ def collect(base_dir: str) -> dict:
         "records": records,
         "datasets": datasets,
     }
+
+
+def _local_fasta(base_dir: str, accession: str) -> str:
+    # Accessions are validated against an NCBI accession pattern before they
+    # reach any ledger, so they are safe as file names.
+    return os.path.join(base_dir, "datasets", f"{accession}.fasta")
 
 
 def _public_event(event: dict, include_block: bool = False) -> dict:
@@ -211,6 +231,22 @@ def make_handler(base_dir: str):
                 ]})
             elif path == "/api/datasets":
                 self._json(data["datasets"])
+            elif path.startswith("/api/datasets/") and path.endswith("/fasta"):
+                dataset_id = unquote(path[len("/api/datasets/"):-len("/fasta")])
+                hits = [d for d in data["datasets"] if d.get("dataset_id") == dataset_id and d.get("accession")]
+                if not hits:
+                    return self._json({"error": "no published dataset record with that ID"}, 404)
+                dataset = hits[0]
+                try:
+                    with open(_local_fasta(base_dir, dataset["accession"]), "rb") as stream:
+                        raw = stream.read()
+                except OSError:
+                    return self._json({"error": "not stored locally; pull it from source_url",
+                                       "source_url": dataset["source_url"]}, 404)
+                if hashlib.sha256(raw).hexdigest() != dataset["dataset_sha256"]:
+                    return self._json({"error": "local copy does not match the published SHA-256"}, 409)
+                self._send(200, raw, "text/plain; charset=utf-8", {
+                    "Content-Disposition": f'attachment; filename="{dataset["accession"]}.fasta"'})
             elif path == "/api/events":
                 self._json([_public_event(event) for event in data["events"]])
             elif path == "/api/export":
@@ -249,8 +285,8 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:var(--accent)}
 <a href="/api/export" download><button type="button">Export JSON</button></a></form>
 <h2>Published records</h2><div class="scroll"><table><thead><tr><th>Record</th><th>Source</th><th>Date</th>
 <th>Published</th><th>Copies</th></tr></thead><tbody id="records"></tbody></table></div>
-<h2>Datasets</h2><div class="scroll"><table><thead><tr><th>Dataset</th><th>Format</th><th>SHA-256</th>
-<th>Copies</th></tr></thead><tbody id="datasets"></tbody></table></div>
+<h2>Datasets</h2><div class="scroll"><table><thead><tr><th>Dataset</th><th>Accession</th><th>Bases</th>
+<th>SHA-256</th><th>Copies</th><th>Get it</th></tr></thead><tbody id="datasets"></tbody></table></div>
 <p class="muted">Public bibliographic records and dataset summaries only. Each copy is the original signed block,
 re-verified by every node that holds it. Scores and rankings are reading order, not medical evidence.</p>
 </main><script>
@@ -272,8 +308,12 @@ async function load() {
   if (!records.length) cell(body.insertRow(), 'No matching records.');
   const datasets = await (await fetch('/api/datasets')).json();
   const dbody = document.getElementById('datasets'); dbody.textContent = '';
-  for (const d of datasets) { const row = dbody.insertRow(); cell(row, d.dataset_id); cell(row, d.format || '');
-    cell(row, (d.dataset_sha256 || '').slice(0, 16) + '...'); cell(row, `${d.replicas.length}`); }
+  for (const d of datasets) { const row = dbody.insertRow();
+    cell(row, d.title || d.dataset_id, /^https?:/.test(d.source_url || '') ? d.source_url : null);
+    cell(row, d.accession || d.format || ''); cell(row, d.total_bases ? d.total_bases.toLocaleString() : '');
+    cell(row, (d.dataset_sha256 || '').slice(0, 16) + '...'); cell(row, `${d.replicas.length}`);
+    if (d.local_copy) cell(row, 'FASTA', `/api/datasets/${encodeURIComponent(d.dataset_id)}/fasta`);
+    else cell(row, d.source_url ? 'from NCBI' : '', d.source_url || null); }
   if (!datasets.length) cell(dbody.insertRow(), 'No datasets published yet.');
 }
 document.getElementById('search').addEventListener('submit', e => { e.preventDefault(); load(); });

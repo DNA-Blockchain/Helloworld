@@ -185,6 +185,26 @@ def published_record_keys(base_dir: str) -> set[tuple[str, str]]:
     return keys
 
 
+def published_queries(base_dir: str) -> set[str]:
+    """Lower-cased queries of every published research-records event."""
+    queries = set()
+    for ledger in load_all_ledgers(base_dir).values():
+        for entry in ledger.entries():
+            if entry.get("kind") == "public_research_records":
+                queries.add(entry["block"]["research_provenance"]["query"].strip().lower())
+    return queries
+
+
+def published_dataset_accessions(base_dir: str) -> set[str]:
+    """Accessions of every public dataset record already published."""
+    accessions = set()
+    for ledger in load_all_ledgers(base_dir).values():
+        for entry in ledger.entries():
+            if entry.get("kind") == "public_dataset_record":
+                accessions.add(entry["block"]["research_provenance"]["accession"])
+    return accessions
+
+
 def load_all_ledgers(base_dir: str) -> dict[int, ResearchLedger]:
     """Every node's ledger under base_dir (autonomous/), by node id."""
     ledgers = {}
