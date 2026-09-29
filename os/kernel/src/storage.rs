@@ -112,7 +112,7 @@ pub(crate) fn verify_persistent_record() -> Result<u64, &'static str> {
 /// Files the boot tests create and delete. A boot that fails midway can
 /// leave them behind, so each boot clears them first; otherwise the 16-entry
 /// root directory can fill and every later boot fails.
-const BOOT_TEST_TRANSIENT_FILES: [&str; 11] = [
+const BOOT_TEST_TRANSIENT_FILES: [&str; 12] = [
     "UPDATE.TEST",
     "RUNTIME.TEST",
     "DNA.PY",
@@ -124,6 +124,7 @@ const BOOT_TEST_TRANSIENT_FILES: [&str; 11] = [
     "RESEARCH.PY",
     "RESEARCH.JSON",
     "RANKED.OUT",
+    "HOSTOUT.JSON",
 ];
 
 pub(crate) fn verify_filesystem_record() -> Result<usize, &'static str> {

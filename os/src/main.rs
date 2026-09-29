@@ -1,7 +1,16 @@
+// The runner reuses the kernel's NOSFS code to stage host files on the QEMU
+// data disk before boot and read results back after it.
+#[path = "../kernel/src/block_device.rs"]
+#[allow(dead_code)]
+mod block_device;
+#[path = "../kernel/src/filesystem.rs"]
+#[allow(dead_code)]
+mod filesystem;
+
 use std::{
     env,
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::{Shutdown, TcpListener, TcpStream, UdpSocket},
     path::Path,
     process::{Child, Command, ExitCode, Stdio},
@@ -22,21 +31,45 @@ const TEST_HOST_IPV4: [u8; 4] = [10, 0, 2, 2];
 /// starts and a 1-second runtime-limit test) before networking comes up.
 const BOOT_CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Names the kernel's host-research step reads and writes (task_bundle.rs).
+const HOST_RESEARCH_INPUT: &str = "HOSTIN.JSON";
+const HOST_RESEARCH_OUTPUT: &str = "HOSTOUT.JSON";
+const HOST_RESEARCH_MAX_INPUT: usize = 64 * 1024;
+
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let mode = args.next().unwrap_or_else(|| "run".to_owned());
     if mode == "--help" || mode == "-h" {
-        println!("Usage: cargo run -- [run|check|check-slaac]");
+        println!("Usage: cargo run -- [run|check|check-slaac|research RESEARCH.JSON [RANKED.OUT]]");
         println!("Run boots the OS and keeps its HTTP health service running.");
         println!("Check boots the OS, verifies dual-stack connectivity, and tests /health.");
         println!(
             "Run and check answer the guest's DNS and TCP tests locally; no internet is needed."
         );
         println!("Check-slaac boots it against a loopback-only test router that sends a real RA.");
+        println!(
+            "Research copies a research_fetch.py RESEARCH.JSON onto the OS disk, runs the check, and saves the kernel's ranking."
+        );
         return ExitCode::SUCCESS;
     }
-    if !matches!(mode.as_str(), "run" | "check" | "check-slaac") || args.next().is_some() {
-        eprintln!("Usage: cargo run -- [run|check|check-slaac|--help]");
+    let research = if mode == "research" {
+        let Some(input) = args.next() else {
+            eprintln!("Usage: cargo run -- research RESEARCH.JSON [RANKED.OUT]");
+            return ExitCode::from(2);
+        };
+        Some((
+            input,
+            args.next().unwrap_or_else(|| "RANKED.OUT".to_owned()),
+        ))
+    } else {
+        None
+    };
+    if !matches!(mode.as_str(), "run" | "check" | "check-slaac" | "research")
+        || args.next().is_some()
+    {
+        eprintln!(
+            "Usage: cargo run -- [run|check|check-slaac|research RESEARCH.JSON [RANKED.OUT]|--help]"
+        );
         return ExitCode::from(2);
     }
 
@@ -68,6 +101,21 @@ fn main() -> ExitCode {
     let network = "user,id=net0,ipv4=on,ipv6=on,ipv6-net=fd00::/64,ipv6-host=fd00::2,hostfwd=tcp:127.0.0.1:18080-:8080";
     let mut qemu = qemu_command(image, network, &data_disk);
 
+    if let Some((input, output)) = research {
+        let result = stage_host_research(&data_disk, Path::new(&input))
+            .and_then(|()| run_integration_check(&mut qemu))
+            .and_then(|()| collect_host_research(&data_disk, Path::new(&output)));
+        return match result {
+            Ok(bytes) => {
+                println!("Kernel research ranking ({bytes} bytes) written to {output}.");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                ExitCode::from(1)
+            }
+        };
+    }
     if mode == "check" {
         match run_integration_check(&mut qemu) {
             Ok(()) => {
@@ -167,6 +215,108 @@ fn echo_tcp(mut stream: TcpStream) {
             break;
         }
     }
+}
+
+/// The QEMU data disk as a NOSFS block device.
+struct ImageDevice {
+    file: fs::File,
+    sectors: u32,
+}
+
+impl block_device::BlockDevice for ImageDevice {
+    fn sector_count(&self) -> u32 {
+        self.sectors
+    }
+
+    fn read_sector(
+        &mut self,
+        lba: u32,
+        sector: &mut block_device::Sector,
+    ) -> Result<(), &'static str> {
+        self.file
+            .seek(SeekFrom::Start(
+                u64::from(lba) * block_device::SECTOR_SIZE as u64,
+            ))
+            .and_then(|_| self.file.read_exact(sector))
+            .map_err(|_| "could not read a sector of the QEMU data disk")
+    }
+
+    fn write_sector(
+        &mut self,
+        lba: u32,
+        sector: &block_device::Sector,
+    ) -> Result<(), &'static str> {
+        self.file
+            .seek(SeekFrom::Start(
+                u64::from(lba) * block_device::SECTOR_SIZE as u64,
+            ))
+            .and_then(|_| self.file.write_all(sector))
+            .map_err(|_| "could not write a sector of the QEMU data disk")
+    }
+
+    fn flush(&mut self) -> Result<(), &'static str> {
+        self.file
+            .sync_data()
+            .map_err(|_| "could not flush the QEMU data disk")
+    }
+}
+
+fn open_data_disk(path: &Path) -> Result<(ImageDevice, filesystem::Filesystem), String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("Could not open the QEMU data disk: {error}"))?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the QEMU data disk: {error}"))?
+        .len();
+    let sectors = u32::try_from(length / block_device::SECTOR_SIZE as u64)
+        .map_err(|_| "QEMU data disk is too large".to_owned())?;
+    let mut device = ImageDevice { file, sectors };
+    let filesystem = filesystem::Filesystem::mount(&mut device)
+        .map_err(|error| format!("Could not mount NOSFS on the QEMU data disk: {error}"))?;
+    Ok((device, filesystem))
+}
+
+/// Copies fetched research records onto the data disk as HOSTIN.JSON for
+/// the kernel's research task. They are data for the task, never code.
+fn stage_host_research(data_disk: &Path, input: &Path) -> Result<(), String> {
+    let contents =
+        fs::read(input).map_err(|error| format!("Could not read {}: {error}", input.display()))?;
+    if contents.is_empty() || contents.len() > HOST_RESEARCH_MAX_INPUT {
+        return Err(format!(
+            "{} must be 1-{HOST_RESEARCH_MAX_INPUT} bytes (research_fetch.py enforces this).",
+            input.display()
+        ));
+    }
+    let (mut device, filesystem) = open_data_disk(data_disk)?;
+    filesystem
+        .delete_file(&mut device, HOST_RESEARCH_OUTPUT)
+        .map_err(|error| format!("Could not clear an old ranking: {error}"))?;
+    filesystem
+        .write_file(&mut device, HOST_RESEARCH_INPUT, &contents)
+        .map_err(|error| format!("Could not stage research input on the data disk: {error}"))
+}
+
+/// Reads the kernel's ranking back from the data disk, saves it, and removes
+/// it from the disk. Returns its size.
+fn collect_host_research(data_disk: &Path, output: &Path) -> Result<usize, String> {
+    let (mut device, filesystem) = open_data_disk(data_disk)?;
+    let mut ranking = vec![0; 16 * 1024];
+    let length = filesystem
+        .read_file(&mut device, HOST_RESEARCH_OUTPUT, &mut ranking)
+        .map_err(|error| {
+            format!(
+                "The kernel produced no ranking ({error}); see 'Host research input rejected' in the serial log."
+            )
+        })?;
+    fs::write(output, &ranking[..length])
+        .map_err(|error| format!("Could not write {}: {error}", output.display()))?;
+    filesystem
+        .delete_file(&mut device, HOST_RESEARCH_OUTPUT)
+        .map_err(|error| format!("Could not remove the ranking from the data disk: {error}"))?;
+    Ok(length)
 }
 
 fn prepare_data_disk() -> Result<std::path::PathBuf, String> {

@@ -368,6 +368,18 @@ NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked m
         "Research analysis verified in ring-3 MicroPython: 5 public records de-duplicated to 3, ranked and hashed; {}-byte RANKED.OUT written.",
         workflow_report.research_result_bytes
     );
+    match workflow_report.host_research {
+        crate::task_bundle::HostResearch::NotProvided => {}
+        crate::task_bundle::HostResearch::Ranked(bytes) => {
+            let _ = writeln!(
+                Serial,
+                "Host research input analyzed in ring-3 MicroPython: {bytes}-byte ranking saved as HOSTOUT.JSON."
+            );
+        }
+        crate::task_bundle::HostResearch::Rejected(reason) => {
+            let _ = writeln!(Serial, "Host research input rejected: {reason}.");
+        }
+    }
     if user_dns_verified {
         let _ = writeln!(
             Serial,

@@ -87,10 +87,10 @@ confident-looking file imply more than it's actually verified.
   scripts, including the remission and research-analysis bundles; it has no
   floats, imports of other files or network access. The research agent is
   therefore split: `research_fetch.py` retrieves public records over HTTPS
-  on the host, and `research_analysis.py` ranks them in the kernel. The
-  kernel only runs the embedded synthetic sample at boot; there is not yet a
-  way to hand a freshly fetched `RESEARCH.JSON` to a running kernel, and
-  nothing is published to the node chain.
+  on the host, and `research_analysis.py` ranks them in the kernel
+  (`cargo run -- research RESEARCH.JSON` stages fetched records on the data
+  disk before boot and reads the ranking back after). Records reach the
+  kernel only between boots, not while it runs.
   The workflow dispatcher can execute static ELF tasks from digest-checked
   manifests, one at a time and synchronously, restricting reads to each
   block's declared inputs, writes to its declared `.OUT` outputs, denying

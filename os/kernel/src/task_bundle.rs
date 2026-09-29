@@ -575,6 +575,7 @@ pub(crate) struct WorkflowExecutionReport {
     pub(crate) executed: usize,
     pub(crate) remission_result_bytes: usize,
     pub(crate) research_result_bytes: usize,
+    pub(crate) host_research: HostResearch,
 }
 
 struct Overlay {
@@ -732,6 +733,21 @@ pub(crate) fn verify_workflow_execution(
     overlay
         .files
         .push(("RSTASK.JSON", Vec::from(RESEARCH_TASK)));
+    // Host-provided research input is only known at run time, so its
+    // manifest pins the script alone; the input is a declared data file.
+    overlay.files.push((
+        HOST_RESEARCH_MANIFEST,
+        single_file_manifest(
+            "research-host",
+            "micropython",
+            RESEARCH_BUNDLE.entrypoint.0,
+            "python",
+            RESEARCH_BUNDLE.entrypoint.1,
+            false,
+            30,
+        )
+        .into_bytes(),
+    ));
     let mut read_file = |name: &str, output: &mut [u8]| {
         overlay
             .read(name, output)
@@ -849,6 +865,12 @@ pub(crate) fn verify_workflow_execution(
         &mut delete_disk,
         &mut run_elf,
     )?;
+    let host_research = run_host_research(
+        &mut read_file,
+        &mut write_disk,
+        &mut delete_disk,
+        &mut run_elf,
+    )?;
 
     Ok(WorkflowExecutionReport {
         executed: stored.executed_count()
@@ -858,7 +880,73 @@ pub(crate) fn verify_workflow_execution(
             + research_runs,
         remission_result_bytes,
         research_result_bytes,
+        host_research,
     })
+}
+
+/// Name the host runner uses to place fetched research records on the disk
+/// (`cargo run -- research RESEARCH.JSON`), and the name of the ranking the
+/// kernel leaves for the runner to read back after QEMU exits.
+const HOST_RESEARCH_INPUT: &str = "HOSTIN.JSON";
+const HOST_RESEARCH_OUTPUT: &str = "HOSTOUT.JSON";
+const HOST_RESEARCH_MANIFEST: &str = "RSHOST.MF";
+const HOST_RESEARCH_WORKFLOW: &[u8] = br#"{"schemaVersion":"nosfs.workflow.v1","workflowId":"research-host","failurePolicy":"stop","blocks":[{"blockId":"research-host","taskManifest":"RSHOST.MF","dependsOn":[],"inputFiles":["RESEARCH.JSON"],"outputFiles":["RANKED.OUT"]}]}"#;
+
+/// Outcome of analyzing host-provided research records, if any were given.
+pub(crate) enum HostResearch {
+    NotProvided,
+    Ranked(usize),
+    Rejected(&'static str),
+}
+
+/// If the runner placed HOSTIN.JSON on the disk, runs the research task on
+/// it and saves the ranking as HOSTOUT.JSON. Bad host data is reported, not
+/// fatal: the records are untrusted input, and the boot checks go on.
+fn run_host_research(
+    read_file: &mut impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
+    write_disk: &mut impl FnMut(&str, &[u8]) -> Result<(), &'static str>,
+    delete_disk: &mut impl FnMut(&str) -> Result<bool, &'static str>,
+    run_elf: &mut impl FnMut(&[u8], &TaskGrant) -> Result<TaskRunResult, &'static str>,
+) -> Result<HostResearch, &'static str> {
+    let mut input = Vec::new();
+    input.resize(64 * 1024, 0);
+    let length = match read_file(HOST_RESEARCH_INPUT, &mut input) {
+        Ok(length) => length,
+        Err("filesystem file does not exist") => return Ok(HostResearch::NotProvided),
+        Err(error) => {
+            delete_disk(HOST_RESEARCH_INPUT)?;
+            return Ok(HostResearch::Rejected(error));
+        }
+    };
+    write_disk(RESEARCH_BUNDLE.entrypoint.0, RESEARCH_BUNDLE.entrypoint.1)?;
+    write_disk(RESEARCH_BUNDLE.input.0, &input[..length])?;
+    let run = execute_workflow(
+        HOST_RESEARCH_WORKFLOW,
+        &[HOST_RESEARCH_MANIFEST],
+        &[RESEARCH_BUNDLE.input.0],
+        &mut *read_file,
+        &mut *run_elf,
+    )?;
+    let outcome = match run.outcome("research-host") {
+        Some((BlockOutcome::Exited(0), BlockStatus::Succeeded)) => {
+            let mut output = Vec::new();
+            output.resize(16 * 1024, 0);
+            let output_length = read_file(RESEARCH_BUNDLE.output, &mut output)?;
+            write_disk(HOST_RESEARCH_OUTPUT, &output[..output_length])?;
+            HostResearch::Ranked(output_length)
+        }
+        Some((BlockOutcome::Refused(reason), _)) => HostResearch::Rejected(reason),
+        _ => HostResearch::Rejected("research task exited with a failure status"),
+    };
+    for transient in [
+        RESEARCH_BUNDLE.entrypoint.0,
+        RESEARCH_BUNDLE.input.0,
+        RESEARCH_BUNDLE.output,
+        HOST_RESEARCH_INPUT,
+    ] {
+        delete_disk(transient)?;
+    }
+    Ok(outcome)
 }
 
 /// A task bundle from os/tasks, embedded in the kernel and run at boot.

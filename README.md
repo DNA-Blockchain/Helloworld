@@ -417,6 +417,22 @@ imports), and `build_task_bundles.py` packages it with the synthetic sample
 as `os/tasks/research/`, which the kernel runs at every boot check and whose
 ranking matches CPython byte for byte. Scores order reading, not evidence.
 
+To have the kernel rank freshly fetched records, run the OS in research mode:
+
+```powershell
+python research_fetch.py --query "CRISPR cancer" --output RESEARCH.JSON
+cd os
+cargo run -- research ..\RESEARCH.JSON ..\RANKED.OUT
+```
+
+The runner mounts the QEMU data disk with the kernel's own NOSFS code,
+stores the records as `HOSTIN.JSON`, and runs the full boot check. The
+kernel runs the research task on them in ring-3 MicroPython (a manifest that
+pins the script; the records are a declared data input), saves the ranking
+as `HOSTOUT.JSON`, and the runner copies it to `RANKED.OUT`. Input that the
+task rejects, such as a non-public source, is reported in the serial log and
+produces no ranking; the rest of the boot check still runs.
+
 ## Cancer -> modeled reference match workflow
 
 `remission_core.py` runs the whole computational workflow in one pass:
