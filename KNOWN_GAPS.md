@@ -73,8 +73,9 @@ confident-looking file imply more than it's actually verified.
   syscall. It lacks general syscall
   services and broad hardware support. The ELF loader does not support
   relocations, dynamic linking, process arguments, general ELF binaries, or
-  preemptive scheduling. A bounded kernel-side UDP DNS query to QEMU's resolver
-  is tested, but user-mode networking sockets, DNS, and TLS are not
+  preemptive scheduling. Kernel and ring-3 DNS, UDP and TCP checks run against
+  the runner's offline loopback test services, not the internet; bounded
+  single-context ring-3 sockets exist, but a general socket API and TLS are not
   implemented. A ring-3 syscall can read a named flat file using bounded,
   validated user pointers; user-mode writes, directories, and file permissions
   are absent. QEMU verifies that neither the filename nor output pointer can

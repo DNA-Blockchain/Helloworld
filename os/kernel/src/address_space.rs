@@ -427,11 +427,11 @@ pub(crate) fn verify_user_syscall() -> Result<UserSyscallReport, &'static str> {
             return Err("ring-3 named-file syscall accepted a supervisor filename pointer");
         }
 
-        copy_to_user(user_buffer, b"example.com")?;
+        copy_to_user(user_buffer, b"test.nos")?;
         let mut dns_code = [0; 65];
         dns_code[..5].copy_from_slice(&[0xb8, 0x04, 0, 0, 0]);
         dns_code[5..7].copy_from_slice(&[0x48, 0xbf]);
-        dns_code[15..20].copy_from_slice(&[0xbe, 11, 0, 0, 0]);
+        dns_code[15..20].copy_from_slice(&[0xbe, 8, 0, 0, 0]);
         dns_code[20..22].copy_from_slice(&[0x48, 0xba]);
         dns_code[30..32].copy_from_slice(&[0xcd, 0x80]);
         dns_code[32..37].copy_from_slice(&[0x83, 0xf8, 4, 0x75, 0x0e]);
@@ -586,7 +586,9 @@ pub(crate) fn verify_user_syscall() -> Result<UserSyscallReport, &'static str> {
             tcp_connect_code[..5].copy_from_slice(&[0xb8, 5, 0, 0, 0]);
             tcp_connect_code[5..10].copy_from_slice(&[0xbf, 0, 0, 0, 0]);
             tcp_connect_code[5 + 1..5 + 5].copy_from_slice(&destination.to_le_bytes());
-            tcp_connect_code[10..15].copy_from_slice(&[0xbe, 80, 0, 0, 0]);
+            tcp_connect_code[10] = 0xbe;
+            tcp_connect_code[11..15]
+                .copy_from_slice(&u32::from(super::network::TEST_TCP_PORT).to_le_bytes());
             tcp_connect_code[15..17].copy_from_slice(&[0xcd, 0x80]);
             tcp_connect_code[17..20].copy_from_slice(&[0x48, 0x85, 0xc0]);
             tcp_connect_code[20..22].copy_from_slice(&[0x75, 14]);

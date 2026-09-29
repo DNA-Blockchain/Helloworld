@@ -25,8 +25,13 @@ const USER_TCP_CONNECT_TIMEOUT_MS: i64 = 5_000;
 const USER_SOCKET_IO_TIMEOUT_MS: i64 = 2_000;
 pub(crate) const USER_UDP_LOCAL_PORT: u16 = 53056;
 const IPV6_TEST_GATEWAY: Ipv6Address = Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
-const DNS_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 3);
-const DNS_TEST_NAME: &[u8] = b"example.com";
+// Offline test services: QEMU user networking maps the gateway 10.0.2.2 to
+// the host's loopback, where the runner answers DNS for DNS_TEST_NAME and
+// accepts TCP connections, so boot checks never depend on the internet.
+const DNS_SERVER: Ipv4Address = Ipv4Address::new(10, 0, 2, 2);
+const DNS_SERVER_PORT: u16 = 15353;
+pub(crate) const TEST_TCP_PORT: u16 = 15380;
+const DNS_TEST_NAME: &[u8] = b"test.nos";
 const DNS_TEST_ID: u16 = 0x4e4f;
 const DNS_LOCAL_PORT: u16 = 53053;
 const USER_DNS_MAX_NAME: usize = 253;
@@ -356,7 +361,7 @@ NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked m
     if user_dns_verified {
         let _ = writeln!(
             Serial,
-            "Ring-3 DNS syscall verified: example.com resolved through the kernel-owned UDP service."
+            "Ring-3 DNS syscall verified: test.nos resolved through the kernel-owned UDP service."
         );
     } else {
         let _ = writeln!(
@@ -389,7 +394,7 @@ NOSFS workflow execution verified: {} ring-3 ELF task runs from digest-checked m
     } else {
         let _ = writeln!(
             Serial,
-            "Ring-3 UDP round trip unavailable: no upstream DNS response to the user datagram."
+            "Ring-3 UDP round trip unavailable: no DNS response to the user datagram."
         );
     }
     let _ = writeln!(
@@ -676,7 +681,7 @@ pub(crate) fn verify_user_udp_dns_probe(
     port: u16,
     kernel_resolved: [u8; 4],
 ) -> Result<Ipv4Address, &'static str> {
-    if address != DNS_SERVER.octets() || port != 53 {
+    if address != DNS_SERVER.octets() || port != DNS_SERVER_PORT {
         return Err("user UDP smoke test received a response from the wrong endpoint");
     }
     find_dns_a_record(packet, DNS_TEST_ID, DNS_TEST_NAME, |record| {
@@ -686,7 +691,7 @@ pub(crate) fn verify_user_udp_dns_probe(
 }
 
 pub(crate) fn user_dns_udp_endpoint_argument() -> u64 {
-    (u64::from(53u16) << 32) | u64::from(u32::from_be_bytes(DNS_SERVER.octets()))
+    (u64::from(DNS_SERVER_PORT) << 32) | u64::from(u32::from_be_bytes(DNS_SERVER.octets()))
 }
 
 fn valid_dns_name(name: &[u8]) -> bool {
@@ -743,7 +748,7 @@ fn verify_dns_resolution(
     };
     let _ = writeln!(
         Serial,
-        "DNS verified: {} resolved to {} through QEMU's UDP resolver.",
+        "DNS verified: {} resolved to {} through the offline test resolver.",
         core::str::from_utf8(DNS_TEST_NAME).map_err(|_| "DNS test name is not valid UTF-8")?,
         address
     );
@@ -767,7 +772,10 @@ fn resolve_ipv4(
             .bind(DNS_LOCAL_PORT)
             .map_err(|_| "could not bind the DNS UDP socket")?;
         socket
-            .send_slice(&query[..query_length], (IpAddress::Ipv4(DNS_SERVER), 53))
+            .send_slice(
+                &query[..query_length],
+                (IpAddress::Ipv4(DNS_SERVER), DNS_SERVER_PORT),
+            )
             .map_err(|_| "could not queue the DNS query")?;
 
         let deadline = now_ms().saturating_add(DNS_WAIT_MS);
@@ -779,7 +787,7 @@ fn resolve_ipv4(
                 .recv_slice(&mut response);
             if let Ok((length, metadata)) = received {
                 if metadata.endpoint.addr == IpAddress::Ipv4(DNS_SERVER)
-                    && metadata.endpoint.port == 53
+                    && metadata.endpoint.port == DNS_SERVER_PORT
                 {
                     return parse_dns_a_response(&response[..length], identifier, hostname);
                 }

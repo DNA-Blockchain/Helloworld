@@ -114,9 +114,14 @@ this kernel.
   IPv4, IPv6, DHCPv4, ICMP/ICMPv6, UDP, TCP, and IPv6 SLAAC support enabled.
 - Requests an IPv4 lease from QEMU's user-mode DHCP service, then sends an
   ICMP echo request to the IPv4 gateway.
-- Uses a bounded UDP DNS client to query QEMU's resolver at `10.0.2.3` for
-  `example.com`. The boot check validates the transaction ID, response flags,
-  question, answer bounds, and IPv4 record before reporting the result.
+- Uses a bounded UDP DNS client to query the runner's offline test resolver
+  for `test.nos`. The boot check validates the transaction ID, response flags,
+  question, answer bounds, and IPv4 record before reporting the result. The
+  `run` and `check` modes start that resolver (`127.0.0.1:15353`) and a TCP
+  echo service (`127.0.0.1:15380`) on the host; QEMU user networking maps the
+  gateway `10.0.2.2` to host loopback, so the guest reaches both there and no
+  boot check needs internet access. `check` requires the kernel and ring-3 DNS
+  lookups, the ring-3 UDP round trip, and a ring-3 TCP connection to succeed.
 - Enables IPv6 SLAAC and waits for an address and default route from a router
   advertisement. QEMU's built-in user network sends no router
   advertisements, so the standard network check reports SLAAC as unavailable
@@ -320,7 +325,8 @@ can still reveal sensitive information and require a privacy review.
   filesystem if desired, but set a WSL-local `CARGO_TARGET_DIR` so Linux and
   Windows never share generated artifacts.
 - Python 3 is needed for the optional controlled SLAAC router test.
-- Network access to download the pinned Rust crates on the first build.
+- Network access to download the pinned Rust crates on the first build only;
+  after that, building and every boot check work offline.
 
 ## Build and boot
 

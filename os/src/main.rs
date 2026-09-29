@@ -2,7 +2,7 @@ use std::{
     env,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
-    net::{Shutdown, TcpStream, UdpSocket},
+    net::{Shutdown, TcpListener, TcpStream, UdpSocket},
     path::Path,
     process::{Child, Command, ExitCode, Stdio},
     sync::mpsc,
@@ -11,6 +11,12 @@ use std::{
 };
 
 const HOST_HEALTH_ADDR: &str = "127.0.0.1:18080";
+/// Offline stand-ins for internet services. The guest reaches them through
+/// QEMU's gateway 10.0.2.2, which user networking maps to host loopback.
+const TEST_DNS_ADDR: &str = "127.0.0.1:15353";
+const TEST_TCP_ADDR: &str = "127.0.0.1:15380";
+const TEST_DNS_NAME: &[u8] = b"test.nos";
+const TEST_HOST_IPV4: [u8; 4] = [10, 0, 2, 2];
 
 /// Boot checks now run workflow tasks (including two MicroPython interpreter
 /// starts and a 1-second runtime-limit test) before networking comes up.
@@ -23,6 +29,9 @@ fn main() -> ExitCode {
         println!("Usage: cargo run -- [run|check|check-slaac]");
         println!("Run boots the OS and keeps its HTTP health service running.");
         println!("Check boots the OS, verifies dual-stack connectivity, and tests /health.");
+        println!(
+            "Run and check answer the guest's DNS and TCP tests locally; no internet is needed."
+        );
         println!("Check-slaac boots it against a loopback-only test router that sends a real RA.");
         return ExitCode::SUCCESS;
     }
@@ -52,6 +61,10 @@ fn main() -> ExitCode {
         };
     }
 
+    if let Err(error) = start_offline_test_services() {
+        eprintln!("{error}");
+        return ExitCode::from(1);
+    }
     let network = "user,id=net0,ipv4=on,ipv6=on,ipv6-net=fd00::/64,ipv6-host=fd00::2,hostfwd=tcp:127.0.0.1:18080-:8080";
     let mut qemu = qemu_command(image, network, &data_disk);
 
@@ -76,6 +89,82 @@ fn main() -> ExitCode {
                 report_qemu_start_error(error);
                 ExitCode::from(1)
             }
+        }
+    }
+}
+
+/// Starts the loopback DNS responder and TCP echo service the kernel's
+/// network checks use, so `run` and `check` work without internet access.
+fn start_offline_test_services() -> Result<(), String> {
+    let dns = UdpSocket::bind(TEST_DNS_ADDR).map_err(|error| {
+        format!("Could not start the offline DNS test service on {TEST_DNS_ADDR}: {error}")
+    })?;
+    let tcp = TcpListener::bind(TEST_TCP_ADDR).map_err(|error| {
+        format!("Could not start the offline TCP test service on {TEST_TCP_ADDR}: {error}")
+    })?;
+    thread::spawn(move || {
+        let mut request = [0; 512];
+        loop {
+            let Ok((length, peer)) = dns.recv_from(&mut request) else {
+                continue;
+            };
+            if let Some(response) = answer_dns_query(&request[..length]) {
+                let _ = dns.send_to(&response, peer);
+            }
+        }
+    });
+    thread::spawn(move || {
+        for stream in tcp.incoming().flatten() {
+            thread::spawn(move || echo_tcp(stream));
+        }
+    });
+    Ok(())
+}
+
+/// Answers an A query for TEST_DNS_NAME with TEST_HOST_IPV4 and anything else
+/// with NXDOMAIN. Returns None for packets that are not a single-question
+/// standard query.
+fn answer_dns_query(request: &[u8]) -> Option<Vec<u8>> {
+    if request.len() < 17 || request[2] & 0xf8 != 0 || request[4..6] != [0, 1] {
+        return None;
+    }
+    let mut offset = 12;
+    let mut name = Vec::new();
+    loop {
+        let length = *request.get(offset)? as usize;
+        offset += 1;
+        if length == 0 {
+            break;
+        }
+        if length > 63 {
+            return None;
+        }
+        if !name.is_empty() {
+            name.push(b'.');
+        }
+        name.extend_from_slice(request.get(offset..offset + length)?);
+        offset += length;
+    }
+    let question_end = offset.checked_add(4)?;
+    let question_type = request.get(offset..question_end)?;
+    let found = name.eq_ignore_ascii_case(TEST_DNS_NAME) && question_type == [0, 1, 0, 1];
+    let mut response = request[..question_end].to_vec();
+    response[2] = 0x80 | (request[2] & 0x01);
+    response[3] = if found { 0x80 } else { 0x83 };
+    response[6..12].copy_from_slice(&[0, u8::from(found), 0, 0, 0, 0]);
+    if found {
+        response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        response.extend_from_slice(&TEST_HOST_IPV4);
+    }
+    Some(response)
+}
+
+fn echo_tcp(mut stream: TcpStream) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let mut buffer = [0; 1024];
+    while let Ok(length) = stream.read(&mut buffer) {
+        if length == 0 || stream.write_all(&buffer[..length]).is_err() {
+            break;
         }
     }
 }
@@ -247,7 +336,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         })
         || !output.iter().any(|line| {
             line.contains(
-                "Ring-3 DNS syscall verified: example.com resolved through the kernel-owned UDP service",
+                "Ring-3 DNS syscall verified: test.nos resolved through the kernel-owned UDP service",
             )
         })
         || !output.iter().any(|line| {
@@ -295,7 +384,10 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
             .any(|line| line.contains("ICMP echo reply from 10.0.2.2"))
         || !output
             .iter()
-            .any(|line| line.contains("DNS verified: example.com resolved to "))
+            .any(|line| line.contains("DNS verified: test.nos resolved to 10.0.2.2"))
+        || !output
+            .iter()
+            .any(|line| line.contains("Ring-3 TCP connection verified: "))
         || !output
             .iter()
             .any(|line| line.contains("ICMPv6 echo reply from fd00::2"))
@@ -425,7 +517,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
                     r#"{"schema":"network-os.fs-smoke.v1","purpose":"persistent filesystem test"}"#,
                 );
                 saw_user_dns |= line.contains(
-                    "Ring-3 DNS syscall verified: example.com resolved through the kernel-owned UDP service",
+                    "Ring-3 DNS syscall verified: test.nos resolved through the kernel-owned UDP service",
                 ) || line.contains(
                     "Ring-3 DNS syscall unavailable: configured resolver returned no IPv4 result",
                 );
