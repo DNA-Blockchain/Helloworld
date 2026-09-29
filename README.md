@@ -561,6 +561,81 @@ and stop early when the PC is over 75% busy. While
 a batch of 10 every 10 minutes at below-normal priority; delete the file to
 stop.
 
+### Linking research to CRISPR work and to modeled runs
+
+```powershell
+python research_crispr_link.py tag                       # dry run
+python research_crispr_link.py tag --confirm-publication
+python research_crispr_link.py link-run run.json --gene BRCA1 --sequence-file brca1.txt
+python research_crispr_link.py status
+```
+
+`tag` reads each published record's own title and publishes a
+`public_crispr_relevance` event with the CRISPR work it mentions (`crispr`,
+`base_editing`, `guide_rna`, `knockout`, `screen`, `delivery`,
+`gene_therapy`, ...) and the gene symbols it names. A tag describes the
+title's wording; it is never a judgment that the research supports an edit or
+a treatment. The method (`title-keywords-v1`) is published with it.
+
+`link-run` publishes a `public_model_run_record` for one
+`remission_workflow.py` result: its hash, what the model reported, its
+hash-linked stage ledger (so the difference detection, the modeled edit and
+the verification are each provable in order), an optional PAM-scan summary,
+and the tagged records for that gene. The model-only disclaimer is carried
+verbatim and enforced by the validator.
+
+**Sequences on the chain.** `--publish-sequences` puts the run's reference,
+sample and edited sequences on the chain as `public_sequence_record` events,
+but only for a `public_reference` (with `--accession`, e.g. an NCBI RefSeq
+entry that is already public) or a `synthetic` case. A sequence from a
+person's sample is refused, by the constructor and again by the validator: a
+genome identifies its owner and their relatives for life, the chain is
+append-only and replicated to every node, and consent cannot be taken back
+from it. For those cases only hashes are published.
+
+### DNA digital twin
+
+```powershell
+python remission_workflow.py --output run.json
+python dna_twin_viewer.py run.json --gene BRCA1 --frame 1 --open
+python dna_twin_viewer.py --baseline brca1_reference.txt --export-dataset twinset
+python dna_twin_viewer.py --from-chain <run_event_id>
+```
+
+`dna_twin_viewer.py` writes one local, self-contained HTML page for a modeled
+run:
+
+- **The double helix**, verified double: every rung is an A-T or C-G pair and
+  the second strand's 2-bit code is exactly the bitwise NOT of the first. The
+  complement comes from `dna_binary_codec.complement_strand`, not from the
+  page, and the check is shown on screen.
+- **The binary code** of each strand (A=00 C=01 G=10 T=11), with the
+  complementary strand beside it.
+- **The edit as bit flips**: restoring the baseline at a position is an XOR
+  with a 2-bit mask, and the whole edit is one mask over the sequence. The
+  page reports how many bits flip and verifies that applying the mask to the
+  sample reproduces the baseline.
+- **The protein consequence**: the codon each difference falls in, read
+  through the standard genetic code, with the amino acid change and its class
+  (synonymous, missense, nonsense, stop_lost, start_lost). A table lookup,
+  meaningful only in the sequence's real reading frame (`--frame`).
+- **Guide-RNA candidates** near a difference, as an efficiency heuristic.
+- **The chain's tagged research** for the gene, and the run's stage ledger.
+
+`--baseline` builds a **cancer-free baseline twin** from a reference sequence:
+the baseline every modeled edit restores. `--export-dataset` writes the twin
+as packed 2-bit binary (4 bases per byte, round-tripping through the
+project's own codec) with a manifest of hashes and a `SAMPLE.JSON` in the
+shape `os/tasks/remission` already takes, so the kernel's MicroPython can
+model the same sequences. `--from-chain` rebuilds the twin from published
+sequence events alone, recomputing the differences from the chain.
+
+The page is local and is not published: a run of a person's sample holds
+their genomic data. Nothing in the twin is a treatment. The modeled edit is a
+string substitution, `MODELED_REFERENCE_MATCH` is a statement about strings,
+and clinical remission is only ever copied from supplied, attributed clinical
+evidence.
+
 ### Corrections
 
 The chain is append-only, so a published record is fixed by publishing a
