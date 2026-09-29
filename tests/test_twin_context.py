@@ -188,10 +188,18 @@ def test_context_labels_cannot_escape_the_context_folder(tmp_path):
 
 
 def test_context_has_no_publish_path():
+    """ClinVar rows may be published; a person's clinical context may not. The
+    context functions must contain no publishing, and the publishing planner
+    must never read a context."""
     import inspect
-    source = inspect.getsource(ctx)
+    context_side = "".join(inspect.getsource(f) for f in
+                           (ctx.validate_context, ctx.save_context, ctx.load_context,
+                            ctx.research_tags_for_context, ctx.context_path))
     for forbidden in ("ResearchProvenanceQueue", "create_public_", "confirm_publication", "outbox"):
-        assert forbidden not in source, forbidden
+        assert forbidden not in context_side, forbidden
+    publish_side = inspect.getsource(ctx.plan_variant_events) + inspect.getsource(ctx.published_accessions)
+    for forbidden in ("context", "marker", "grade", "stage", "RECEPTOR"):
+        assert forbidden not in publish_side, forbidden
 
 
 def test_context_cli_records_and_reports(tmp_path, capsys):
@@ -241,3 +249,128 @@ def test_context_sorts_matching_research_first_without_dropping_any(tmp_path, mo
     assert [r["external_id"] for r in shown] == ["2", "1"]      # context match first
     assert [r["matches_context"] for r in shown] == [True, False]
     assert len(twin.linked_research(tmp_path, ["BRCA1"], [])) == 2   # none dropped
+
+
+# ------------------------------------------- publishing ClinVar to the chain
+
+def variant_row(uid="4935332", accession="VCV004935332", significance="Likely pathogenic"):
+    return {
+        "uid": uid, "accession": accession, "gene": "BRCA1",
+        "title": "NM_007294.4(BRCA1):c.441+1G>T", "variant_type": "single nucleotide variant",
+        "significance": significance, "review_status": "criteria provided, single submitter",
+        "last_evaluated": "2021/06/03 00:00", "conditions": ["BRCA1-related disorder"],
+        "source_url": f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{uid}/",
+    }
+
+
+def test_a_published_classification_is_attributed_and_hashed():
+    from research_provenance import (
+        create_public_variant_classification_event, validate_public_provenance, variant_record_hash)
+
+    event = create_public_variant_classification_event([variant_row()], confirm_publication=True)
+    validate_public_provenance(event)
+    assert event["database"] == "clinvar"
+    assert event["asserted_by"] == "ClinVar (NCBI) and its submitters, not this project"
+    record = event["records"][0]
+    assert record["significance"] == "Likely pathogenic"
+    assert record["conditions"] == ["BRCA1-related disorder"]
+    assert record["source_url"].endswith("/clinvar/variation/4935332/")
+    assert record["record_sha256"] == variant_record_hash(record)
+
+
+def test_publishing_classifications_needs_confirmation():
+    from research_provenance import create_public_variant_classification_event
+
+    with pytest.raises(PermissionError):
+        create_public_variant_classification_event([variant_row()])
+
+
+@pytest.mark.parametrize("change", [
+    lambda e: e.update(asserted_by="verified by this project"),
+    lambda e: e.update(database="our_own_lab"),
+    lambda e: e["records"][0].update(significance=""),
+    lambda e: e["records"][0].update(significance="Pathogenic" * 20),
+    lambda e: e["records"][0].update(accession="VCV1"),
+    lambda e: e["records"][0].update(gene="not a gene"),
+    lambda e: e["records"][0].update(uid="abc"),
+    lambda e: e["records"][0].update(source_url="https://example.invalid/variant"),
+    lambda e: e["records"][0].update(title=""),
+    lambda e: e["records"][0].update(conditions=["b", "a"]),
+    lambda e: e["records"][0].update(patient="never"),
+    lambda e: e.update(records=e["records"] * 2, record_count=2),
+])
+def test_invalid_classification_events_are_refused(change):
+    from research_provenance import (
+        create_public_variant_classification_event, validate_public_provenance)
+
+    event = create_public_variant_classification_event([variant_row()], confirm_publication=True)
+    change(event)
+    with pytest.raises(ValueError):
+        validate_public_provenance(event)
+
+
+def test_an_altered_classification_fails_its_own_hash():
+    from research_provenance import (
+        create_public_variant_classification_event, validate_public_provenance)
+
+    event = create_public_variant_classification_event([variant_row()], confirm_publication=True)
+    event["records"][0]["significance"] = "Benign"      # changed after publication
+    with pytest.raises(ValueError, match="hash does not match"):
+        validate_public_provenance(event)
+
+
+def test_planning_skips_accessions_already_on_the_chain(tmp_path):
+    from research_ledger import ResearchLedger
+    from research_provenance import validate_public_provenance
+
+    rows = [_clinvar_classification("4935332", CLINVAR_SUMMARY, "BRCA1"),
+            _clinvar_classification("4935334", dict(CLINVAR_SUMMARY, accession="VCV004935334"), "BRCA1")]
+    ctx.fetch_clinvar(tmp_path, "BRCA1", fetcher=fake_fetcher(rows))
+
+    events = ctx.plan_variant_events(tmp_path, ["BRCA1"])
+    assert len(events) == 1 and events[0]["record_count"] == 2
+    for event in events:
+        validate_public_provenance(event)
+
+    (tmp_path / "node-0").mkdir(exist_ok=True)
+    book = ResearchLedger(str(tmp_path / "node-0" / "research_ledger_node-0.json"))
+    assert book.add_block({"origin": 0, "index": 1, "hash_hex": "01",
+                           "research_provenance": events[0]})
+    assert ctx.published_accessions(tmp_path) == {"VCV000017661", "VCV004935334"}
+    assert ctx.plan_variant_events(tmp_path, ["BRCA1"]) == []      # nothing left to publish
+
+
+def test_batches_split_at_twenty(tmp_path):
+    rows = [_clinvar_classification(str(4935000 + i),
+                                    dict(CLINVAR_SUMMARY, accession=f"VCV{4935000 + i:09d}"), "BRCA1")
+            for i in range(25)]
+    ctx.fetch_clinvar(tmp_path, "BRCA1", fetcher=fake_fetcher(rows))
+    assert [e["record_count"] for e in ctx.plan_variant_events(tmp_path, ["BRCA1"])] == [20, 5]
+
+
+def test_clinvar_cli_dry_run_then_publish(tmp_path, capsys):
+    from research_provenance import validate_public_provenance
+
+    ctx.fetch_clinvar(tmp_path, "BRCA1",
+                      fetcher=fake_fetcher([_clinvar_classification("4935332", CLINVAR_SUMMARY, "BRCA1")]))
+    outbox = tmp_path / "outbox"
+    base = ["clinvar", "BRCA1", "--base-dir", str(tmp_path), "--outbox", str(outbox)]
+    assert ctx.main(base + ["--publish"]) == 0
+    assert "Dry run" in capsys.readouterr().out and not outbox.exists()
+
+    assert ctx.main(base + ["--publish", "--confirm-publication"]) == 0
+    assert "attributed to ClinVar" in capsys.readouterr().out
+    [queued] = list(outbox.glob("*.json"))
+    event = json.loads(queued.read_text(encoding="utf-8"))
+    validate_public_provenance(event)
+    assert event["event_type"] == "public_variant_classification"
+
+
+def test_clinical_context_still_has_no_publish_path():
+    """Publishing ClinVar must not have opened a door for patient context."""
+    import inspect
+    source = inspect.getsource(ctx.validate_context) + inspect.getsource(ctx.save_context)
+    for forbidden in ("ResearchProvenanceQueue", "create_public_", "confirm_publication", "outbox"):
+        assert forbidden not in source, forbidden
+    context = ctx.validate_context(["ER+"])
+    assert context["published"] is False

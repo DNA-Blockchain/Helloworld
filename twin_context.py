@@ -168,6 +168,54 @@ def clinvar_for_genes(base_dir: Path, genes: list[str]) -> list[dict]:
     return found
 
 
+# ------------------------------------------------------- publishing ClinVar
+# Cached ClinVar rows are public metadata from an allowed public database, so
+# they may go on the chain, attributed to ClinVar. The local clinical context
+# above never can: that describes a person.
+
+def published_accessions(base_dir: Path) -> set[str]:
+    """Accessions already carried by a published variant classification."""
+    from research_ledger import published_events
+
+    return {
+        record["accession"]
+        for event in published_events(str(base_dir), "public_variant_classification").values()
+        for record in event["records"]
+    }
+
+
+def plan_variant_events(base_dir: Path, genes: list[str], *, time_anchor: dict | None = None) -> list[dict]:
+    """One event per 20 cached ClinVar rows that are not on the chain yet."""
+    from research_provenance import MAX_VARIANT_RECORDS, create_public_variant_classification_event
+
+    known = published_accessions(base_dir)
+    pending, seen = [], set()
+    for record in clinvar_for_genes(base_dir, genes):
+        accession = record["accession"]
+        if accession in known or accession in seen:
+            continue
+        seen.add(accession)
+        pending.append({
+            "uid": record["uid"],
+            "accession": accession,
+            "gene": record["gene"],
+            "title": record["title"],
+            "variant_type": record.get("variant_type", ""),
+            "significance": record["clinvar_classification"],
+            "review_status": record.get("clinvar_review_status", ""),
+            "last_evaluated": record.get("clinvar_last_evaluated", ""),
+            "conditions": record.get("conditions") or [],
+            "source_url": record["source_url"],
+        })
+    return [
+        create_public_variant_classification_event(
+            pending[start:start + MAX_VARIANT_RECORDS],
+            confirm_publication=True, time_anchor=time_anchor,
+        )
+        for start in range(0, len(pending), MAX_VARIANT_RECORDS)
+    ]
+
+
 # ------------------------------------------------------------------ context
 
 def normalise_marker(value: str) -> str:
@@ -250,6 +298,12 @@ def main(argv: list[str] | None = None) -> int:
     clinvar.add_argument("--fetch", action="store_true", help="query NCBI now and refresh the local cache")
     clinvar.add_argument("--max-results", type=int, default=10)
     clinvar.add_argument("--significance", help="only this reported significance (e.g. Pathogenic)")
+    clinvar.add_argument("--publish", action="store_true",
+                        help="also queue the cached rows for the chain as ClinVar's own attributed "
+                             "classifications (needs --confirm-publication)")
+    clinvar.add_argument("--confirm-publication", action="store_true",
+                        help="with --publish, queue the events permanently for node-0")
+    clinvar.add_argument("--outbox", type=Path, help="provenance outbox (default: research_publish's)")
     context = sub.add_parser("context", help="record or show local clinical context for a case")
     context.add_argument("--set", action="append", default=[], dest="entries",
                          help="an annotation such as ER+, HER2-, G2, II (repeatable)")
@@ -279,6 +333,25 @@ def main(argv: list[str] | None = None) -> int:
             if record["conditions"]:
                 print(f"     conditions: {', '.join(record['conditions'][:3])}")
         print(cached["attribution"])
+        if not args.publish:
+            return 0
+
+        import research_publish
+        from research_provenance import ResearchProvenanceQueue
+
+        anchor = research_publish.current_time_anchor() if args.confirm_publication else None
+        events = plan_variant_events(args.base_dir, [args.gene], time_anchor=anchor)
+        new_rows = sum(event["record_count"] for event in events)
+        already = len(cached["records"]) - new_rows
+        print(f"{new_rows} classification(s) to publish in {len(events)} event(s)"
+              + (f"; {already} already on the chain" if already > 0 else ""))
+        if not args.confirm_publication:
+            print("Dry run: nothing queued. Add --confirm-publication to publish these permanently.")
+            return 0
+        queue = ResearchProvenanceQueue(args.outbox or research_publish.DEFAULT_OUTBOX)
+        for event in events:
+            queue.enqueue(event)
+        print(f"Queued {len(events)} event(s) for node-0, attributed to ClinVar.")
         return 0
 
     if args.entries:
