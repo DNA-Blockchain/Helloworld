@@ -12,6 +12,10 @@ use std::{
 
 const HOST_HEALTH_ADDR: &str = "127.0.0.1:18080";
 
+/// Boot checks now run workflow tasks (including two MicroPython interpreter
+/// starts and a 1-second runtime-limit test) before networking comes up.
+const BOOT_CHECK_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let mode = args.next().unwrap_or_else(|| "run".to_owned());
@@ -144,7 +148,7 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
     drop(sender);
 
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + BOOT_CHECK_TIMEOUT;
     let mut service_ready = false;
     while Instant::now() < deadline {
         match receiver.recv_timeout(Duration::from_millis(250)) {
@@ -178,7 +182,9 @@ fn run_integration_check(qemu: &mut Command) -> Result<(), String> {
         let cleanup = terminate_qemu(&mut child, &mut output, &receiver);
         print_output(&output, "check-slaac");
         cleanup?;
-        return Err("QEMU did not reach the network-service-ready state within 60 seconds.".into());
+        return Err(
+            "QEMU did not reach the network-service-ready state within 120 seconds.".into(),
+        );
     }
 
     let first_response = request_health_endpoint();
@@ -394,7 +400,7 @@ fn run_slaac_integration_check(image: &str, data_disk: &Path) -> Result<(), Stri
     let mut saw_default_route = false;
     let mut saw_ipv6_echo = false;
     let mut saw_service_ready = false;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + BOOT_CHECK_TIMEOUT;
     while Instant::now() < deadline {
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(line) => {

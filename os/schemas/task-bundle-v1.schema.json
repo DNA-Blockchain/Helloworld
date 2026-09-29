@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "NOSFS task bundle manifest v1",
-  "description": "Manifest contract for a bounded user-space task bundle. The guest runs `elf` tasks after re-checking every file digest and stops them at `runtimeSeconds`; `micropython` tasks are validated but refused until a guest runtime exists. The entrypoint must be a declared file whose role matches the runtime (python or elf). Network capabilities are declared but tasks requesting any are refused; `memoryBytes` is not enforced yet.",
+  "description": "Manifest contract for a bounded user-space task bundle. The guest re-checks every file digest, then runs `elf` tasks directly and `micropython` tasks with its embedded ring-3 MicroPython interpreter, stopping either at `runtimeSeconds`. The entrypoint must be a declared file whose role matches the runtime (python or elf). Network capabilities are declared but tasks requesting any are refused; `memoryBytes` is not enforced yet.",
   "type": "object",
   "required": [
     "schemaVersion",

@@ -712,7 +712,15 @@ pub(crate) fn verify_user_syscall() -> Result<UserSyscallReport, &'static str> {
             return Err("ELF process lifecycle returned an unexpected exit status");
         }
         let workflow_report = super::storage::verify_workflow_execution(|image, grant| {
-            run_elf_task(image, grant, elf_load_base, process_stack, &space)
+            // Stack below the load base: runtimes such as MicroPython span
+            // many pages above it.
+            run_elf_task(
+                image,
+                grant,
+                elf_load_base,
+                elf_load_base - PAGE_SIZE,
+                &space,
+            )
         })?;
         Ok((
             exit_code,
@@ -758,6 +766,7 @@ fn run_elf_task(
             stack_top,
             grant.readable,
             grant.writable,
+            grant.entrypoint,
             grant.runtime_seconds,
         )
     })();

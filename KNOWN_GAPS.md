@@ -81,13 +81,14 @@ confident-looking file imply more than it's actually verified.
   address supervisor memory. The Python research agent remains a host
   application; running it on this OS requires an isolated user-space runtime,
   broader filesystem API, and network syscalls. It must not run as privileged
-  kernel code. MicroPython has not yet been ported or run in the guest. The
-  workflow dispatcher can execute static ELF tasks from digest-checked
+  kernel code. A minimum-configuration MicroPython runs ring-3 workflow
+  scripts, but without `json`, `hashlib`, `binascii`, floats, imports or file
+  objects, so the research agent and `remission_core.py` cannot run there yet.
+  The workflow dispatcher can execute static ELF tasks from digest-checked
   manifests, one at a time and synchronously, restricting reads to each
   block's declared inputs, writes to its declared `.OUT` outputs, denying
   network syscalls, and stopping tasks at their `runtimeSeconds` limit. It does
-  not enforce `memoryBytes` or keep a persistent run log, and MicroPython tasks
-  are refused. NOSFS can now delete files, but its root directory still holds
+  not enforce `memoryBytes` or keep a persistent run log. NOSFS can now delete files, but its root directory still holds
   only 16 entries.
   The driver only supports the
   QEMU 82540EM model; the

@@ -256,8 +256,16 @@ pub(crate) fn verify_workflow_execution(
         TASK_MANIFEST_NAME,
         TASK_INPUT_NAME,
         read_named_file,
+        write_named_file,
+        delete_named_file,
         run_elf,
     )
+}
+
+pub(crate) fn delete_named_file(name: &str) -> Result<bool, &'static str> {
+    let mut device = QemuAtaDevice::initialize()?;
+    let filesystem = super::filesystem::Filesystem::mount(&mut device)?;
+    filesystem.delete_file(&mut device, name)
 }
 
 pub(crate) fn read_test_elf(output: &mut [u8]) -> Result<usize, &'static str> {

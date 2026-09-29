@@ -19,6 +19,7 @@ const SYSCALL_UDP_SEND: u64 = 10;
 const SYSCALL_UDP_RECEIVE: u64 = 11;
 const SYSCALL_UDP_CLOSE: u64 = 12;
 const SYSCALL_WRITE_FILE: u64 = 13;
+const SYSCALL_TASK_ENTRYPOINT: u64 = 14;
 const SYSCALL_ERROR: u64 = u64::MAX - 1;
 const MAX_FILENAME_BYTES: usize = 16;
 const MAX_WRITE_BYTES: usize = 4096;
@@ -77,6 +78,7 @@ impl FileList {
 struct TaskPolicy {
     readable: FileList,
     writable: FileList,
+    entrypoint: FileList,
     written: u8,
 }
 
@@ -109,6 +111,7 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static TASK_POLICY: StaticTaskPolicy = StaticTaskPolicy(UnsafeCell::new(TaskPolicy {
     readable: FileList::EMPTY,
     writable: FileList::EMPTY,
+    entrypoint: FileList::EMPTY,
     written: 0,
 }));
 static TASK_POLICY_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -323,6 +326,7 @@ pub(crate) fn run_task_with_policy(
     user_stack: usize,
     readable_files: &[&str],
     writable_files: &[&str],
+    entrypoint: &str,
     runtime_seconds: u64,
 ) -> Result<TaskRunResult, &'static str> {
     if TASK_POLICY_ACTIVE.load(Ordering::Acquire) {
@@ -334,6 +338,7 @@ pub(crate) fn run_task_with_policy(
     let policy = unsafe { &mut *TASK_POLICY.0.get() };
     policy.readable.set(readable_files)?;
     policy.writable.set(writable_files)?;
+    policy.entrypoint.set(&[entrypoint])?;
     policy.written = 0;
     let deadline =
         super::timer::milliseconds().saturating_add(runtime_seconds.saturating_mul(1_000));
@@ -490,6 +495,24 @@ extern "C" fn syscall_dispatch(number: u64, argument1: u64, argument2: u64, argu
         return super::storage::read_named_file(filename, output)
             .map(|length| length as u64)
             .unwrap_or(SYSCALL_ERROR);
+    }
+    if number == SYSCALL_TASK_ENTRYPOINT {
+        if !TASK_POLICY_ACTIVE.load(Ordering::Acquire) {
+            return SYSCALL_ERROR;
+        }
+        let policy = unsafe { &*TASK_POLICY.0.get() };
+        let name = &policy.entrypoint.names[0][..policy.entrypoint.lengths[0]];
+        let Ok(capacity) = usize::try_from(argument2) else {
+            return SYSCALL_ERROR;
+        };
+        if policy.entrypoint.count != 1
+            || name.len() > capacity
+            || super::address_space::validate_user_buffer(argument1, name.len(), true).is_err()
+            || super::address_space::copy_to_user(argument1, name).is_err()
+        {
+            return SYSCALL_ERROR;
+        }
+        return name.len() as u64;
     }
     if number == SYSCALL_WRITE_FILE {
         if !TASK_POLICY_ACTIVE.load(Ordering::Acquire) {

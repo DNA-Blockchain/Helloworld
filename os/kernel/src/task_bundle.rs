@@ -10,6 +10,10 @@ use serde::{
 use serde_json::Value;
 
 const MAX_MANIFEST_SIZE: usize = 4096;
+/// Ring-3 MicroPython interpreter built by os/micropython/build.sh. It is part
+/// of the kernel image, so `micropython` tasks trust it like kernel code; the
+/// task's own script is still digest-checked from its manifest.
+static MICROPYTHON_RUNTIME: &[u8] = include_bytes!("../../micropython/MPY.ELF");
 const MAX_TASK_FILES: usize = 14;
 const MAX_WORKFLOW_BLOCKS: usize = 8;
 const MAX_WORKFLOW_EVENTS: usize = MAX_WORKFLOW_BLOCKS * 3;
@@ -360,10 +364,12 @@ pub(crate) enum BlockOutcome {
     Refused(&'static str),
 }
 
-/// What a running task is allowed to do.
+/// What a running task is allowed to do. `entrypoint` is what syscall 14
+/// reports, so the MicroPython runtime knows which script to run.
 pub(crate) struct TaskGrant<'a> {
     pub(crate) readable: &'a [&'a str],
     pub(crate) writable: &'a [&'a str],
+    pub(crate) entrypoint: &'a str,
     pub(crate) runtime_seconds: u64,
 }
 
@@ -467,26 +473,36 @@ fn run_block(
     let mut manifest = [0; MAX_MANIFEST_SIZE];
     let length = read_file(task_manifest, &mut manifest)?;
     let summary = validate_task_manifest(&manifest[..length], &mut *read_file)?;
-    if summary.runtime != TaskRuntime::Elf {
-        return Err("task runtime is not available in this kernel");
-    }
     if summary.network_requested {
         return Err("task requests network access, which task execution does not grant");
     }
+    let mut readable = Vec::from(input_files);
     let mut image = Vec::new();
-    image
-        .try_reserve_exact(summary.entrypoint_size)
-        .map_err(|_| "not enough kernel memory to load a task entrypoint")?;
-    image.resize(summary.entrypoint_size, 0);
-    let image_length = read_file(&summary.entrypoint, &mut image)?;
-    if image_length != image.len() || sha256(&image) != summary.entrypoint_sha256 {
-        return Err("task entrypoint changed after validation");
-    }
+    let image: &[u8] = match summary.runtime {
+        TaskRuntime::Elf => {
+            image
+                .try_reserve_exact(summary.entrypoint_size)
+                .map_err(|_| "not enough kernel memory to load a task entrypoint")?;
+            image.resize(summary.entrypoint_size, 0);
+            let image_length = read_file(&summary.entrypoint, &mut image)?;
+            if image_length != image.len() || sha256(&image) != summary.entrypoint_sha256 {
+                return Err("task entrypoint changed after validation");
+            }
+            &image
+        }
+        TaskRuntime::MicroPython => {
+            if !readable.contains(&summary.entrypoint.as_str()) {
+                readable.push(&summary.entrypoint);
+            }
+            MICROPYTHON_RUNTIME
+        }
+    };
     let result = run_elf(
-        &image,
+        image,
         &TaskGrant {
-            readable: input_files,
+            readable: &readable,
             writable: output_files,
+            entrypoint: &summary.entrypoint,
             runtime_seconds: summary.runtime_seconds,
         },
     )?;
@@ -504,6 +520,26 @@ pub(crate) fn elf_task_manifest(
     dns: bool,
     runtime_seconds: u64,
 ) -> String {
+    single_file_manifest(
+        task_id,
+        "elf",
+        entrypoint,
+        "elf",
+        image,
+        dns,
+        runtime_seconds,
+    )
+}
+
+fn single_file_manifest(
+    task_id: &str,
+    runtime: &str,
+    entrypoint: &str,
+    role: &str,
+    image: &[u8],
+    dns: bool,
+    runtime_seconds: u64,
+) -> String {
     let digest = sha256(image);
     let mut hex = String::with_capacity(64);
     for byte in digest {
@@ -511,10 +547,23 @@ pub(crate) fn elf_task_manifest(
         hex.push(hex_digit(byte & 0x0f) as char);
     }
     format!(
-        r#"{{"schemaVersion":"nosfs.task-bundle.v1","taskId":"{task_id}","runtime":"elf","entrypoint":"{entrypoint}","files":[{{"name":"{entrypoint}","role":"elf","sizeBytes":{size},"sha256":"{hex}"}}],"capabilities":{{"network":{{"dns":{dns},"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}}}},"limits":{{"memoryBytes":65536,"runtimeSeconds":{runtime_seconds}}}}}"#,
+        r#"{{"schemaVersion":"nosfs.task-bundle.v1","taskId":"{task_id}","runtime":"{runtime}","entrypoint":"{entrypoint}","files":[{{"name":"{entrypoint}","role":"{role}","sizeBytes":{size},"sha256":"{hex}"}}],"capabilities":{{"network":{{"dns":{dns},"udpDestinations":[],"tcpDestinations":[],"tlsHosts":[]}}}},"limits":{{"memoryBytes":65536,"runtimeSeconds":{runtime_seconds}}}}}"#,
         size = image.len(),
     )
 }
+
+/// Compares a synthetic sample to its reference in MicroPython, mirroring
+/// remission_core.py's position-7 G->A demo; raises if the result is wrong.
+const DNA_COMPARE_SCRIPT: &[u8] = b"reference = 'ACGTACGTACGT'
+sample = 'ACGTACATACGT'
+bits = {'A': '00', 'C': '01', 'G': '10', 'T': '11'}
+diff = [i + 1 for i in range(len(reference)) if reference[i] != sample[i]]
+if diff != [7] or bits[reference[6]] + bits[sample[6]] != '1000':
+    raise AssertionError('unexpected comparison')
+print('MicroPython task: position', diff[0], reference[6], '->', sample[6])
+";
+
+const FAIL_SCRIPT: &[u8] = b"raise ValueError('expected task failure')\n";
 
 pub(crate) struct WorkflowExecutionReport {
     pub(crate) executed: usize,
@@ -525,6 +574,30 @@ struct Overlay {
 }
 
 impl Overlay {
+    fn add_python_task(
+        &mut self,
+        manifest: &'static str,
+        script_name: &'static str,
+        script: &[u8],
+    ) {
+        let task_id = manifest
+            .split('.')
+            .next()
+            .unwrap_or("task")
+            .to_ascii_lowercase();
+        let manifest_text = single_file_manifest(
+            &task_id,
+            "micropython",
+            script_name,
+            "python",
+            script,
+            false,
+            5,
+        );
+        self.files.push((manifest, manifest_text.into_bytes()));
+        self.files.push((script_name, Vec::from(script)));
+    }
+
     fn add_elf_task(
         &mut self,
         manifest: &'static str,
@@ -563,7 +636,13 @@ fn expect_outcomes(
     error: &'static str,
 ) -> Result<(), &'static str> {
     for (block, outcome, status) in expected {
-        if run.outcome(block) != Some((*outcome, *status)) {
+        let actual = run.outcome(block);
+        if actual != Some((*outcome, *status)) {
+            use core::fmt::Write;
+            let _ = writeln!(
+                crate::Serial,
+                "workflow block {block}: expected {outcome:?}/{status:?}, got {actual:?}"
+            );
             return Err(error);
         }
     }
@@ -574,13 +653,17 @@ fn expect_outcomes(
 /// succeed, fail and be refused for the right reasons, and an output-file
 /// workflow that also checks write permissions and the runtime limit.
 /// Programs and manifests other than the stored workflow live in an
-/// in-memory overlay so they do not use root-directory slots.
+/// in-memory overlay so they do not use root-directory slots; Python scripts
+/// are also written to disk for the run because the interpreter reads its
+/// script through syscall 2.
 pub(crate) fn verify_workflow_execution(
     elf_workflow: &[u8],
     elf_task_manifest_name: &str,
     python_task_manifest_name: &str,
     input_file_name: &'static str,
     mut read_disk: impl FnMut(&str, &mut [u8]) -> Result<usize, &'static str>,
+    mut write_disk: impl FnMut(&str, &[u8]) -> Result<(), &'static str>,
+    mut delete_disk: impl FnMut(&str) -> Result<bool, &'static str>,
     mut run_elf: impl FnMut(&[u8], &TaskGrant) -> Result<TaskRunResult, &'static str>,
 ) -> Result<WorkflowExecutionReport, &'static str> {
     use BlockOutcome::{Exited, NotRun, Refused};
@@ -633,6 +716,8 @@ pub(crate) fn verify_workflow_execution(
         false,
         1,
     );
+    overlay.add_python_task("DNA.MF", "DNA.PY", DNA_COMPARE_SCRIPT);
+    overlay.add_python_task("FAIL.MF", "FAIL.PY", FAIL_SCRIPT);
     let mut read_file = |name: &str, output: &mut [u8]| {
         overlay
             .read(name, output)
@@ -660,11 +745,7 @@ pub(crate) fn verify_workflow_execution(
     expect_outcomes(
         &mixed,
         &[
-            (
-                "python-task",
-                Refused("task runtime is not available in this kernel"),
-                Failed,
-            ),
+            ("python-task", Exited(0), Succeeded),
             (
                 "tampered",
                 Refused("task bundle file SHA-256 does not match its manifest"),
@@ -683,13 +764,22 @@ pub(crate) fn verify_workflow_execution(
     )?;
 
     let output_workflow = format!(
-        r#"{{"schemaVersion":"nosfs.workflow.v1","workflowId":"output-check","failurePolicy":"continue","blocks":[{{"blockId":"copy","taskManifest":"COPY.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":["COPY.OUT"]}},{{"blockId":"check-copy","taskManifest":"CHECK.MF","dependsOn":["copy"],"inputFiles":["COPY.OUT"],"outputFiles":[]}},{{"blockId":"undeclared-write","taskManifest":"COPY.MF","dependsOn":["check-copy"],"inputFiles":["{input}"],"outputFiles":["OTHER.OUT"]}},{{"blockId":"missing-output","taskManifest":"{elf}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":["NONE.OUT"]}},{{"blockId":"spin","taskManifest":"SPIN.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}}]}}"#,
+        r#"{{"schemaVersion":"nosfs.workflow.v1","workflowId":"output-check","failurePolicy":"continue","blocks":[{{"blockId":"copy","taskManifest":"COPY.MF","dependsOn":[],"inputFiles":["{input}"],"outputFiles":["COPY.OUT"]}},{{"blockId":"check-copy","taskManifest":"CHECK.MF","dependsOn":["copy"],"inputFiles":["COPY.OUT"],"outputFiles":[]}},{{"blockId":"undeclared-write","taskManifest":"COPY.MF","dependsOn":["check-copy"],"inputFiles":["{input}"],"outputFiles":["OTHER.OUT"]}},{{"blockId":"missing-output","taskManifest":"{elf}","dependsOn":[],"inputFiles":["{input}"],"outputFiles":["NONE.OUT"]}},{{"blockId":"spin","taskManifest":"SPIN.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}},{{"blockId":"python-dna","taskManifest":"DNA.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}},{{"blockId":"python-raise","taskManifest":"FAIL.MF","dependsOn":[],"inputFiles":[],"outputFiles":[]}}]}}"#,
         elf = elf_task_manifest_name,
         input = input_file_name,
     );
+    write_disk("DNA.PY", DNA_COMPARE_SCRIPT)?;
+    write_disk("FAIL.PY", FAIL_SCRIPT)?;
     let output_run = execute_workflow(
         output_workflow.as_bytes(),
-        &[elf_task_manifest_name, "COPY.MF", "CHECK.MF", "SPIN.MF"],
+        &[
+            elf_task_manifest_name,
+            "COPY.MF",
+            "CHECK.MF",
+            "SPIN.MF",
+            "DNA.MF",
+            "FAIL.MF",
+        ],
         &[input_file_name],
         &mut read_file,
         &mut run_elf,
@@ -710,6 +800,8 @@ pub(crate) fn verify_workflow_execution(
                 Refused("ring-3 task exceeded its runtime limit"),
                 Failed,
             ),
+            ("python-dna", Exited(0), Succeeded),
+            ("python-raise", Exited(1), Failed),
         ],
         "output workflow block did not reach its expected outcome",
     )?;
@@ -719,6 +811,12 @@ pub(crate) fn verify_workflow_execution(
     let copied_length = read_file("COPY.OUT", &mut copied)?;
     if input[..input_length] != copied[..copied_length] {
         return Err("task output file does not match the copied input");
+    }
+    // Keep root-directory slots free for the next boot.
+    for transient in ["DNA.PY", "FAIL.PY", "COPY.OUT"] {
+        if !delete_disk(transient)? {
+            return Err("transient workflow file was missing before deletion");
+        }
     }
 
     Ok(WorkflowExecutionReport {

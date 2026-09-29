@@ -215,16 +215,19 @@ loopback-only forward, and stops QEMU. `cargo run -- check-slaac` runs the
 controlled RA test described above. This validates the stack and driver only
 in QEMU, not on physical hardware or a production network.
 
-The Python research agent is still not executable in this kernel. The intended
-direction is a workflow dispatcher that loads approved task manifests and
-launches MicroPython in a separate ring-3 ELF process, never inside the kernel.
-The guest can now dispatch workflow blocks that run static ELF tasks, but
-MicroPython tasks are refused because no MicroPython runtime exists in the
-guest. The current loader, 256-KiB per-file limit, and minimal read-only file
-syscall are not sufficient to load MicroPython. Before Python tasks can run,
-the OS needs a stable process ABI, a user-space runtime, and enforced memory
-limits. Only approved code may be
-executable; downloaded research records remain data, not code.
+MicroPython tasks now run as ring-3 processes, never inside the kernel. A
+`"runtime": "micropython"` block loads the kernel-embedded interpreter in
+`os/micropython/MPY.ELF` (see its README), which asks the kernel for the
+manifest's entrypoint (syscall 14: `RDI` = writable buffer, `RSI` = capacity),
+reads that digest-checked script, and runs it under the same read, write,
+network and runtime policy as ELF tasks; an uncaught exception exits 1 and
+fails the block. The boot test runs the stored `TASK.PY` sample, a script that
+compares a synthetic sample to its reference (position 7, G to A), and a
+script that raises. The interpreter uses MicroPython's minimum configuration,
+so the Python research agent and `remission_core.py` (which need `json`,
+`hashlib`, `binascii` and file objects) cannot run in the guest yet, and
+scripts cannot write files. Only approved code may be executable; downloaded
+research records remain data, not code.
 
 The host research application has an optional local Ollama integration for
 citation-grounded answers (`local_ai_retrieval.py`), but the bare-metal guest
