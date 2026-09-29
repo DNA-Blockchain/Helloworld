@@ -164,6 +164,30 @@ def test_kernel_rejections_and_failed_boots_are_reported(monkeypatch):
     assert events == [] and any("kernel batch of 3 failed" in n for n in notes)
 
 
+class Round:
+    def __init__(self, round_no):
+        self.round_no = round_no
+
+
+def test_shared_topic_research_rotates_and_skips_published_topics(tmp_path):
+    store = tmp_path / "store.json"
+    store.write_text(json.dumps(STORE))
+    shared = research_queue.SharedTopicResearch(tmp_path, [store], None, sources=["pubmed"])
+    # three pending topics; round 4 starts at 4 % 3 = 1
+    result = shared(Round(4))
+    assert result["research_event"]["query"] == "Ovarian Neoplasms BRCA1"
+    validate_public_provenance(result["research_event"])
+
+    from research_ledger import ResearchLedger
+    (tmp_path / "node-0").mkdir()
+    ResearchLedger(str(tmp_path / "node-0" / "research_ledger_node-0.json")).add_block(
+        {"origin": 0, "index": 1, "hash_hex": "ab", "research_provenance": result["research_event"]})
+    # the published topic drops out of the rotation: [Metastatic, Neoplasms], 4 % 2 = 0
+    assert shared(Round(4))["research_event"]["query"] == "Metastatic Breast Cancer BRCA1"
+    assert research_queue.SharedTopicResearch(tmp_path, [tmp_path / "none.json"], None)(Round(1)) == {
+        "source": "research_queue", "status": "queue empty"}
+
+
 def test_cli_dry_run_then_confirm(tmp_path, capsys):
     store = tmp_path / "store.json"
     store.write_text(json.dumps(STORE))

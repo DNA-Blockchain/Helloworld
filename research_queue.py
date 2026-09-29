@@ -219,6 +219,47 @@ def plan(topics, *, sources, max_results, kernel, already_published, already_que
     return events, notes
 
 
+class SharedTopicResearch:
+    """Work-sharing runner (work_sharing.py): the node assigned a research
+    round publishes one queued topic itself. Topics already on the chain are
+    skipped, and the starting topic rotates with the round, so a topic that
+    yields nothing new does not block the others. Constructing it is the
+    confirmation to publish (run_node_cli.py --publish-research-topics)."""
+
+    wants_task = True
+    attempts_per_round = 3
+
+    def __init__(self, ledgers: Path, store_paths: list[Path], live_store: Path | None,
+                 sources: list[str] | None = None, max_results: int = 5):
+        self.ledgers = ledgers
+        self.store_paths = store_paths
+        self.live_store = live_store
+        self.sources = sources or list(research_fetch.DEFAULT_SOURCES)
+        self.max_results = max_results
+
+    def __call__(self, task) -> dict:
+        already_queried = published_queries(str(self.ledgers))
+        pending = [(c, b) for c, b in queued_topics(
+            [p for p in self.store_paths if p.exists()],
+            self.live_store if self.live_store and self.live_store.exists() else None)
+            if f"{c} {b}".strip().lower() not in already_queried]
+        if not pending:
+            return {"source": "research_queue", "status": "queue empty"}
+        start = task.round_no % len(pending)
+        rotated = pending[start:] + pending[:start]
+        notes = []
+        for topic in rotated[:self.attempts_per_round]:
+            events, topic_notes = plan(
+                [topic], sources=self.sources, max_results=self.max_results, kernel=False,
+                already_published=published_record_keys(str(self.ledgers)),
+                already_queried=already_queried, time_anchor=research_publish.current_time_anchor(),
+            )
+            notes.extend(topic_notes)
+            if events:
+                return {"source": "research_queue", "research_event": events[0], "notes": notes}
+        return {"source": "research_queue", "status": "nothing new", "notes": notes}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--store", type=Path, action="append",

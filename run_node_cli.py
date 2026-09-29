@@ -95,6 +95,7 @@ import asyncio
 import hashlib
 import json
 import os
+from pathlib import Path
 import time
 from collections.abc import Callable
 
@@ -187,6 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--work-sharing", action="store_true",
                    help="split research/chain-tip lookups and chain audits with the other nodes "
                         "(replaces the per-block research/external enrichers)")
+    p.add_argument("--publish-research-topics", action="store_true",
+                   help="with --work-sharing: when this node is assigned a research round, fetch and rank "
+                        "the next topic in the research agent's queue and publish it permanently as a "
+                        "public_research_records event (this flag is the publication confirmation)")
     p.add_argument("--round-seconds", type=float, default=300.0, help="work-sharing round length")
     p.add_argument("--takeover-seconds", type=float, default=20.0,
                    help="how long each next-in-line node waits before taking over a job")
@@ -257,6 +262,10 @@ async def main(argv: list[str] | None = None) -> int:
     # can share a node. Live enrichers would mix other data into blocks.
     if args.provenance_queue and (args.allow_research_gossip or args.allow_external_info):
         parser.error("--provenance-queue cannot be combined with live enrichers")
+    if args.publish_research_topics and not args.work_sharing:
+        parser.error("--publish-research-topics requires --work-sharing")
+    if args.publish_research_topics and args.allow_research_gossip:
+        parser.error("--publish-research-topics replaces --allow-research-gossip's lookup; use one")
 
     os.makedirs(args.workdir, exist_ok=True)
     if args.live_db:
@@ -310,11 +319,21 @@ async def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.work_sharing:
+        runners = {}
+        if args.publish_research_topics:
+            from research_queue import SharedTopicResearch
+
+            project = os.path.dirname(os.path.abspath(__file__))
+            runners["research"] = SharedTopicResearch(
+                ledgers=Path(os.path.dirname(os.path.abspath(args.workdir))),
+                store_paths=[Path(project, "research_store.json")],
+                live_store=Path(project, "live_store.db"),
+            )
         WorkManager(node, WorkSchedule(
             round_seconds=args.round_seconds,
-            research_every=3 if args.allow_research_gossip else 0,
+            research_every=3 if args.allow_research_gossip or args.publish_research_topics else 0,
             external_every=2 if args.allow_external_info and not args.no_external_info else 0,
-        ), takeover_seconds=args.takeover_seconds).attach()
+        ), takeover_seconds=args.takeover_seconds, runners=runners).attach()
 
     print("=" * 78)
     print(f"REAL NETWORK NODE  id={args.id}  bind={args.bind}:{args.port}")

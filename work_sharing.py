@@ -58,8 +58,11 @@ work_sharing.py — nodes split the network's recurring work between them,
 and take over from each other when one is down or slow.
 
 Rounds: time is cut into rounds of `round_seconds`. Each round has a few
-jobs (see WorkSchedule.tasks_for_round): a research lookup every
-`research_every` rounds, a Bitcoin/Ethereum chain-tip read every
+jobs (see WorkSchedule.tasks_for_round): a research job every
+`research_every` rounds (a lookup whose result is gossiped as a hash, or,
+with research_queue.SharedTopicResearch, publishing the next topic from the
+research agent's queue as a public_research_records event in the work
+block), a Bitcoin/Ethereum chain-tip read every
 `external_every` rounds, and one chain audit per round whose target
 rotates through the nodes.
 
@@ -103,6 +106,7 @@ import requests
 from chain_store import ChainBlock, GENESIS_PREV_HASH
 from dna_binary_codec import decode_from_dna
 from external_chain_bridge import build_external_info_snapshot
+from research_provenance import validate_public_provenance
 
 
 @dataclass(frozen=True)
@@ -320,10 +324,18 @@ class WorkManager:
                     self.gave_up.add(task.task_id)
                     return
             else:
-                result = await asyncio.to_thread(self.runners[task.kind])
+                runner = self.runners[task.kind]
+                args = (task,) if getattr(runner, "wants_task", False) else ()
+                result = await asyncio.to_thread(runner, *args)
             if task.task_id in self.done:   # someone else finished first while we worked
                 self.stats["work_finished_late"] += 1
                 return
+            # A runner may return a public research event to publish with the
+            # work block (research_queue.SharedTopicResearch); it is
+            # validated like any outbox event.
+            research_event = result.pop("research_event", None) if isinstance(result, dict) else None
+            if research_event is not None:
+                validate_public_provenance(research_event)
             result_digest = hashlib.sha256(
                 json.dumps(
                     result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -345,6 +357,8 @@ class WorkManager:
                         else "completed"
                     ),
                 }
+                if research_event is not None:
+                    summary["published_event_id"] = research_event["event_id"]
             work = {
                 "task": task.task_id,
                 "kind": task.kind,
@@ -363,7 +377,12 @@ class WorkManager:
                 self.node.log(f"took over {task.task_id} (position {position} in line)")
             if task.kind == "audit":
                 self._note_audit(work, self.node.node_id)
-            await self.node.mine_and_gossip(extra={"work": work}, run_enrichers=False)
+            extra = {"work": work}
+            if research_event is not None:
+                extra["research_provenance"] = research_event
+                self.node.log(f"published research topic '{research_event['query']}' "
+                              f"({research_event['record_count']} records) for {task.task_id}")
+            await self.node.mine_and_gossip(extra=extra, run_enrichers=False)
         except Exception as e:
             self.stats["work_errors"] += 1
             self.node.log(f"work {task.task_id} failed: {e}")

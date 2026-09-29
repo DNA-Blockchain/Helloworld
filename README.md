@@ -511,6 +511,14 @@ Every queued topic is fetched first, then all are ranked (in the kernel with
 seconds instead of 35 per topic), and published without repeating topics or
 records already on the chain.
 
+The nodes can also share this work. While
+`autonomous/publish-research-topics.confirmed` exists, `node_supervisor.py`
+starts every node with `--publish-research-topics`: each work-sharing
+research round (every 15 minutes) is assigned to one node, which fetches and
+ranks the next unpublished queued topic and mines the
+`public_research_records` event in its work block. If that node is down, the
+next in line takes over. Delete the file (and restart the nodes) to stop.
+
 ### When was it published?
 
 Every event published by these tools carries a `time_anchor`: the Bitcoin

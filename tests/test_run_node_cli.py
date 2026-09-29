@@ -55,6 +55,8 @@
 """run_node_cli: argument parsing, key display, and refusing a changed
 pinned key. The multi-process network path is covered by
 test_network_node.py's same-port/different-host test."""
+import asyncio
+
 import pytest
 
 import run_node_cli as cli
@@ -113,6 +115,15 @@ def test_provenance_queue_rejects_live_enrichers():
             "--id", "0", "--provenance-queue", "outbox", "--allow-external-info"
         ]))
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("argv", [
+    ["--id", "0", "--publish-research-topics"],
+    ["--id", "0", "--work-sharing", "--publish-research-topics", "--allow-research-gossip"],
+])
+def test_publishing_research_topics_needs_work_sharing_alone(argv):
+    with pytest.raises(SystemExit):
+        asyncio.run(cli.main(argv))
 
 
 def test_provenance_queue_allows_work_sharing():

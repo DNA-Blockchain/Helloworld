@@ -106,6 +106,9 @@ import live_store
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 TASK_NAME = "dna-chain-project nodes"
+# Present in base_dir: the nodes publish queued research topics between them
+# (run_node_cli.py --publish-research-topics). Delete it to stop.
+PUBLISH_TOPICS_CONFIRMATION = "publish-research-topics.confirmed"
 
 
 @dataclass
@@ -467,6 +470,10 @@ class Supervisor:
             # research_publish.py queues public research records here; only
             # node 0 publishes them, so two nodes never mine the same event.
             cmd += ["--provenance-queue", self.cfg.path("research-outbox")]
+        if os.path.exists(self.cfg.path(PUBLISH_TOPICS_CONFIRMATION)):
+            # Publication is permanent, so the nodes share the research
+            # agent's queued topics only while this confirmation file exists.
+            cmd += ["--publish-research-topics"]
         if peers:
             cmd += ["--peers", peers]
         if trust:

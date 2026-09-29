@@ -198,6 +198,14 @@ def test_only_node_zero_publishes_the_research_outbox(tmp_path):
     assert "--provenance-queue" not in second
 
 
+def test_nodes_publish_queued_topics_only_while_confirmed(tmp_path):
+    cfg = sup.Config(base_dir=str(tmp_path), node_count=2, python="python")
+    s = sup.Supervisor(cfg)
+    assert "--publish-research-topics" not in s.node_command(0)
+    open(cfg.path(sup.PUBLISH_TOPICS_CONFIRMATION), "w").close()
+    assert all("--publish-research-topics" in s.node_command(i) for i in (0, 1))
+
+
 def _loop_supervisor(tmp_path, monkeypatch):
     cfg = sup.Config(base_dir=str(tmp_path), node_count=0, run_tests=False, run_self_tests=False, notify=False)
     s = sup.Supervisor(cfg)

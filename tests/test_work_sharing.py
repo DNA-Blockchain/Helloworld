@@ -194,6 +194,56 @@ async def test_work_result_content_is_hashed_before_gossip(tmp_path):
     assert blocks[0]["result_provenance"]["summary"]["source"] == "clinicaltrials.gov"
 
 
+class _RecordingNode:
+    node_id = 4
+    peer_signing_keys = {}
+    work = None
+
+    def __init__(self):
+        self.on_verified_block, self.background, self.blocks = [], [], []
+
+    async def mine_and_gossip(self, *, extra, run_enrichers):
+        self.blocks.append(extra)
+
+    def log(self, message):
+        pass
+
+
+def _research_event():
+    import research_analysis
+    import research_fetch
+    from research_provenance import create_public_research_records_event
+    ranking = research_analysis.run(json.loads(json.dumps(research_fetch.FIXTURE_REQUEST)))
+    return create_public_research_records_event(ranking, confirm_publication=True)
+
+
+async def test_a_research_round_can_publish_a_research_event_in_its_work_block():
+    node, seen_rounds = _RecordingNode(), []
+    event = _research_event()
+
+    def runner(task):
+        seen_rounds.append(task.round_no)
+        return {"source": "research_queue", "research_event": event}
+    runner.wants_task = True
+
+    manager = WorkManager(node, WorkSchedule(round_seconds=100, research_every=1, external_every=0, audits=False),
+                          runners={"research": runner})
+    await manager.run_task(manager.schedule.tasks_for_round(7, [node.node_id])[0], 0)
+    [block] = node.blocks
+    assert seen_rounds == [7]
+    assert block["research_provenance"] == event
+    assert block["work"]["result_provenance"]["summary"]["published_event_id"] == event["event_id"]
+
+
+async def test_an_invalid_research_event_is_never_mined():
+    node = _RecordingNode()
+    bad = dict(_research_event(), classification="private")
+    manager = WorkManager(node, WorkSchedule(round_seconds=100, research_every=1, external_every=0, audits=False),
+                          runners={"research": lambda: {"research_event": bad}})
+    await manager.run_task(manager.schedule.tasks_for_round(1, [node.node_id])[0], 0)
+    assert node.blocks == [] and manager.stats["work_errors"] == 1
+
+
 async def test_next_node_takes_over_when_first_in_line_is_down(tmp_path):
     clock, calls = FakeClock(1000.0), []
     ledger = TokenLedger(store_path=str(tmp_path / "ledger.json"))
