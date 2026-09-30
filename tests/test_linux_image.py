@@ -14,7 +14,7 @@ SH = shutil.which("sh")
 
 
 @pytest.mark.skipif(SH is None, reason="needs a POSIX shell")
-@pytest.mark.parametrize("script", ["build.sh", "run.sh", "init"])
+@pytest.mark.parametrize("script", ["build.sh", "run.sh", "swarm.sh", "init"])
 def test_scripts_parse_and_have_lf_endings(script):
     path = os.path.join(LINUX, script)
     with open(path, "rb") as f:

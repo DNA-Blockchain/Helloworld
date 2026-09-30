@@ -519,6 +519,32 @@ ranks the next unpublished queued topic and mines the
 `public_research_records` event in its work block. If that node is down, the
 next in line takes over. Delete the file (and restart the nodes) to stop.
 
+### Swarm-verified twin analyses
+
+With `--work-sharing --swarm`, every round has two extra jobs
+(`swarm_analysis.py`):
+- **Scan:** one node runs the DNA twin's RNA analyses (siRNA scan and
+  protein-change lookups) on a subject and publishes the result's SHA-256.
+- **Check:** a different node recomputes the same subject and publishes its
+  own SHA-256. The node that ran the scan is never in line for the check.
+
+Each node tallies what it sees. A result is **ACCEPTED** when two distinct
+nodes published the same digest, **DISPUTED** when digests differ, and
+**UNCONFIRMED** when no second node has checked yet. Every node logs verdicts,
+and each node's summary lists them on exit.
+
+Subjects are public sequences already on the chain (`public_sequence_record`),
+or, when there are none, eight fixed synthetic sequences every node derives
+identically. A person's sample is never a subject, and only digests and
+subject ids go into blocks. Agreement shows that two nodes ran the same code
+on the same input and got the same answer. It doesn't make an siRNA score
+biologically right.
+
+```sh
+python run_node_cli.py --id 1 --port 9601 --peers 127.0.0.1:9602,127.0.0.1:9603 --tofu --work-sharing --swarm
+sh linux/swarm.sh          # the same across three Alpine VMs (linux/README.md)
+```
+
 ### When was it published?
 
 Every event published by these tools carries a `time_anchor`: the Bitcoin

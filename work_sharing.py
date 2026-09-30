@@ -86,6 +86,11 @@ consecutive indices, and every block's origin and Ed25519 signature
 against the target's pinned key. Problems are reported in the audit's
 work block, so every node (and the daily report) sees them.
 
+Swarm rounds (swarm_every, swarm_analysis.py): one node runs the DNA twin's
+RNA analyses on a public or synthetic sequence, then a different node
+recomputes them; the scanner is left out of the check's line. Results two
+nodes agree on are accepted.
+
 Clocks: rounds come from each node's wall clock. On one PC that's exact;
 across machines, keep clocks NTP-synced (Windows does this by default).
 A skewed clock only causes an occasional duplicated or late job.
@@ -112,7 +117,7 @@ from research_provenance import validate_public_provenance
 @dataclass(frozen=True)
 class WorkTask:
     task_id: str
-    kind: str          # "research" | "external_info" | "audit"
+    kind: str          # "research" | "external_info" | "audit" | "swarm" | "swarm_check"
     round_no: int
     start: float       # wall-clock time the first-in-line node should act
     target: Optional[int] = None   # audit target node id
@@ -147,11 +152,12 @@ def order_for(task_id: str, node_ids: list[int]) -> list[int]:
 
 class WorkSchedule:
     def __init__(self, round_seconds: float = 300.0, research_every: int = 3,
-                 external_every: int = 2, audits: bool = True):
+                 external_every: int = 2, audits: bool = True, swarm_every: int = 0):
         self.round_seconds = round_seconds
         self.research_every = research_every
         self.external_every = external_every
         self.audits = audits
+        self.swarm_every = swarm_every
 
     def round_of(self, t: float) -> int:
         return int(t // self.round_seconds)
@@ -167,6 +173,10 @@ class WorkSchedule:
         if self.audits and len(ids) >= 2:
             target = ids[round_no % len(ids)]
             tasks.append(WorkTask(f"audit:{round_no}:node-{target}", "audit", round_no, start, target))
+        if self.swarm_every and round_no % self.swarm_every == 0:
+            # swarm_analysis.py: one node scans, a different node recomputes
+            tasks.append(WorkTask(f"swarm:{round_no}", "swarm", round_no, start))
+            tasks.append(WorkTask(f"swarm_check:{round_no}", "swarm_check", round_no, start))
         return tasks
 
     def candidates(self, task: WorkTask, node_ids: list[int]) -> list[int]:
@@ -251,6 +261,7 @@ class WorkManager:
         self.gave_up: set[str] = set()           # jobs this node left for the next in line
         self.stats: Counter = Counter()
         self.recent_audits: list[dict] = []
+        self.swarm = None                        # swarm_analysis.SwarmTally, when swarm rounds are on
 
     def attach(self) -> "WorkManager":
         self.node.on_verified_block.append(self._on_block)
@@ -268,10 +279,15 @@ class WorkManager:
         if not isinstance(work, dict) or "task" not in work:
             return
         task_id = work["task"]
+        # Every swarm result counts, duplicates included: a second node's
+        # result for the same job is another vote, and one that disagrees is
+        # exactly what the tally exists to catch.
+        if self.swarm is not None:
+            self.swarm.record(work, block.get("origin"))
         if task_id in self.done:
             self.stats["duplicate_results_seen"] += 1
             return
-        self.done[task_id] = {"by": block.get("origin"), "at": self.clock()}
+        self.done[task_id] = {"by": block.get("origin"), "at": self.clock(), "work": work}
         self.stats[f"results_received:{work.get('kind')}"] += 1
         if work.get("kind") == "audit":
             self._note_audit(work, block.get("origin"))
@@ -297,12 +313,19 @@ class WorkManager:
             for task in self.schedule.tasks_for_round(r, ids):
                 if task.task_id in self.done or task.task_id in self.in_progress                         or task.task_id in self.gave_up:
                     continue
+                scan = None
+                if task.kind == "swarm_check":
+                    scan = self.done.get(f"swarm:{task.round_no}")
+                    if scan is None:
+                        continue      # nothing to check yet; the wait starts when the scan arrives
                 seen = self.first_seen.setdefault(task.task_id, now)
                 if r < current and seen >= task.start + self.schedule.round_seconds:
                     # only noticed after its round ended (e.g. this node
                     # just started): not ours to catch up on
                     continue
                 line = self.schedule.candidates(task, ids)
+                if scan is not None:
+                    line = [n for n in line if n != scan["by"]]   # never check your own scan
                 if self.node.node_id not in line:
                     continue
                 pos = line.index(self.node.node_id)
@@ -321,6 +344,13 @@ class WorkManager:
                 result = await self._run_audit(task)
                 if result is None:   # target unreachable: leave it for the next in line
                     self.stats["audit_target_unreachable"] += 1
+                    self.gave_up.add(task.task_id)
+                    return
+            elif task.kind == "swarm_check":
+                scan_work = self.done[f"swarm:{task.round_no}"].get("work") or {}
+                result = await asyncio.to_thread(self.runners["swarm_check"], task, scan_work)
+                if result is None:   # this node lacks the subject: leave it for the next in line
+                    self.stats["swarm_subject_unavailable"] += 1
                     self.gave_up.add(task.task_id)
                     return
             else:
@@ -359,6 +389,8 @@ class WorkManager:
                 }
                 if research_event is not None:
                     summary["published_event_id"] = research_event["event_id"]
+                if isinstance(result, dict) and "swarm" in result:
+                    summary["swarm"] = result["swarm"]
             work = {
                 "task": task.task_id,
                 "kind": task.kind,
@@ -370,8 +402,10 @@ class WorkManager:
                     "summary": summary,
                 },
             }
-            self.done[task.task_id] = {"by": self.node.node_id, "at": self.clock()}
+            self.done[task.task_id] = {"by": self.node.node_id, "at": self.clock(), "work": work}
             self.stats[f"work_done:{task.kind}"] += 1
+            if self.swarm is not None:
+                self.swarm.record(work, self.node.node_id)
             if position > 0:
                 self.stats["takeovers"] += 1
                 self.node.log(f"took over {task.task_id} (position {position} in line)")
@@ -423,4 +457,7 @@ class WorkManager:
             t.cancel()
 
     def status(self) -> dict:
-        return {"stats": dict(self.stats), "recent_audits": self.recent_audits[-10:]}
+        status = {"stats": dict(self.stats), "recent_audits": self.recent_audits[-10:]}
+        if self.swarm is not None:
+            status["swarm"] = self.swarm.status()
+        return status

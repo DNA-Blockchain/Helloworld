@@ -1,16 +1,18 @@
 #!/bin/sh
 # Boots the image from build.sh in QEMU, with its console in this terminal.
 #   run.sh [--id N] [--port P] [--peers host:port,...] [--tofu]
-#          [--duration S] [--mem 512M] [--ram-only]
+#          [--duration S] [--mem 512M] [--ram-only] [--swarm] [--round S]
 # The node's port is forwarded from the host, so localhost:P reaches it. Its
 # data lives in $NOS_LINUX_BUILD/node-data/node-N unless --ram-only is given.
 # Leave the console with Ctrl-A then X.
 set -eu
 
 BUILD=${NOS_LINUX_BUILD:-$HOME/.cache/network-os-linux}
-ID=1 PORT= PEERS= TOFU= DURATION=0 MEM=512M RAM_ONLY=
+ID=1 PORT= PEERS= TOFU= DURATION=0 MEM=512M RAM_ONLY= SWARM= ROUND=30
 while [ $# -gt 0 ]; do
     case $1 in
+        --swarm) SWARM=1 ;;
+        --round) ROUND=$2; shift ;;
         --id) ID=$2; shift ;;
         --port) PORT=$2; shift ;;
         --peers) PEERS=$2; shift ;;
@@ -34,6 +36,7 @@ PEERS=$(printf '%s' "$PEERS" | sed 's/\(localhost\|127\.0\.0\.1\):/10.0.2.2:/g')
 APPEND="console=ttyS0 quiet nos.id=$ID nos.port=$PORT nos.duration=$DURATION"
 [ -n "$PEERS" ] && APPEND="$APPEND nos.peers=$PEERS"
 [ -n "$TOFU" ] && APPEND="$APPEND nos.tofu=1"
+[ -n "$SWARM" ] && APPEND="$APPEND nos.swarm=1 nos.round=$ROUND"
 
 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
     ACCEL="-machine q35,accel=kvm -cpu host"

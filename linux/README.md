@@ -21,6 +21,20 @@ sh linux/run.sh --id 2 --tofu --peers localhost:9601   # second VM, peered to th
 
 Leave the console with **Ctrl-A then X**, or type `poweroff -f`.
 
+A three-VM swarm, fully meshed, cross-checking the DNA twin's analyses
+(`swarm_analysis.py`):
+
+```sh
+sh linux/swarm.sh                         # until Ctrl-C, printing verdicts as they happen
+sh linux/swarm.sh --round 15 --duration 70   # fixed run, then each node's summary
+```
+
+Each round, one VM runs the twin's RNA analyses on a public or synthetic
+sequence, and a different VM recomputes them. A result is accepted when two
+nodes publish the same SHA-256. On one test run, all three VMs recorded the
+same 5 accepted rounds, and the digests matched the ones Ubuntu's Python got
+on the host. Each VM uses 384 MB, so three together need about 1.2 GB.
+
 | run.sh option | Meaning |
 |---|---|
 | `--id N` | node id (default 1) |
@@ -30,6 +44,8 @@ Leave the console with **Ctrl-A then X**, or type `poweroff -f`.
 | `--duration S` | run S seconds, then power off (used by the test) |
 | `--mem 512M` | VM memory |
 | `--ram-only` | don't keep node data; new keys every boot |
+| `--swarm` | work sharing with swarm-verified twin analyses |
+| `--round S` | work-sharing round length with `--swarm` (default 30) |
 
 Node keys and chain live in `~/.cache/network-os-linux/node-data/node-N` on the
 host, shared into the VM, so a node keeps its identity across reboots.
