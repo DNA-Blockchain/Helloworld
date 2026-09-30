@@ -655,6 +655,21 @@ which nodes hold a copy, and any correction), and "show entry 2" or "show
 entry 9e8733ee" (every field of an entry). For files, the chain holds a
 fingerprint, not the file, and it says whether this PC has the file.
 
+Entries can be challenged or improved, by adding to the chain, never by
+changing it: `challenge entry 2: what's wrong and why`, `improve entry
+9e8733ee: a better title`, `reply to entry …: your reply`. A note is a
+`public_record_note` entry of up to 1,000 characters, signed by this PC's
+node, shown beside what it's about (here and in `research_viewer.py`), and
+never deleted, only answered. Notes are off until you say "turn on notes",
+and each one asks before it's published. Nodes accept notes once they run
+this version, so restart them after updating (`python node_supervisor.py`).
+
+Personal information never goes on the chain: every node refuses a note
+containing an email address, phone number, ID number, date of birth, street
+address or a long DNA/RNA sequence. RabbitSoftware.inc refuses it first and
+points to the encrypted digital-twin vault instead (`python dna_shell.py
+data-vault-store <file>`, AES-256-GCM with your passphrase, kept on this PC).
+
 It can also act, always after a plain yes/no question and with an entry in
 the activity log:
 

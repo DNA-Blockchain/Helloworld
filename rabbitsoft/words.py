@@ -49,6 +49,26 @@ CHAIN_CONTENTS = re.compile(r"\bwhat('s|s| is| does)?\b.*\b(on|in)\b.*\bchain\b|
 CHAIN_FIND = re.compile(r"\b(find|search( for)?|look (for|up)|anything (about|on))\b(?P<terms>.*?)\b(on|in) (the )?"
                         r"(block)?chain\b", re.I)
 SHOW_ENTRY = re.compile(r"\b(show|open|read|see)\b.*?\bentry\s+#?(?P<ref>[0-9a-f]{6,32}|\d{1,2})\b", re.I)
+# Notes: "challenge entry 2: <text>", "improve entry 9e8733ee: <text>", "reply to entry 3: <text>".
+NOTE = re.compile(r"^\s*(?P<verb>challenge|improve|improvement|reply(\s+to)?)\s+(on\s+|for\s+|to\s+)?entry\s+#?"
+                  r"(?P<ref>[0-9a-f]{6,32}|\d{1,2})\s*$", re.I)
+NOTE_KINDS = {"challenge": "challenge", "improve": "improvement", "improvement": "improvement", "reply": "reply"}
+NOTES_ON = re.compile(r"\b(turn|switch)\s+on\b.*\bnotes?\b|\b(enable|allow)\b.*\bnotes?\b", re.I)
+NOTES_OFF = re.compile(r"\b(turn|switch)\s+off\b.*\bnotes?\b|\b(disable|block)\b.*\bnotes?\b", re.I)
+
+
+def split_note(text: str, vocab: set[str]) -> tuple[str, str, str] | None:
+    """(kind, entry reference, note text) for "challenge entry 2: <text>". Only the part before the colon
+    is spelling-fixed; the note itself is kept exactly as written."""
+    head, colon, body = text.partition(":")
+    if not colon:
+        return None
+    match = NOTE.match(fix_spelling(head, vocab))
+    if not match:
+        return None
+    return NOTE_KINDS[match.group("verb").split()[0].lower()], match.group("ref").lower(), body.strip()
+
+
 START = re.compile(r"\b(start|begin|launch|resume|turn on|switch on)\b", re.I)
 STOP = re.compile(r"\b(stop|halt|end|pause|kill|turn off|switch off|shut down)\b", re.I)
 # Names and terms people often misspell when asking about this project's research.
@@ -68,7 +88,8 @@ NO = {"n", "no", "nope", "stop", "cancel", "don't", "dont", "not now", "2"}
 # Everyday command words: known, so they're never "corrected" into something else ("show" into "how").
 COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list", "tell", "give", "explain",
                  "entry", "entries", "start", "stop", "run", "what", "which", "where", "when", "why", "who",
-                 "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and")
+                 "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and",
+                 "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable")
 
 
 def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:
