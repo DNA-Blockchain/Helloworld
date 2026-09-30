@@ -3,8 +3,9 @@
 A Session turns what someone typed into a Reply: short sentences, plus numbered choices or
 a yes/no question when there's something to decide. Looking things up never changes anything.
 Anything that changes something or sends data off this PC waits for a yes and is written to the
-activity log: a public research search (logged as a hash of the query, not its text), running the
-self-tests, and starting or stopping the research agent.
+activity log: a public research search (logged as a hash of the query, not its text), fetching abstracts
+for saved records, downloading the local meaning model, running the self-tests or integrity check, and
+starting or stopping the research agent.
 """
 from __future__ import annotations
 
@@ -21,6 +22,8 @@ from .jobs import Job, Jobs, Service
 AGENT_HOST, AGENT_PORT = "127.0.0.1", 8765
 SELF_TEST_NAME = "The self-tests"
 INTEGRITY_NAME = "The integrity check"
+EMBED_MODEL_NAME = "The meaning model download"
+EMBED_MODEL = "nomic-embed-text"
 
 PUBLIC_SOURCES = ("pubmed", "clinicaltrials.gov", "nih_reporter", "europe_pmc")
 SOURCE_NAMES = "PubMed, ClinicalTrials.gov, NIH RePORTER and Europe PMC"
@@ -76,13 +79,30 @@ def _search_public(query: str) -> list[dict]:
     return search_public_sources(query, sources=PUBLIC_SOURCES, max_results=10)
 
 
+def default_embedder():
+    """The local embedding model if it's downloaded and Ollama is running; None means word matching (TF-IDF)."""
+    from corpus_vector_store import OllamaEmbedder
+
+    embedder = OllamaEmbedder()
+    return embedder if embedder.available() else None
+
+
+AUTO = object()          # "find the local embedding model if there is one"
+
+
 class Session:
     def __init__(self, paths: tools.Paths | None = None, ai=None, search: Callable[[str], list[dict]] = _search_public,
                  explain_ai=None, jobs: Jobs | None = None, agent: Service | None = None,
-                 self_test_command: list[str] | None = None, integrity_command: list[str] | None = None):
+                 self_test_command: list[str] | None = None, integrity_command: list[str] | None = None,
+                 embedder=AUTO, abstract_fetchers: dict | None = None,
+                 embed_model_command: list[str] | None = None):
         self.paths = paths or tools.Paths()
         self._ai = ai
         self._explain_ai = explain_ai
+        self._embedder = embedder
+        self._corpus = None
+        self.abstract_fetchers = abstract_fetchers
+        self.embed_model_command = embed_model_command or ["ollama", "pull", EMBED_MODEL]
         self.search = search
         self.jobs = jobs or Jobs(self.paths.rabbit / "jobs")
         self.agent = agent or Service("research-agent", self.paths.rabbit,
@@ -111,6 +131,19 @@ class Session:
         from research_catalog import ResearchCatalog
 
         return ResearchCatalog(self.paths.catalog)
+
+    @property
+    def corpus(self):
+        """The search-by-meaning corpus, opened when first needed."""
+        if self._corpus is None:
+            from corpus_vector_store import CorpusVectorStore
+
+            embedder = default_embedder() if self._embedder is AUTO else self._embedder
+            try:
+                self._corpus = CorpusVectorStore(store_path=str(self.paths.corpus), embedder=embedder)
+            except ValueError:   # an unreadable corpus file is rebuilt from the catalog, in memory
+                self._corpus = CorpusVectorStore(embedder=embedder)
+        return self._corpus
 
     def _catalog_words(self) -> tuple[str, ...]:
         """Words from saved record titles, so spelling fixes know the research this PC has seen."""
@@ -201,6 +234,13 @@ class Session:
             return Reply(heard + self.latest_integrity())
         if intent == "integrity":
             return self._prefix(heard, self.confirm_integrity())
+        if intent == "corpus" and re.search(r"\babstracts?\b", fixed, re.I) and \
+                re.search(r"\b(fill|fetch|get|download|add|find)\b", fixed, re.I):
+            return self._prefix(heard, self.confirm_abstracts())
+        if intent == "corpus" and re.search(r"\b(download|install|pull|get)\b", fixed, re.I):
+            return self._prefix(heard, self.confirm_embed_model())
+        if intent == "corpus":
+            return Reply(heard + self.corpus_status())
         if intent == "jobs":
             return Reply(heard + self.whats_running())
         if intent in tools.TOOLS:
@@ -221,7 +261,8 @@ class Session:
 
     def _tool_or_ask(self, intent: str) -> Callable[[], Reply]:
         actions = {"agents": lambda: Reply(self.agent_status()), "selftest": self.confirm_self_tests,
-                   "jobs": lambda: Reply(self.whats_running()), "integrity": self.confirm_integrity}
+                   "jobs": lambda: Reply(self.whats_running()), "integrity": self.confirm_integrity,
+                   "corpus": lambda: Reply(self.corpus_status())}
         if intent in actions:
             return actions[intent]
         if intent in tools.TOOLS:
@@ -240,18 +281,33 @@ class Session:
 
     # -- research ----------------------------------------------------------------------------------
     def _records(self, query: str, limit: int = 5) -> list[dict]:
-        """Relevant saved records, each paper once (PubMed and Europe PMC often both have it)."""
+        """Relevant saved records, each paper once (PubMed and Europe PMC often both have it): the ones
+        using the question's words first, then the ones that mean the same without using them."""
         try:
-            found = self._catalog().retrieve(query, limit=limit * 3)
+            found = [r for r in self._catalog().retrieve(query, limit=limit * 3) if r["retrieval_score"] >= 3]
         except ValueError:
             return []
         unique, titles = [], set()
-        for r in found:
+        for r in found + self._meaning_matches(query, limit * 3):
             key = re.sub(r"\W+", " ", r["citation"]["title"].lower()).strip()
-            if r["retrieval_score"] >= 3 and key not in titles:
+            if key not in titles:
                 titles.add(key)
                 unique.append(r)
         return unique[:limit]
+
+    def _meaning_matches(self, query: str, top_k: int) -> list[dict]:
+        from corpus_vector_store import min_similarity
+
+        try:
+            self.corpus.sync_from_catalog(self._catalog())
+            found = self.corpus.semantic_search(query, top_k=top_k)
+        except (OSError, ValueError):
+            return []            # no corpus only means keyword matches alone
+        return [{"citation": {"source": r["source"], "record_id": r["record_id"], "title": r["title"],
+                              "url": r["url"], "published_at": r["published_at"] or None},
+                 "abstract": r["abstract"], "retrieval_score": 0, "similarity": r["similarity"],
+                 "method": r["method"]}
+                for r in found if r["similarity"] >= min_similarity(r["method"])]
 
     def research(self, query: str, original: str = "", heard: str = "") -> Reply:
         records = self._records(query)
@@ -570,6 +626,89 @@ class Session:
         import swarm_explain
 
         return OllamaSummarizer(swarm_explain.pick_model(log=lambda _: None), timeout=600)
+
+    # -- the research corpus (search by meaning) ----------------------------------------------------
+    def corpus_status(self) -> str:
+        from corpus_vector_store import TFIDF
+
+        try:
+            self.corpus.sync_from_catalog(self._catalog())
+        except (OSError, ValueError) as error:
+            return f"The research corpus couldn't be read ({error})."
+        size = len(self.corpus)
+        if not size:
+            return ("The research corpus is empty: it's built from the research records saved on this PC. "
+                    "Ask a research question and search the public sources to start it.")
+        with_abstract = sum(1 for d in self.corpus.documents if d.get("abstract"))
+        lines = [f"The research corpus holds {size} public records saved on this PC; {with_abstract} have "
+                 "their abstract. It holds nothing personal."]
+        method = self.corpus.method()
+        if method != TFIDF:
+            lines.append(f"Search by meaning uses the local model {method}. It runs on this PC; your questions "
+                         "never leave it.")
+        else:
+            lines.append("Search uses word matching for now. For search that understands meaning (\"heart "
+                         "tumor\" finds \"cardiac neoplasm\"), say \"download the meaning model\".")
+            if self.corpus.embedder is not None and self.corpus.last_error:
+                lines.append(f"(The meaning model is here but didn't answer: {self.corpus.last_error}.)")
+        if with_abstract < size:
+            missing = size - with_abstract
+            lines.append(f"{missing} {'record has' if missing == 1 else 'records have'} no abstract yet; say "
+                         "\"fill in abstracts\" to fetch them from the public sources.")
+        return "\n".join(lines)
+
+    def confirm_abstracts(self) -> Reply:
+        missing = self._catalog().missing_abstracts()
+        if not missing:
+            return Reply("Every saved record already has its abstract.")
+        from research_abstracts import FETCHERS, SOURCE_NAMES as NAMES
+
+        names = sorted(NAMES[s] for s in {s for s, _ in missing if s in FETCHERS})
+        names = " and ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names) or "the public sources"
+        count = f"{len(missing)} saved record{'' if len(missing) == 1 else 's'}"
+        return self._ask(f"This sends the record numbers of {count} (like PubMed IDs; "
+                         f"nothing personal and not your questions) to {names} to fetch their public "
+                         "abstracts. Send it?", self._fill_abstracts)
+
+    def _fill_abstracts(self) -> Reply:
+        from research_abstracts import SOURCE_NAMES as NAMES, fill_missing_abstracts
+
+        result = fill_missing_abstracts(self._catalog(), fetchers=self.abstract_fetchers)
+        self._log("abstracts_fetched", {"asked": result["asked"], "filled": result["filled"],
+                                        "sources": result["sources"], "failed": sorted(result["failed"])})
+        lines = [f"Filled in {result['filled']} of {result['asked']} abstracts."]
+        lines += [f"{NAMES.get(s, s)} didn't answer ({e}); try again later." for s, e in result["failed"].items()]
+        if result["filled"]:
+            try:
+                self.corpus.sync_from_catalog(self._catalog())
+                lines.append("The research corpus is updated, so answers and search by meaning use them now.")
+            except (OSError, ValueError):
+                pass
+        return Reply("\n".join(lines))
+
+    def confirm_embed_model(self) -> Reply:
+        if self.corpus.embedder is not None:
+            return Reply(f"The meaning model ({self.corpus.embedder.model}) is already on this PC.")
+        if self.jobs.running(EMBED_MODEL_NAME):
+            return Reply("The meaning model is already downloading. I'll tell you when it's done.")
+        return self._ask(f"This downloads the local model {EMBED_MODEL} (about 270 MB) through Ollama from "
+                         "ollama.com, once. After that it runs only on this PC and your questions never leave "
+                         "it. Download it?", self._download_embed_model)
+
+    def _download_embed_model(self) -> Reply:
+        try:
+            job = self.jobs.start(EMBED_MODEL_NAME, self.embed_model_command, self.paths.root,
+                                  self._summarize_embed_model)
+        except OSError as error:
+            return Reply(f"The download couldn't start ({error}). Is Ollama installed?")
+        self._log("embed_model_download_started", {"model": EMBED_MODEL, "log": job.log.name})
+        return Reply("Started the download. I'll tell you when it's done; ask \"what's running\" any time.")
+
+    def _summarize_embed_model(self, job: Job) -> str:
+        if job.exit_code != 0:
+            return f"The download didn't finish (exit code {job.exit_code}). Try again later."
+        self._corpus = None      # reopened with the model on the next question
+        return f"{EMBED_MODEL} is on this PC. Search by meaning uses it from the next question on."
 
     def _log(self, action: str, details: dict) -> None:
         try:

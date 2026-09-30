@@ -685,6 +685,20 @@ JSON and a readable page, with the report's SHA-256 as its fingerprint):
 It only reads, and nothing leaves this PC. "Show the integrity report" reads
 the latest one; `python -m rabbitsoft.integrity` runs it directly.
 
+Research questions are answered by **meaning**, not only by matching words:
+every public record in the research catalog (title and abstract) becomes a
+vector in the research corpus (`corpus_vector_store.py`, kept at
+`dna_shell_data/corpus_vectors.json`), so a question finds records that say
+the same thing in other words. The vectors come from a local embedding model
+(`nomic-embed-text` through Ollama) once it's downloaded, and from TF-IDF word
+statistics until then; "corpus status" says which. The corpus holds public
+records only, never anything personal.
+
+- "Fill in abstracts" fetches the public abstracts of saved records
+  (`research_abstracts.py`), sending only their record numbers.
+- "Download the meaning model" runs `ollama pull nomic-embed-text` (about
+  270 MB, once); afterwards it runs only on this PC.
+
 It can also act, always after a plain yes/no question and with an entry in
 the activity log:
 
@@ -697,6 +711,8 @@ the activity log:
   says which public sites it will send search words to.
 - **Search public research sources** for a question with no saved records:
   logged as a hash of the query, not its text.
+- **Fill in abstracts** and **download the meaning model** for the research
+  corpus (above).
 
 It runs on this PC's own AI through Ollama. The web page answers only on
 127.0.0.1 and refuses requests from other websites open in the same browser.

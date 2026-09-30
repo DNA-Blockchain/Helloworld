@@ -76,6 +76,13 @@ def _offline_time_anchor(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_embedding_model(monkeypatch):
+    """RabbitSoftware.inc sessions in tests match by words (TF-IDF), never through a real local model."""
+    import rabbitsoft.assistant
+    monkeypatch.setattr(rabbitsoft.assistant, "default_embedder", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_real_backups(tmp_path_factory, monkeypatch):
     """Tests never see the user's real ~/network-os-backups or backup passphrase."""
     import backup
