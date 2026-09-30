@@ -158,7 +158,8 @@ def test_a_tool_question_is_answered_directly(session):
 
 def test_a_greeting_gets_the_menu_and_a_number_picks_from_it(session):
     reply = session.handle("hi!")
-    assert reply.text.startswith("Hello! I'm RabbitSoftware") and len(reply.choices) == 8
+    assert reply.text.startswith("Hello! I'm RabbitSoftware.inc, the assistant from RabbitSoftware, Inc.")
+    assert len(reply.choices) == 8
     assert session.handle("4").text.startswith("node-2: 6 credits")
 
 
@@ -243,7 +244,16 @@ def call(port, method, path, body=None, headers=None):
 
 def test_the_page_is_served(server):
     status, body = call(server, "GET", "/")
-    assert status == 200 and b"<title>RabbitSoftware</title>" in body and b'role="log"' in body
+    assert status == 200 and b"<title>RabbitSoftware.inc</title>" in body and b'role="log"' in body
+
+
+def test_the_page_uses_the_same_names_as_the_code():
+    from rabbitsoft import COMPANY, NAME
+    from rabbitsoft.web import PAGE
+
+    page = PAGE.read_text(encoding="utf-8")
+    assert f'const NAME = "{NAME}", COMPANY = "{COMPANY}"' in page
+    assert f"<h1>{NAME}</h1>" in page and f"by {COMPANY}" in page
 
 
 def test_messages_keep_their_conversation(server):

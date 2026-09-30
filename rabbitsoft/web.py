@@ -1,4 +1,4 @@
-"""The RabbitSoftware web page: the same conversation as the terminal, in a browser on this PC.
+"""The RabbitSoftware.inc web page: the same conversation as the terminal, in a browser on this PC.
 
 It listens on 127.0.0.1 only. Requests must carry an X-Rabbit header, which a page on another
 website can't add without the browser first asking this server's permission (it never grants

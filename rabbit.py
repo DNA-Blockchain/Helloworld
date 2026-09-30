@@ -1,5 +1,6 @@
 """
-RabbitSoftware: ask this OS about itself in your own words, in a terminal or a web page.
+RabbitSoftware.inc (RabbitSoftware, Inc.): ask this OS about itself in your own words, in a terminal
+or a web page.
 
     python rabbit.py chat                          # terminal conversation
     python rabbit.py web                           # web page at http://127.0.0.1:8792
@@ -14,7 +15,7 @@ import argparse
 import sys
 import webbrowser
 
-from rabbitsoft import NAME
+from rabbitsoft import GREETING, NAME
 from rabbitsoft.assistant import Reply, Session
 
 QUIT = {"quit", "exit", "bye", "goodbye", "q"}
@@ -32,7 +33,7 @@ def show(reply: Reply) -> None:
 
 def chat() -> int:
     session = Session()
-    show(Reply(f"Hello! I'm {NAME}. Ask me anything about this OS in your own words, or type help. "
+    show(Reply(f"{GREETING} Ask me anything about this OS in your own words, or type help. "
                "Type quit to leave."))
     while True:
         try:

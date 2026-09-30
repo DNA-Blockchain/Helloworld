@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RabbitSoftware</title>
+<title>RabbitSoftware.inc</title>
 <style>
   :root {
     --bg: #f7f7f5; --panel: #ffffff; --text: #1b1b1b; --muted: #555; --line: #d6d6d0;
@@ -26,7 +26,9 @@
          "Segoe UI", Roboto, sans-serif; }
   main { max-width: 780px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; min-height: 100vh; }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 8px; }
-  h1 { font-size: 1.5em; margin: 0; flex: 1 1 auto; }
+  .brand { flex: 1 1 auto; }
+  h1 { font-size: 1.5em; margin: 0; }
+  .company { margin: 0; color: var(--muted); font-size: 0.85em; }
   .tools { display: flex; gap: 8px; flex-wrap: wrap; }
   #status { color: var(--muted); font-size: 0.9em; margin: 0 0 12px; }
   #log { flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; }
@@ -54,7 +56,10 @@
 <body>
 <main>
   <header>
-    <h1>RabbitSoftware</h1>
+    <div class="brand">
+      <h1>RabbitSoftware.inc</h1>
+      <p class="company">by RabbitSoftware, Inc.</p>
+    </div>
     <div class="tools">
       <button type="button" id="bigger" aria-pressed="false">Bigger text</button>
       <button type="button" id="restart">Start over</button>
@@ -74,6 +79,7 @@
 </main>
 <script>
 (() => {
+  const NAME = "RabbitSoftware.inc", COMPANY = "RabbitSoftware, Inc.";      // kept in step with rabbitsoft/__init__.py by a test
   const log = document.getElementById("log"), box = document.getElementById("q"), busy = document.getElementById("busy");
   const newId = () => (crypto.randomUUID ? crypto.randomUUID() :
     "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c => (c ^ Math.random() * 16 >> c / 4).toString(16)));
@@ -123,10 +129,10 @@
         headers: { "Content-Type": "application/json", "X-Rabbit": "1" },
         body: JSON.stringify({ session, text }) });
       const data = await r.json();
-      const reply = show("RabbitSoftware", data.text || data.error || "Something went wrong.", data.choices || [], data.confirm);
+      const reply = show(NAME, data.text || data.error || "Something went wrong.", data.choices || [], data.confirm);
       const first = reply.querySelector("button"); if (first) first.focus(); else box.focus();
     } catch (e) {
-      show("RabbitSoftware", "I couldn't reach the RabbitSoftware server. Is `python rabbit.py web` still running?");
+      show(NAME, `I couldn't reach the ${NAME} server. Is "python rabbit.py web" still running?`);
     } finally { waiting = false; busy.hidden = true; log.removeAttribute("aria-busy"); }
   }
   document.getElementById("ask").addEventListener("submit", e => {
@@ -138,7 +144,7 @@
   bigger.addEventListener("click", () => setBig(!document.documentElement.classList.contains("big")));
   setBig(store.get("rabbit-big") === "1");
   document.getElementById("restart").addEventListener("click", () => { session = newId(); log.textContent = ""; greet(); box.focus(); });
-  function greet() { show("RabbitSoftware", "Hello! I'm RabbitSoftware. Ask me anything about this OS in your own words, or type help to see what I can do."); }
+  function greet() { show(NAME, `Hello! I'm ${NAME}, the assistant from ${COMPANY} Ask me anything about this OS in your own words, or type help to see what I can do.`); }
   fetch("/api/status", { headers: { "X-Rabbit": "1" } }).then(r => r.json())
     .then(s => { document.getElementById("status").textContent = `${s.nodes} ${s.chain}`; })
     .catch(() => { document.getElementById("status").textContent = ""; });

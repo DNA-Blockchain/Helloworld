@@ -1,5 +1,5 @@
 """
-RabbitSoftware: one assistant for this OS, in a terminal or a web page.
+RabbitSoftware.inc, from RabbitSoftware, Inc.: one assistant for this OS, in a terminal or a web page.
 
 It reads what the OS already records (nodes, chain audits, the swarm, the token
 ledger, the research agents and catalog, daily reports) and answers in short,
@@ -12,4 +12,6 @@ without a yes.
     python rabbit.py ask "how are the nodes doing"
 """
 
-NAME = "RabbitSoftware"
+NAME = "RabbitSoftware.inc"          # the assistant: page heading, chat label, terminal prompt
+COMPANY = "RabbitSoftware, Inc."     # the company it comes from
+GREETING = f"Hello! I'm {NAME}, the assistant from {COMPANY}"     # COMPANY already ends the sentence

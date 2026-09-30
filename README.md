@@ -37,7 +37,7 @@ declaration. It does not replace or narrow the existing CC0 license.
 | Provenance | `project_identifier.py` | Hash manifest tying each run to an exact code state |
 | Live data store | `live_store.py`, `live_feed.py` | Local SQLite mirror of everything saved, streamed live over loopback-only HTTP/SSE |
 | Entry points | `run_all.py`, `run_agent.py` | Launch everything, or just the research agent |
-| RabbitSoftware assistant | `rabbit.py`, `rabbitsoft/` | Ask the OS about itself in your own words, in a terminal or a web page on this PC |
+| RabbitSoftware.inc assistant | `rabbit.py`, `rabbitsoft/` | Ask the OS about itself in your own words, in a terminal or a web page on this PC (RabbitSoftware, Inc.) |
 
 **Honest boundaries** (see [`KNOWN_GAPS.md`](KNOWN_GAPS.md) for the full list):
 - `token_ledger.py` balances are a **local score**, not a tradable currency — no consensus, no wallet.
@@ -628,9 +628,10 @@ python research_timestamps.py status
 Proofs are stored as `autonomous/timestamps/<event_id>.ots` and served by the
 viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
 
-### RabbitSoftware assistant
+### RabbitSoftware.inc assistant
 
-RabbitSoftware answers questions about this OS in short, plain sentences:
+RabbitSoftware.inc, the assistant from RabbitSoftware, Inc., answers
+questions about this OS in short, plain sentences:
 how the nodes are doing, blockchain checks and audits, the token ledger,
 the research agents, the activity log, the latest daily report, swarm
 subjects, and research questions answered from saved records with

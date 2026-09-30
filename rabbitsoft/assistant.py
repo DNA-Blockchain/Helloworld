@@ -1,4 +1,4 @@
-"""The RabbitSoftware conversation, shared by the terminal and the web page.
+"""The RabbitSoftware.inc conversation, shared by the terminal and the web page.
 
 A Session turns what someone typed into a Reply: short sentences, plus numbered choices or
 a yes/no question when there's something to decide. Looking things up never changes anything;
@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import NAME, tools, words
+from . import GREETING, NAME, tools, words
 
 PUBLIC_SOURCES = ("pubmed", "clinicaltrials.gov", "nih_reporter", "europe_pmc")
 SOURCE_NAMES = "PubMed, ClinicalTrials.gov, NIH RePORTER and Europe PMC"
@@ -130,8 +130,7 @@ class Session:
 
     def _understand(self, text: str) -> Reply:
         if words.is_greeting(text):
-            return self.menu(f"Hello! I'm {NAME}. Ask me anything about this OS in your own words, "
-                             "or pick a number:")
+            return self.menu(f"{GREETING} Ask me anything about this OS in your own words, or pick a number:")
         fixed = words.fix_spelling(text, self.vocab)
         heard = f"I read that as: \"{fixed}\".\n" if fixed.lower() != text.lower() else ""
         if re.search(r"\b(simpler|simply|easier words|plain words)\b", fixed, re.I) and self.last_answer:
