@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RabbitSoftware</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1b1b1b; --muted: #555; --line: #d6d6d0;
+    --you: #e8eef9; --rabbit: #ffffff; --accent: #1f4fbf; --accent-text: #ffffff; --ok: #1d6b35; --warn: #8a2c0d;
+    --size: 1.125rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141517; --panel: #1d1f22; --text: #f0f0ec; --muted: #b3b3ad; --line: #3a3d42;
+      --you: #22324f; --rabbit: #1d1f22; --accent: #8fb1ff; --accent-text: #0d1320; --ok: #7fd49a; --warn: #ffb08f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141517; --panel: #1d1f22; --text: #f0f0ec; --muted: #b3b3ad; --line: #3a3d42;
+    --you: #22324f; --rabbit: #1d1f22; --accent: #8fb1ff; --accent-text: #0d1320; --ok: #7fd49a; --warn: #ffb08f;
+  }
+  :root.big { --size: 1.4rem; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: var(--size)/1.55 system-ui, -apple-system,
+         "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 780px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; min-height: 100vh; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 8px; }
+  h1 { font-size: 1.5em; margin: 0; flex: 1 1 auto; }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; }
+  #status { color: var(--muted); font-size: 0.9em; margin: 0 0 12px; }
+  #log { flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; }
+  .msg { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; max-width: 100%; overflow-wrap: anywhere; }
+  .msg.you { background: var(--you); align-self: flex-end; }
+  .msg.rabbit { background: var(--rabbit); }
+  .msg p { margin: 0 0 6px; } .msg p:last-child { margin-bottom: 0; }
+  .who { font-weight: 600; font-size: 0.85em; color: var(--muted); display: block; margin-bottom: 4px; }
+  .choices { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  button { font: inherit; border-radius: 10px; border: 2px solid var(--accent); background: var(--panel);
+           color: var(--text); padding: 10px 14px; text-align: left; cursor: pointer; min-height: 48px; }
+  button.primary { background: var(--accent); color: var(--accent-text); text-align: center; }
+  button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  a { color: var(--accent); }
+  form { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0 16px; border-top: 1px solid var(--line); }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; }
+  textarea { flex: 1 1 auto; font: inherit; color: var(--text); background: var(--panel); border: 2px solid var(--line);
+             border-radius: 10px; padding: 10px; min-height: 3.2em; resize: vertical; }
+  .tip { color: var(--muted); font-size: 0.85em; margin: 6px 0 0; }
+  #busy { color: var(--muted); font-style: italic; }
+  .sr { position: absolute; left: -9999px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>RabbitSoftware</h1>
+    <div class="tools">
+      <button type="button" id="bigger" aria-pressed="false">Bigger text</button>
+      <button type="button" id="restart">Start over</button>
+    </div>
+  </header>
+  <p id="status" aria-live="polite">Checking the nodes…</p>
+  <div id="log" role="log" aria-live="polite" aria-label="Conversation"></div>
+  <p id="busy" hidden>Thinking… answers that use the AI can take up to a minute on this PC.</p>
+  <form id="ask">
+    <label for="q">Ask in your own words. Spelling doesn't need to be right.</label>
+    <div class="row">
+      <textarea id="q" rows="2" autocomplete="off"></textarea>
+      <button class="primary" type="submit">Send</button>
+    </div>
+    <p class="tip">Press Enter to send. Tip: press the Windows key and H to speak instead of typing.</p>
+  </form>
+</main>
+<script>
+(() => {
+  const log = document.getElementById("log"), box = document.getElementById("q"), busy = document.getElementById("busy");
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID() :
+    "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c => (c ^ Math.random() * 16 >> c / 4).toString(16)));
+  let session = newId(), waiting = false;
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+                  set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+  // Server text is always placed with textContent; links are built as elements, never as HTML.
+  function paragraph(line) {
+    const p = document.createElement("p");
+    line.split(/(https?:\/\/\S+)/).forEach(part => {
+      if (/^https?:\/\//.test(part)) {
+        const a = document.createElement("a");
+        a.href = part; a.textContent = part; a.target = "_blank"; a.rel = "noopener noreferrer";
+        p.append(a);
+      } else if (part) { p.append(document.createTextNode(part)); }
+    });
+    return p;
+  }
+  function show(who, text, choices = [], confirm = false) {
+    const div = document.createElement("div");
+    div.className = "msg " + (who === "You" ? "you" : "rabbit");
+    const name = document.createElement("span"); name.className = "who"; name.textContent = who;
+    div.append(name);
+    text.split("\n").filter(l => l.trim()).forEach(l => div.append(paragraph(l)));
+    if (choices.length) {
+      const list = document.createElement("div"); list.className = "choices";
+      list.setAttribute("role", "group"); list.setAttribute("aria-label", confirm ? "Yes or no" : "Choices");
+      choices.forEach((c, i) => {
+        const b = document.createElement("button"); b.type = "button";
+        b.textContent = confirm ? c : `${i + 1}. ${c}`;
+        b.addEventListener("click", () => { list.querySelectorAll("button").forEach(x => x.disabled = true); send(String(i + 1), b.textContent); });
+        list.append(b);
+      });
+      div.append(list);
+    }
+    log.append(div);
+    div.scrollIntoView({ block: "end", behavior: "smooth" });
+    return div;
+  }
+  async function send(text, shown) {
+    if (waiting) return;
+    waiting = true; busy.hidden = false; log.setAttribute("aria-busy", "true");
+    show("You", shown || text);
+    try {
+      const r = await fetch("/api/message", { method: "POST",
+        headers: { "Content-Type": "application/json", "X-Rabbit": "1" },
+        body: JSON.stringify({ session, text }) });
+      const data = await r.json();
+      const reply = show("RabbitSoftware", data.text || data.error || "Something went wrong.", data.choices || [], data.confirm);
+      const first = reply.querySelector("button"); if (first) first.focus(); else box.focus();
+    } catch (e) {
+      show("RabbitSoftware", "I couldn't reach the RabbitSoftware server. Is `python rabbit.py web` still running?");
+    } finally { waiting = false; busy.hidden = true; log.removeAttribute("aria-busy"); }
+  }
+  document.getElementById("ask").addEventListener("submit", e => {
+    e.preventDefault(); const t = box.value.trim(); if (!t) return; box.value = ""; send(t);
+  });
+  box.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("ask").requestSubmit(); } });
+  const bigger = document.getElementById("bigger");
+  function setBig(on) { document.documentElement.classList.toggle("big", on); bigger.setAttribute("aria-pressed", String(on)); store.set("rabbit-big", on ? "1" : "0"); }
+  bigger.addEventListener("click", () => setBig(!document.documentElement.classList.contains("big")));
+  setBig(store.get("rabbit-big") === "1");
+  document.getElementById("restart").addEventListener("click", () => { session = newId(); log.textContent = ""; greet(); box.focus(); });
+  function greet() { show("RabbitSoftware", "Hello! I'm RabbitSoftware. Ask me anything about this OS in your own words, or type help to see what I can do."); }
+  fetch("/api/status", { headers: { "X-Rabbit": "1" } }).then(r => r.json())
+    .then(s => { document.getElementById("status").textContent = `${s.nodes} ${s.chain}`; })
+    .catch(() => { document.getElementById("status").textContent = ""; });
+  greet(); box.focus();
+})();
+</script>
+</body>
+</html>

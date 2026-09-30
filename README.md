@@ -37,6 +37,7 @@ declaration. It does not replace or narrow the existing CC0 license.
 | Provenance | `project_identifier.py` | Hash manifest tying each run to an exact code state |
 | Live data store | `live_store.py`, `live_feed.py` | Local SQLite mirror of everything saved, streamed live over loopback-only HTTP/SSE |
 | Entry points | `run_all.py`, `run_agent.py` | Launch everything, or just the research agent |
+| RabbitSoftware assistant | `rabbit.py`, `rabbitsoft/` | Ask the OS about itself in your own words, in a terminal or a web page on this PC |
 
 **Honest boundaries** (see [`KNOWN_GAPS.md`](KNOWN_GAPS.md) for the full list):
 - `token_ledger.py` balances are a **local score**, not a tradable currency — no consensus, no wallet.
@@ -626,6 +627,29 @@ python research_timestamps.py status
 
 Proofs are stored as `autonomous/timestamps/<event_id>.ots` and served by the
 viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
+
+### RabbitSoftware assistant
+
+RabbitSoftware answers questions about this OS in short, plain sentences:
+how the nodes are doing, blockchain checks and audits, the token ledger,
+the research agents, the activity log, the latest daily report, swarm
+subjects, and research questions answered from saved records with
+citations. It's built for people who find the right words or spelling hard:
+misspellings are fixed and shown back ("I read that as…"), choices are
+numbered, and the web page has large text, full keyboard use, screen-reader
+announcements and works with Windows voice typing (Windows key + H).
+
+```powershell
+python rabbit.py chat                        # terminal
+python rabbit.py web                         # web page at http://127.0.0.1:8792
+python rabbit.py ask "how are the nodes"     # one question
+```
+
+It runs on this PC's own AI through Ollama and reaches no other service,
+except a public research search, which asks first ("This sends the words …
+Send it?") and is written to the activity log as a hash of the query, not
+its text. The web page answers only on 127.0.0.1 and refuses requests from
+other websites open in the same browser.
 
 ### Plain-language summaries (local AI)
 
