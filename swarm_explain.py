@@ -91,9 +91,29 @@ from typing import Optional
 import swarm_analysis
 
 NOTE = "Machine-generated explanation of verified facts; may be wrong; not evidence and not medical advice."
-# ollama/nos-explain.Modelfile (build: python local_ai_tuning.py create). On the test subjects it passed 8/8
-# checks where llama3.2:3b alone passed 0/8, mostly by not inventing who made the sequence and why.
-MODEL = "nos-explain"
+# The explanation model, best first. nos-explain-lora is llama3.2:3b with the round-2 LoRA merged in
+# (colab/local_ai_lora_colab.ipynb; built by python local_ai_tuning.py create when its GGUF is present):
+# on the 8 test subjects it restated every number correctly, where nos-explain put 4 on the wrong claim.
+# nos-explain (ollama/nos-explain.Modelfile) passed 6/8 checks where llama3.2:3b alone passed 0/8.
+MODEL = "nos-explain-lora"
+FALLBACK_MODEL = "nos-explain"
+
+
+def pick_model(endpoint: str = "http://127.0.0.1:11434", log=print) -> str:
+    """The best explanation model Ollama has: MODEL, else FALLBACK_MODEL, else llama3.2:3b. If Ollama can't be
+    reached, MODEL, and the request itself reports the problem."""
+    from research_summaries import BASE_MODEL, installed_models
+
+    installed = installed_models(endpoint)
+    if installed is None:
+        return MODEL
+    for model in (MODEL, FALLBACK_MODEL, BASE_MODEL):
+        if model in installed:
+            if model != MODEL:
+                log(f"(model {MODEL} isn't installed; using {model}. "
+                    "Build the tuned models with: python local_ai_tuning.py create)")
+            return model
+    return MODEL
 PROMPT_VERSION = 2
 PROMPT = (
     "Explain the computed facts below to a general reader in 3 to 5 short sentences.\n"
@@ -216,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sha256", help="the digest the swarm accepted for --subject (at least 12 hex characters)")
     p.add_argument("--ledger-dir", type=Path, help="node ledgers, for chain subjects (event:...)")
     p.add_argument("--no-ai", action="store_true", help="print the verified facts only")
-    p.add_argument("--model", help=f"Ollama model (default {MODEL}, or llama3.2:3b if that isn't built)")
+    p.add_argument("--model", help=f"Ollama model (default {MODEL}, else {FALLBACK_MODEL}, else llama3.2:3b)")
     p.add_argument("--endpoint", default="http://127.0.0.1:11434")
     p.add_argument("--limit", type=int, default=3)
     args = p.parse_args(argv)
@@ -241,9 +261,9 @@ def main(argv: list[str] | None = None) -> int:
 
     model = None
     if not args.no_ai:
-        from research_summaries import OllamaSummarizer, choose_model
+        from research_summaries import OllamaSummarizer
 
-        args.model = args.model or choose_model(MODEL, args.endpoint)
+        args.model = args.model or pick_model(args.endpoint)
         model = OllamaSummarizer(args.model, args.endpoint, timeout=300)
 
     status = 0

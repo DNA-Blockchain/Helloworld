@@ -277,10 +277,10 @@ class Session:
         return Reply("\n".join(lines))
 
     def _explain_model(self):
-        from research_summaries import OllamaSummarizer, choose_model
+        from research_summaries import OllamaSummarizer
         import swarm_explain
 
-        return OllamaSummarizer(choose_model(swarm_explain.MODEL, log=lambda _: None), timeout=600)
+        return OllamaSummarizer(swarm_explain.pick_model(log=lambda _: None), timeout=600)
 
     def _log(self, action: str, details: dict) -> None:
         try:
