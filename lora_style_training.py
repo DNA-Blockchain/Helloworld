@@ -111,7 +111,7 @@ import os
 
 
 def build_training_pipeline(
-    base_model: str = "runwayml/stable-diffusion-v1-5",
+    base_model: str = "stable-diffusion-v1-5/stable-diffusion-v1-5",   # runwayml/ was taken down in 2024
     images_dir: str = "style_images",
     output_dir: str = "lora_output",
     lora_rank: int = 4,
@@ -124,8 +124,8 @@ def build_training_pipeline(
     (see module docstring).
     """
     import torch
-    from diffusers import StableDiffusionPipeline, UNet2DConditionModel
-    from peft import LoraConfig, get_peft_model
+    from diffusers import DDPMScheduler, StableDiffusionPipeline
+    from peft import LoraConfig
 
     captions_path = os.path.join(images_dir, "captions.json")
     if not os.path.exists(captions_path):
@@ -152,19 +152,26 @@ def build_training_pipeline(
               "training run.")
 
     pipe = StableDiffusionPipeline.from_pretrained(base_model, torch_dtype=torch.float32)
+    # The noise schedule the model was trained with (the pipeline's own scheduler is for sampling).
+    noise_scheduler = DDPMScheduler.from_pretrained(base_model, subfolder="scheduler")
+    for frozen in (pipe.unet, pipe.vae, pipe.text_encoder):
+        frozen.requires_grad_(False)
     unet = pipe.unet
 
     lora_config = LoraConfig(
         r=lora_rank,
         lora_alpha=lora_rank,
+        init_lora_weights="gaussian",
         target_modules=["to_q", "to_k", "to_v", "to_out.0"],   # real UNet attention module names
-        lora_dropout=0.0,
     )
-    unet = get_peft_model(unet, lora_config)
+    # add_adapter (not get_peft_model) keeps the UNet's own parameter names, so the saved
+    # weights load with pipe.load_lora_weights(). Only the new LoRA weights are trainable.
+    unet.add_adapter(lora_config)
 
     return {
         "pipe": pipe,
         "unet": unet,
+        "noise_scheduler": noise_scheduler,
         "image_files": image_files,
         "captions": captions,
         "images_dir": images_dir,
@@ -181,18 +188,23 @@ def train(setup: dict):
     adapter only (base model frozen). Needs a GPU to finish in reasonable
     time — see module docstring."""
     import torch
+    from diffusers import StableDiffusionPipeline
+    from diffusers.utils import convert_state_dict_to_diffusers
+    from peft.utils import get_peft_model_state_dict
     from PIL import Image
     from torchvision import transforms
 
     unet = setup["unet"]
     pipe = setup["pipe"]
+    noise_scheduler = setup["noise_scheduler"]
     device = setup["device"]
 
     unet.to(device)
     pipe.vae.to(device)
     pipe.text_encoder.to(device)
 
-    optimizer = torch.optim.AdamW(unet.parameters(), lr=setup["learning_rate"])
+    lora_params = [p for p in unet.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(lora_params, lr=setup["learning_rate"])
 
     transform = transforms.Compose([
         transforms.Resize((512, 512)),
@@ -210,13 +222,16 @@ def train(setup: dict):
             caption = setup["captions"][filename]
 
             with torch.no_grad():
-                latents = pipe.vae.encode(pixel_values).latent_dist.sample() * 0.18215
-                text_inputs = pipe.tokenizer(caption, return_tensors="pt", padding=True).to(device)
-                text_embeddings = pipe.text_encoder(**text_inputs)[0]
+                latents = pipe.vae.encode(pixel_values).latent_dist.sample() * pipe.vae.config.scaling_factor
+                # Padded to the full 77 tokens, as the base model was trained.
+                text_inputs = pipe.tokenizer(caption, return_tensors="pt", padding="max_length",
+                                             max_length=pipe.tokenizer.model_max_length,
+                                             truncation=True).to(device)
+                text_embeddings = pipe.text_encoder(text_inputs.input_ids)[0]
 
             noise = torch.randn_like(latents)
-            timesteps = torch.randint(0, pipe.scheduler.config.num_train_timesteps, (1,), device=device)
-            noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
+            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (1,), device=device)
+            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
             noise_pred = unet(noisy_latents, timesteps, encoder_hidden_states=text_embeddings).sample
             loss = torch.nn.functional.mse_loss(noise_pred, noise)
@@ -229,8 +244,14 @@ def train(setup: dict):
         if epoch % 10 == 0:
             print(f"  epoch {epoch}: avg loss {epoch_loss / len(setup['image_files']):.4f}")
 
+    # diffusers' LoRA format (pytorch_lora_weights.safetensors), which pipe.load_lora_weights() reads.
+    # unet.save_pretrained() would write the whole UNet, not a loadable LoRA.
     os.makedirs(setup["output_dir"], exist_ok=True)
-    unet.save_pretrained(setup["output_dir"])
+    StableDiffusionPipeline.save_lora_weights(
+        save_directory=setup["output_dir"],
+        unet_lora_layers=convert_state_dict_to_diffusers(get_peft_model_state_dict(unet)),
+        safe_serialization=True,
+    )
     print(f"LoRA weights saved to {setup['output_dir']}")
 
 

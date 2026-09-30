@@ -13,6 +13,11 @@ node_data/
 autonomous/
 self_test_logs/
 
+# Trained LoRA weights from the Colab notebooks (large; kept locally)
+ollama/nos-lora/
+lora_output/
+style_images/
+
 # Node Ed25519 private signing keys -- never commit these
 keys/
 *.ed25519.pem

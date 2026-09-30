@@ -183,8 +183,9 @@ def verify(subject_id: str, accepted_sha256: str, ledger_dir: Optional[Path]) ->
     return subject, analysis
 
 
-def explain(facts: list[str], model) -> str:
-    text = model.generate(PROMPT.format(facts="\n".join(f"- {f}" for f in facts)), num_predict=220)
+def explain(facts: list[str], model, prompt: str = PROMPT) -> str:
+    """The model's explanation of `facts`, after the code checks below. `prompt` needs a {facts} field."""
+    text = model.generate(prompt.format(facts="\n".join(f"- {f}" for f in facts)), num_predict=220)
     if not isinstance(text, str) or not text.strip():
         raise ValueError("the model returned no text")
     lines = text.strip().splitlines()
