@@ -20,6 +20,7 @@ from .jobs import Job, Jobs, Service
 
 AGENT_HOST, AGENT_PORT = "127.0.0.1", 8765
 SELF_TEST_NAME = "The self-tests"
+INTEGRITY_NAME = "The integrity check"
 
 PUBLIC_SOURCES = ("pubmed", "clinicaltrials.gov", "nih_reporter", "europe_pmc")
 SOURCE_NAMES = "PubMed, ClinicalTrials.gov, NIH RePORTER and Europe PMC"
@@ -78,7 +79,7 @@ def _search_public(query: str) -> list[dict]:
 class Session:
     def __init__(self, paths: tools.Paths | None = None, ai=None, search: Callable[[str], list[dict]] = _search_public,
                  explain_ai=None, jobs: Jobs | None = None, agent: Service | None = None,
-                 self_test_command: list[str] | None = None):
+                 self_test_command: list[str] | None = None, integrity_command: list[str] | None = None):
         self.paths = paths or tools.Paths()
         self._ai = ai
         self._explain_ai = explain_ai
@@ -87,6 +88,9 @@ class Session:
         self.agent = agent or Service("research-agent", self.paths.rabbit,
                                       [sys.executable, "run_agent.py", "--host", AGENT_HOST, "--port", str(AGENT_PORT)],
                                       self.paths.root, marker="run_agent.py")
+        self.integrity_json = self.paths.rabbit / "integrity-latest.json"
+        self.integrity_command = integrity_command or [
+            sys.executable, "-m", "rabbitsoft.integrity", "--json-out", str(self.integrity_json)]
         self.self_test_json = self.paths.rabbit / "self-tests.json"
         self.self_test_command = self_test_command or [
             sys.executable, "run_self_tests.py", "--skip-live-data", "--json-out", str(self.self_test_json)]
@@ -193,6 +197,10 @@ class Session:
             return Reply(heard + self.agent_status())
         if intent == "selftest":
             return self._prefix(heard, self.confirm_self_tests())
+        if intent == "integrity" and re.search(r"\breport\b|\blast\b|\blatest\b", fixed, re.I):
+            return Reply(heard + self.latest_integrity())
+        if intent == "integrity":
+            return self._prefix(heard, self.confirm_integrity())
         if intent == "jobs":
             return Reply(heard + self.whats_running())
         if intent in tools.TOOLS:
@@ -213,7 +221,7 @@ class Session:
 
     def _tool_or_ask(self, intent: str) -> Callable[[], Reply]:
         actions = {"agents": lambda: Reply(self.agent_status()), "selftest": self.confirm_self_tests,
-                   "jobs": lambda: Reply(self.whats_running())}
+                   "jobs": lambda: Reply(self.whats_running()), "integrity": self.confirm_integrity}
         if intent in actions:
             return actions[intent]
         if intent in tools.TOOLS:
@@ -492,6 +500,43 @@ class Session:
         text = (f"{counts.get('PASS', 0)} passed, {counts.get('FAIL', 0)} failed{missing}, "
                 f"{counts.get('SKIP', 0)} skipped (sites outside this PC).")
         return text + (f" Failed: {', '.join(failed)}. The log is {job.log}." if failed else "")
+
+    def confirm_integrity(self) -> Reply:
+        running = self.jobs.running(INTEGRITY_NAME)
+        if running:
+            return Reply(f"{running.describe()} I'll tell you when it finishes.")
+        return self._ask("This checks the whole OS: every chain (each node's, the shared research chain, the activity "
+                         "log and the Maxwell chain), the dataset files against their fingerprints, the code against "
+                         "its saved fingerprint, the test suite and the self-tests. It only reads, takes 3 to 4 "
+                         "minutes, and nothing leaves this PC. The report is saved on this PC. Run it?",
+                         self._run_integrity)
+
+    def _run_integrity(self) -> Reply:
+        self.integrity_json.unlink(missing_ok=True)
+        job = self.jobs.start(INTEGRITY_NAME, self.integrity_command, self.paths.root, self._summarize_integrity)
+        self._log("integrity_check_started", {"log": job.log.name})
+        return Reply("Started the integrity check. I'll tell you when it finishes; ask \"what's running\" any time.")
+
+    def _summarize_integrity(self, job: Job) -> str:
+        from .integrity import summary_line
+
+        try:
+            report = json.loads(self.integrity_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return f"It stopped early (exit code {job.exit_code}). The log is {job.log}."
+        problems = [c for c in report["checks"] if c["status"] == "problem"]
+        details = "".join(f"\n{c['name']}: {' '.join(c['lines'])}" for c in problems)
+        return (("Everything checks out. " if report["ok"] else "Problems found. ") + summary_line(report) + details
+                + "\nSay \"show the integrity report\" for the details.")
+
+    def latest_integrity(self) -> str:
+        reports = sorted((self.paths.autonomous / "integrity").glob("integrity-*.md"))
+        if not reports:
+            return "There's no integrity report yet. Say \"check integrity\" to make one."
+        text = reports[-1].read_text(encoding="utf-8")
+        body = [l for l in text.splitlines() if l.strip() and not l.startswith("# ")]
+        return "\n".join([f"Latest integrity report ({reports[-1].stem.removeprefix('integrity-')}):"] + body
+                         + [f"Saved on this PC: {reports[-1]}"])
 
     def whats_running(self) -> str:
         lines = [job.describe() for job in self.jobs.items[-5:]]
