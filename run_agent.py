@@ -103,11 +103,11 @@ BIOMARKER = "BRCA1"                      # <-- or None if you don't have one
 # ----------------------------------------
 
 
-async def main():
+async def main(host: str = HOST, port: int = PORT):
     dna = DigitalDNA(seed_label=SEED_LABEL)
-    node = NetworkNode(dna, host=HOST, port=PORT)
+    node = NetworkNode(dna, host=host, port=port)
     await node.start()
-    print(f"[node] listening on {HOST}:{PORT}, node_id={node.node_id}")
+    print(f"[node] listening on {host}:{port}, node_id={node.node_id}")
 
     agent = GrowingResearchAgent(
         node, dna, store_path=STORE_PATH,
@@ -146,4 +146,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    cli = argparse.ArgumentParser(description="Run the growing research agent and its node until stopped.")
+    cli.add_argument("--host", default=HOST, help=f"address the node listens on (default {HOST}; "
+                                                  "127.0.0.1 keeps it to this PC)")
+    cli.add_argument("--port", type=int, default=PORT, help=f"node port (default {PORT})")
+    cli_args = cli.parse_args()
+    asyncio.run(main(cli_args.host, cli_args.port))

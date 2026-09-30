@@ -148,6 +148,16 @@
   fetch("/api/status", { headers: { "X-Rabbit": "1" } }).then(r => r.json())
     .then(s => { document.getElementById("status").textContent = `${s.nodes} ${s.chain}`; })
     .catch(() => { document.getElementById("status").textContent = ""; });
+  // Background jobs (such as the self-tests) report here when they finish, even if nothing is typed.
+  setInterval(async () => {
+    if (waiting) return;
+    try {
+      const r = await fetch("/api/poll", { method: "POST",
+        headers: { "Content-Type": "application/json", "X-Rabbit": "1" }, body: JSON.stringify({ session, text: "" }) });
+      const data = await r.json();
+      if (data.text) show(NAME, data.text);
+    } catch {}
+  }, 15000);
   greet(); box.focus();
 })();
 </script>

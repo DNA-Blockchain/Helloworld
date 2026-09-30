@@ -22,6 +22,11 @@ class Paths:
     research_store: Path = field(default_factory=lambda: ROOT / "research_store.json")
     catalog: Path = field(default_factory=lambda: ROOT / "dna_shell_data" / "research_catalog.sqlite3")
 
+    @property
+    def rabbit(self) -> Path:
+        """Where the assistant keeps job logs and the research agent's pid file."""
+        return self.autonomous / "rabbit"
+
     def node_dirs(self) -> list[Path]:
         return sorted((p for p in self.autonomous.glob("node-*") if p.is_dir()),
                       key=lambda p: int(p.name.split("-")[1]) if p.name.split("-")[1].isdigit() else 0)

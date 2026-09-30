@@ -23,6 +23,9 @@ INTENTS: dict[str, tuple[str, ...]] = {
     "activity": ("activity", "log", "logs", "trail", "history", "happened", "events"),
     "agents": ("agent", "agents", "research agent", "research agents", "topic", "topics", "queue", "queued"),
     "report": ("report", "reports", "daily", "today", "yesterday", "overnight"),
+    "selftest": ("self-test", "self-tests", "self test", "self tests", "selftest", "selftests", "run tests",
+                 "run the tests", "test everything", "check everything", "health check", "run checks"),
+    "jobs": ("jobs", "job", "what's running", "whats running", "background", "still running"),
     "research": ("research", "study", "studies", "paper", "papers", "trial", "trials", "gene", "genes",
                  "disease", "treatment", "therapy", "cancer", "mutation", "editing", "crispr", "search",
                  "find", "look up", "question", "evidence"),
@@ -37,7 +40,11 @@ LABELS = {
     "agents": "Research agents and their topics",
     "report": "Latest daily report",
     "research": "Ask a research question",
+    "selftest": "Run the self-tests",
+    "jobs": "What's running in the background",
 }
+START = re.compile(r"\b(start|begin|launch|resume|turn on|switch on)\b", re.I)
+STOP = re.compile(r"\b(stop|halt|end|pause|kill|turn off|switch off|shut down)\b", re.I)
 # Names and terms people often misspell when asking about this project's research.
 DOMAIN_TERMS = (
     "crispr", "cas9", "sirna", "rna", "dna", "gene", "genes", "genetic", "genome", "mutation", "mutations",
@@ -75,7 +82,7 @@ def fix_spelling(text: str, vocab: set[str]) -> str:
 
 # Words that come up in almost any question about this OS ("how many tokens do the nodes have") count
 # half, so the more specific word decides.
-GENERAL = {"node", "nodes", "status", "network", "working", "search", "find", "question"}
+GENERAL = {"node", "nodes", "status", "network", "working", "running", "search", "find", "question"}
 
 
 def intent_scores(text: str) -> dict[str, float]:
