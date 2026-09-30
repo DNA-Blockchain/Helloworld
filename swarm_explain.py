@@ -91,6 +91,9 @@ from typing import Optional
 import swarm_analysis
 
 NOTE = "Machine-generated explanation of verified facts; may be wrong; not evidence and not medical advice."
+# ollama/nos-explain.Modelfile (build: python local_ai_tuning.py create). On the test subjects it passed 8/8
+# checks where llama3.2:3b alone passed 0/8, mostly by not inventing who made the sequence and why.
+MODEL = "nos-explain"
 PROMPT_VERSION = 2
 PROMPT = (
     "Explain the computed facts below to a general reader in 3 to 5 short sentences.\n"
@@ -213,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sha256", help="the digest the swarm accepted for --subject (at least 12 hex characters)")
     p.add_argument("--ledger-dir", type=Path, help="node ledgers, for chain subjects (event:...)")
     p.add_argument("--no-ai", action="store_true", help="print the verified facts only")
-    p.add_argument("--model", default="llama3.2:3b")
+    p.add_argument("--model", help=f"Ollama model (default {MODEL}, or llama3.2:3b if that isn't built)")
     p.add_argument("--endpoint", default="http://127.0.0.1:11434")
     p.add_argument("--limit", type=int, default=3)
     args = p.parse_args(argv)
@@ -238,8 +241,9 @@ def main(argv: list[str] | None = None) -> int:
 
     model = None
     if not args.no_ai:
-        from research_summaries import OllamaSummarizer
+        from research_summaries import OllamaSummarizer, choose_model
 
+        args.model = args.model or choose_model(MODEL, args.endpoint)
         model = OllamaSummarizer(args.model, args.endpoint, timeout=300)
 
     status = 0

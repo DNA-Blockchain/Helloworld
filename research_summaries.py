@@ -57,7 +57,10 @@
 research_summaries.py
 =====================
 Plain-language summaries of the published research records, written by a
-local Ollama model (default llama3.2:3b) on this machine only.
+local Ollama model on this machine only: nos-summary (llama3.2:3b with
+instructions for this job; build it with `python local_ai_tuning.py
+create`), or llama3.2:3b itself if nos-summary isn't built. Summaries from
+a different model are written again, so switching models refreshes them.
 
 A summary rewrites a record's title as one sentence for a general reader.
 It is machine-generated: it can be wrong, and it is never evidence. The
@@ -97,7 +100,8 @@ from research_publish import DEFAULT_OUTBOX
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_BASE_DIR = ROOT / "autonomous"
-DEFAULT_MODEL = "llama3.2:3b"
+BASE_MODEL = "llama3.2:3b"       # what the tuned models are built on; the fallback when they're missing
+DEFAULT_MODEL = "nos-summary"    # ollama/nos-summary.Modelfile, built by: python local_ai_tuning.py create
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 STORE_SCHEMA = "research-summaries.v1"
 PROMPT_VERSION = 1
@@ -195,6 +199,35 @@ class OllamaSummarizer:
             return json.loads(raw).get("response")
         except (ValueError, AttributeError) as error:
             raise ValueError("local Ollama returned an invalid response") from error
+
+
+def installed_models(endpoint: str = DEFAULT_ENDPOINT, timeout: float = 5) -> set[str] | None:
+    """Model names local Ollama has, with and without the ":latest" tag; None if it can't be reached."""
+    host, port = loopback_endpoint(endpoint)
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        connection.request("GET", "/api/tags")
+        response = connection.getresponse()
+        tags = json.loads(response.read()) if response.status == 200 else None
+    except (OSError, ValueError):
+        return None
+    finally:
+        connection.close()
+    if not isinstance(tags, dict):
+        return None
+    names = {m.get("name", "") for m in tags.get("models", []) if isinstance(m, dict)}
+    return names | {n.removesuffix(":latest") for n in names}
+
+
+def choose_model(preferred: str, endpoint: str = DEFAULT_ENDPOINT, fallback: str = BASE_MODEL, log=print) -> str:
+    """`preferred` when Ollama has it, else `fallback` with a note on how to build the tuned model. If Ollama
+    can't be reached, `preferred` is returned and the request itself reports the problem."""
+    installed = installed_models(endpoint)
+    if installed is None or preferred in installed or fallback not in installed:
+        return preferred
+    log(f"(model {preferred} isn't installed; using {fallback}. "
+        f"Build the tuned models with: python local_ai_tuning.py create)")
+    return fallback
 
 
 def clean_summary(text: object) -> str:
@@ -351,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="summarize records that have no summary yet")
     run.add_argument("--limit", type=int, default=5)
-    run.add_argument("--model", default=DEFAULT_MODEL)
+    run.add_argument("--model", help=f"Ollama model (default {DEFAULT_MODEL}, or {BASE_MODEL} if that isn't built)")
     run.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="local Ollama (numeric loopback IP only)")
     run.add_argument("--max-busy", type=float, default=75.0, help="stop when system CPU use is above this %%")
     run.add_argument("--confirm-publication", action="store_true",
@@ -368,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         on_chain = sum(1 for e in store["summaries"].values() if e["batch"])
         print(f"{have} of {len(records)} records summarized; {on_chain} summaries hashed on chain")
         return 0
-    summarizer = OllamaSummarizer(args.model, args.endpoint)
+    summarizer = OllamaSummarizer(args.model or choose_model(DEFAULT_MODEL, args.endpoint), args.endpoint)
     summarize_pending(args.base_dir, summarizer, limit=args.limit, max_busy=args.max_busy)
     if args.confirm_publication:
         publish_pending(args.base_dir, args.outbox)
