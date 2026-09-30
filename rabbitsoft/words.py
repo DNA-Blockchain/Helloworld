@@ -27,6 +27,8 @@ INTENTS: dict[str, tuple[str, ...]] = {
                  "run the tests", "test everything", "health check", "run checks"),
     "integrity": ("integrity", "check everything", "verify everything", "everything true", "still true",
                   "full check", "check the whole system", "tampered", "integrity report"),
+    "corpus": ("corpus", "vector", "vectors", "embedding", "embeddings", "abstract", "abstracts",
+               "search by meaning", "meaning model", "semantic"),
     "jobs": ("jobs", "job", "what's running", "whats running", "background", "still running"),
     "research": ("research", "study", "studies", "paper", "papers", "trial", "trials", "gene", "genes",
                  "disease", "treatment", "therapy", "cancer", "mutation", "editing", "crispr", "search",
@@ -44,6 +46,7 @@ LABELS = {
     "research": "Ask a research question",
     "selftest": "Run the self-tests",
     "integrity": "Check the integrity of the whole OS",
+    "corpus": "The research corpus (search by meaning)",
     "jobs": "What's running in the background",
 }
 # Reading the shared chain: "what's on the chain", "find BRCA1 on the chain", "show entry 3".
@@ -93,7 +96,8 @@ COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list"
                  "entry", "entries", "start", "stop", "run", "what", "which", "where", "when", "why", "who",
                  "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and",
                  "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable",
-                 "latest", "last", "newest", "recent", "still", "true", "everything", "whole", "system", "check")
+                 "latest", "last", "newest", "recent", "still", "true", "everything", "whole", "system", "check",
+                 "fill", "fetch", "download", "install", "model")
 
 
 def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:

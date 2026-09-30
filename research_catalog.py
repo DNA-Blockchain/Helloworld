@@ -228,6 +228,34 @@ class ResearchCatalog:
                 ).fetchone()
         return int(row["n"])
 
+    def all_records(self, *, classification: str = "public") -> list[dict]:
+        """Every record of one classification, oldest first (for building the search-by-meaning corpus)."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT source, external_id, title, abstract, source_url, published_at FROM research_records "
+                "WHERE classification = ? ORDER BY retrieved_at, source, external_id",
+                (classification,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def missing_abstracts(self, *, limit: int = 200) -> list[tuple[str, str]]:
+        """(source, external_id) of public records saved without an abstract."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT source, external_id FROM research_records WHERE classification = 'public' "
+                "AND abstract = '' ORDER BY retrieved_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [(row["source"], row["external_id"]) for row in rows]
+
+    def set_abstract(self, source: str, external_id: str, abstract: str) -> bool:
+        key = hashlib.sha256(f"{source}\0{external_id}".encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE research_records SET abstract = ? WHERE record_key = ?", (abstract.strip(), key)
+            ).rowcount
+        return changed > 0
+
 
 def normalize_record(record: dict) -> dict[str, str]:
     source = str(record.get("source", "")).strip().lower()
