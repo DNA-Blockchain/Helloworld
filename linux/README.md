@@ -5,7 +5,7 @@ A small Linux system that boots in QEMU and runs one network node
 replace it. Rust kernel is the from-scratch OS; this image is the practical
 way to run the Python node on real Linux today.
 
-Nothing is compiled. `build.sh` takes Alpine's prebuilt `linux-virt` kernel,
+Nothing is compiled. `build.py` takes Alpine's prebuilt `linux-virt` kernel,
 busybox and Python from Alpine's signed repositories, adds only the node
 modules `run_node_cli.py` imports, and packs everything into a RAM root
 filesystem. A build takes about a minute; a node is up about 3 seconds after
@@ -14,10 +14,13 @@ QEMU starts.
 Run from WSL or Linux (not Windows PowerShell):
 
 ```sh
-sudo sh linux/build.sh                    # -> ~/.cache/network-os-linux/{vmlinuz,initramfs.gz}
-sh linux/run.sh --id 1                    # node 1 on port 9601, console in this terminal
-sh linux/run.sh --id 2 --tofu --peers localhost:9601   # second VM, peered to the first
+sudo python3 linux/build.py               # -> ~/.cache/network-os-linux/{vmlinuz,initramfs.gz}
+python3 linux/run.py --id 1               # node 1 on port 9601, console in this terminal
+python3 linux/run.py --id 2 --tofu --peers localhost:9601   # second VM, peered to the first
 ```
+
+The scripts use only Python's standard library. They still call the system
+tools that do the real work: `tar`, `mount` and `chroot` to build, QEMU to run.
 
 Leave the console with **Ctrl-A then X**, or type `poweroff -f`.
 
@@ -25,8 +28,8 @@ A three-VM swarm, fully meshed, cross-checking the DNA twin's analyses
 (`swarm_analysis.py`):
 
 ```sh
-sh linux/swarm.sh                         # until Ctrl-C, printing verdicts as they happen
-sh linux/swarm.sh --round 15 --duration 70   # fixed run, then each node's summary
+python3 linux/swarm.py                    # until Ctrl-C, printing verdicts as they happen
+python3 linux/swarm.py --round 15 --duration 70   # fixed run, then each node's summary
 ```
 
 Each round, one VM runs the twin's RNA analyses on a public or synthetic
@@ -35,7 +38,7 @@ nodes publish the same SHA-256. On one test run, all three VMs recorded the
 same 5 accepted rounds, and the digests matched the ones Ubuntu's Python got
 on the host. Each VM uses 384 MB, so three together need about 1.2 GB.
 
-| run.sh option | Meaning |
+| run.py option | Meaning |
 |---|---|
 | `--id N` | node id (default 1) |
 | `--port P` | node port, forwarded from the host (default 9600+N) |

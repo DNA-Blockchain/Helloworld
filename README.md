@@ -547,7 +547,7 @@ biologically right.
 
 ```sh
 python run_node_cli.py --id 1 --port 9601 --peers 127.0.0.1:9602,127.0.0.1:9603 --tofu --work-sharing --swarm
-sh linux/swarm.sh          # the same across three Alpine VMs (linux/README.md)
+python3 linux/swarm.py     # the same across three Alpine VMs (linux/README.md)
 ```
 
 `swarm_explain.py` explains accepted results in plain language with local

@@ -189,18 +189,18 @@ real disk.
 - [ ] **Build the Alpine image** (Ubuntu, about a minute, needs internet):
       ```bash
       cd /mnt/c/Users/<you>/network-os-project
-      sudo sh linux/build.sh
+      sudo python3 linux/build.py
       ```
       Worked if it ends with `==> done: Alpine 3.24.2` and lists `vmlinuz` and
       `initramfs.gz`.
 - [ ] **Boot one node in Linux:**
       ```bash
-      sh linux/run.sh --id 1
+      python3 linux/run.py --id 1
       ```
       Leave with Ctrl-A then X.
 - [ ] **Three Linux VMs as a swarm:**
       ```bash
-      sh linux/swarm.sh --round 15 --duration 70
+      python3 linux/swarm.py --round 15 --duration 70
       ```
       Worked if each node lists `ACCEPTED` rounds and `chain intact (OK)`.
       If the output looks like an older version, rebuild first.
@@ -296,7 +296,7 @@ changes the `--source` or `--sink` text. See the "Signal lab" section of
 - [ ] `python -m pytest -q` still passes.
 - [ ] `python node_supervisor.py --status` shows 3 nodes running.
 - [ ] Ollama is running if you want AI summaries.
-- [ ] After changing Python code, rebuild the Alpine image (`sudo sh linux/build.sh`)
+- [ ] After changing Python code, rebuild the Alpine image (`sudo python3 linux/build.py`)
       before testing in VMs.
 
 ## When something goes wrong
@@ -307,7 +307,7 @@ changes the `--source` or `--sink` text. See the "Signal lab" section of
 | `No module named pytest` in Ubuntu | Use the venv's Python: `~/venvs/network-os/bin/python -m pytest` |
 | `ensurepip is not available` | `sudo apt install python3-venv` |
 | VMs are very slow | `/dev/kvm` is missing: turn on virtualization (part 1) |
-| Out of memory with 3 VMs | Raise `memory` in `.wslconfig`, or use `swarm.sh --mem 320M` |
+| Out of memory with 3 VMs | Raise `memory` in `.wslconfig`, or use `swarm.py --mem 320M` |
 | `localhost:9601` refused in a browser | Expected: node ports speak the node protocol, not web pages |
 | `SoapySDR isn't installed` | Part 8, radio steps 2–3 |
 | `refused: transmitting needs --transmit` | Working as designed; see the licence step |
