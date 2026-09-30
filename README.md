@@ -58,6 +58,11 @@ python -m pip install -r requirements.txt
 
 ## Quickstart
 
+New PC? [GETTING_STARTED.md](GETTING_STARTED.md) is a step-by-step
+checklist covering Windows and WSL, the software, the code and tests, the
+nodes, the DNA twin and swarm, the local AI, the Alpine and Rust OS builds,
+and EEG and radio hardware.
+
 Run everything (opens a loopback-only node on `127.0.0.1:8765`, seeds one research
 topic, then idles until Ctrl+C — all state is saved to JSON files beside
 the code and reloaded on the next run):
