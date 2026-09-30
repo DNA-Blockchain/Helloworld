@@ -130,6 +130,20 @@ def collect(base_dir: str) -> dict:
                 "published_record_sha256": record["published_record_sha256"],
             }
 
+    # Record notes (challenges, improvements, replies), oldest first. They never change what they're
+    # about; they're listed beside it.
+    notes_about: dict[str, list[dict]] = {}
+    for event in sorted(events.values(), key=lambda e: e["block"]["research_provenance"]["created_at"]
+                        if e["kind"] == "public_record_note" else ""):
+        if event["kind"] != "public_record_note":
+            continue
+        payload = event["block"]["research_provenance"]
+        note = {key: payload[key] for key in ("event_id", "note_kind", "text", "created_at", "about_record")}
+        note |= {"origin": event["origin"], "replicas": sorted(event["replicas"])}
+        notes_about.setdefault(payload["about_event_id"], []).append(note)
+    for event in events.values():
+        event["notes"] = notes_about.get(event["event_id"], [])
+
     records, datasets = [], []
     for event in events.values():
         block = event["block"]
@@ -150,6 +164,9 @@ def collect(base_dir: str) -> dict:
                     "not_before_bitcoin_block": (payload.get("time_anchor") or {}).get("height"),
                     "timestamp_proof": event["timestamp_proof"],
                     "correction": None,
+                    # Notes about this record, and notes about its whole entry.
+                    "notes": [n for n in event["notes"] if n["about_record"] in (None, {
+                        "source": record["source"], "external_id": record["external_id"]})],
                 }
                 correction = corrections.get((event["event_id"], record["source"], record["external_id"]))
                 if correction and correction["published_record_sha256"] == record["record_sha256"]:
@@ -384,6 +401,9 @@ async function load() {
     const titleCell = cell(row, r.title, /^https?:/.test(r.source_url) ? r.source_url : null);
     if (r.correction) { const note = document.createElement('div'); note.className = 'muted';
       note.textContent = `Corrected ${r.correction.corrected_at.slice(0, 10)} (${r.correction.reason}); first published as: ${r.correction.published_title}`;
+      titleCell.append(note); }
+    for (const n of (r.notes || [])) { const note = document.createElement('div'); note.className = 'muted';
+      note.textContent = `${n.note_kind[0].toUpperCase()}${n.note_kind.slice(1)} (${n.created_at.slice(0, 10)}, node ${n.origin}): ${n.text}`;
       titleCell.append(note); }
     if (r.summary) { const s = document.createElement('div'); s.className = 'summary';
       s.textContent = r.summary.text;

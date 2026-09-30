@@ -161,8 +161,14 @@ class Session:
     def _understand(self, text: str) -> Reply:
         if words.is_greeting(text):
             return self.menu(f"{GREETING} Ask me anything about this OS in your own words, or pick a number:")
+        if note := words.split_note(text, self.vocab):
+            return self.write_note(*note)
         fixed = words.fix_spelling(text, self.vocab)
         heard = f"I read that as: \"{fixed}\".\n" if fixed.lower() != text.lower() else ""
+        if words.NOTES_OFF.search(fixed):
+            return self._prefix(heard, self.confirm_notes(False))
+        if words.NOTES_ON.search(fixed):
+            return self._prefix(heard, self.confirm_notes(True))
         if re.search(r"\b(simpler|simply|easier words|plain words)\b", fixed, re.I) and self.last_answer:
             return self.simpler()
         if m := re.search(r"\bexplain\b.*?\bsynthetic\W*(\d)\b|\bsynthetic\W*(\d)\b", fixed, re.I):
@@ -315,24 +321,101 @@ class Session:
         self.chain_listing = shown
         if not shown:
             return Reply("\n".join(lines))
-        options = [(re.sub(r"^\d+\.\s*", "", line), lambda e=e: Reply("\n".join(chain_view.entry(data, e))))
-                   for line, e in zip(lines[1:], shown)]
+        options = [(re.sub(r"^\d+\.\s*", "", line),
+                    lambda m=m: Reply("\n".join(chain_view.entry(data, m["event"], m["record"]))))
+                   for line, m in zip(lines[1:], shown)]
         return self._offer(options, lines[0] + " Pick a number to see everything in an entry.")
 
-    def show_entry(self, ref: str) -> Reply:
-        data = chain_view.collect(self.paths)
+    def _resolve_entry(self, ref: str, data: dict) -> tuple[dict, dict | None] | str:
+        """(event, record) for "entry 2" (from the last search) or an ID prefix, or why it can't be found."""
         if ref.isdigit() and len(ref) <= 2:          # a list number; longer digit runs are ID prefixes (hex)
             number = int(ref)
             if not 1 <= number <= len(self.chain_listing):
-                return Reply("Search first, for example \"find BRCA1 on the chain\", then say \"show entry\" "
-                             "and a number from the list.")
-            event = next((e for e in data["events"] if e["event_id"] == self.chain_listing[number - 1]["event_id"]),
-                         None)
-        else:
-            event = chain_view.find_event(data, ref)
-        if event is None:
-            return Reply(f"I couldn't find entry {ref} on the chain.")
-        return Reply("\n".join(chain_view.entry(data, event)))
+                return ("Search first, for example \"find BRCA1 on the chain\", then say \"show entry\" "
+                        "and a number from the list.")
+            listed = self.chain_listing[number - 1]
+            event = next((e for e in data["events"] if e["event_id"] == listed["event"]["event_id"]), None)
+            return (event, listed["record"]) if event else f"Entry {ref} is no longer on the chain."
+        event = chain_view.find_event(data, ref)
+        return (event, None) if event else f"I couldn't find entry {ref} on the chain."
+
+    def show_entry(self, ref: str) -> Reply:
+        data = chain_view.collect(self.paths)
+        found = self._resolve_entry(ref, data)
+        if isinstance(found, str):
+            return Reply(found)
+        return Reply("\n".join(chain_view.entry(data, *found)))
+
+    # -- notes: challenge or improve a chain entry, by adding to the chain, never erasing ------------
+    @property
+    def _settings_file(self):
+        return self.paths.rabbit / "settings.json"
+
+    def notes_enabled(self) -> bool:
+        return bool((tools._load(self._settings_file) or {}).get("notes"))
+
+    def _set_notes(self, on: bool) -> Reply:
+        settings = tools._load(self._settings_file) or {}
+        settings["notes"] = on
+        self.paths.rabbit.mkdir(parents=True, exist_ok=True)
+        self._settings_file.write_text(json.dumps(settings, indent=1))
+        self._log("notes_enabled" if on else "notes_disabled", {})
+        return Reply("Notes are on. Write one like: challenge entry 2: <what's wrong and why>. Notes can also be "
+                     "\"improve entry …\" or \"reply to entry …\"." if on else
+                     "Notes are off. Notes already on the chain stay there.")
+
+    def confirm_notes(self, on: bool) -> Reply:
+        if on == self.notes_enabled():
+            return Reply(f"Notes are already {'on' if on else 'off'}.")
+        if not on:
+            return self._set_notes(False)
+        return self._ask("Turning notes on lets this PC's node add notes to the shared research chain: challenges, "
+                         "suggested improvements and replies about entries. Each note is signed by this PC's node, "
+                         "copied to every node, and can never be deleted, only answered. I'll still ask before each "
+                         "one. Turn notes on?", lambda: self._set_notes(True))
+
+    def write_note(self, kind: str, ref: str, text: str) -> Reply:
+        from research_provenance import MAX_NOTE_CHARS, personal_information
+
+        text = text.strip()
+        if not self.notes_enabled():
+            return Reply("Notes are off on this PC. Say \"turn on notes\" first; nothing has been sent.")
+        data = chain_view.collect(self.paths)
+        found = self._resolve_entry(ref, data)
+        if isinstance(found, str):
+            return Reply(found)
+        event, record = found
+        if not text:
+            return Reply(f"Write the note after a colon, for example: {kind} entry {ref}: <your note>.")
+        if len(text) > MAX_NOTE_CHARS:
+            return Reply(f"That note is {len(text)} characters; the limit is {MAX_NOTE_CHARS}. Please shorten it.")
+        personal = personal_information(text)
+        if personal:
+            return Reply(f"I can't put that on the chain: it looks like it contains {' and '.join(personal)}. "
+                         "The chain is public and permanent, and every node would refuse it anyway.\n"
+                         "To keep personal information privately, save it in your encrypted digital twin vault, "
+                         "which only your passphrase opens and which stays on this PC: put it in a file and run "
+                         "python dna_shell.py data-vault-store <file>. Please don't type a passphrase here.")
+        about = (f"\"{record['title']}\" in entry {event['event_id'][:8]}" if record else
+                 f"entry {event['event_id'][:8]} ({chain_view.KIND_NAMES.get(event['kind'], event['kind'])})")
+        return self._ask(f"This adds a {kind} about {about} to the shared research chain:\n\"{text}\"\n"
+                         "It will be signed by this PC's node, copied to every node, and can never be deleted, only "
+                         "answered by another note. Publish it?",
+                         lambda: self._publish_note(kind, event, record, text))
+
+    def _publish_note(self, kind: str, event: dict, record: dict | None, text: str) -> Reply:
+        from research_provenance import ResearchProvenanceQueue, create_public_record_note_event
+
+        try:
+            note = create_public_record_note_event(note_kind=kind, about_event_id=event["event_id"], text=text,
+                                                   about_record=record, confirm_publication=True)
+        except ValueError as error:
+            return Reply(f"The note wasn't accepted ({error}). Nothing was published.")
+        ResearchProvenanceQueue(self.paths.autonomous / "research-outbox").enqueue(note)
+        self._log("note_queued", {"event_id": note["event_id"], "note_kind": kind,
+                                  "about_event_id": event["event_id"]})
+        return Reply(f"Queued note {note['event_id'][:8]}. Node-0 adds it to the chain within a minute or two, and "
+                     f"the other nodes copy it. Say \"show entry {event['event_id'][:8]}\" to see it there.")
 
     # -- actions: each asks first and is written to the activity log --------------------------------
     @staticmethod

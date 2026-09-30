@@ -22,6 +22,7 @@ KIND_NAMES = {
     "public_sequence_record": "sequences",
     "public_model_run_record": "model runs",
     "public_data_hash": "file fingerprints",
+    "public_record_note": "notes",
 }
 VIEWER = "To browse everything in a page: python research_viewer.py (http://127.0.0.1:8791)."
 
@@ -62,9 +63,16 @@ def summary(data: dict) -> list[str]:
     return lines
 
 
+def _note_count(notes: list[dict]) -> str:
+    if not notes:
+        return ""
+    kinds = ", ".join(sorted({n["note_kind"] for n in notes}))
+    return f" {len(notes)} note{'s' if len(notes) != 1 else ''} ({kinds})."
+
+
 def find(data: dict, text: str, limit: int = 5) -> tuple[list[str], list[dict]]:
-    """Published records (and other entries) matching every word; returns lines and the matched events,
-    numbered in the same order, for "show entry N"."""
+    """Published records (and other entries) matching every word. Returns lines, and for each numbered
+    line {"event": ..., "record": ... or None}, for "show entry N" and for notes about it."""
     terms = [t for t in re.findall(r"[\w-]+", text.lower()) if len(t) > 2 and t not in {"the", "and", "for"}]
     if not terms:
         return ["Tell me what to look for, for example \"find BRCA1 on the chain\"."], []
@@ -84,18 +92,21 @@ def find(data: dict, text: str, limit: int = 5) -> tuple[list[str], list[dict]]:
              + (f"; the first {limit}:" if len(matches) > limit else ":")]
     shown = []
     for n, (what, record, event) in enumerate(matches[:limit], start=1):
-        shown.append(event)
+        shown.append({"event": event, "record": record})
         if what == "record":
             line = (f"{n}. {record['title']} ({record['source']} {record['external_id']}, published "
                     f"{record['published_at'][:10]}, held by {_nodes(record['replicas'])}). {record['source_url']}")
             if record.get("correction"):
                 c = record["correction"]
                 line += f" Corrected {c['corrected_at'][:10]} ({c['reason']}); first published as \"{c['published_title']}\"."
+            line += _note_count(record.get("notes") or [])
         else:
             p = _payload(event)
-            label = p.get("title") or p.get("accession") or p.get("gene") or event["event_id"]
+            label = p.get("title") or p.get("accession") or p.get("gene") or (p.get("text") or "")[:80] \
+                or event["event_id"]
             line = (f"{n}. {KIND_NAMES.get(event['kind'], event['kind'])}: {label} "
-                    f"(published {p.get('created_at', '')[:10]}, held by {_nodes(event['replicas'])}).")
+                    f"(published {p.get('created_at', '')[:10]}, held by {_nodes(event['replicas'])})."
+                    + _note_count(event.get("notes") or []))
         lines.append(line)
     lines.append("Say \"show entry\" and a number for everything in it.")
     return lines, shown
@@ -119,7 +130,7 @@ def _flatten(value, prefix: str = "") -> list[str]:
     return lines
 
 
-def entry(data: dict, event: dict) -> list[str]:
+def entry(data: dict, event: dict, record: dict | None = None) -> list[str]:
     p = _payload(event)
     lines = [f"Chain entry {event['event_id']}: {KIND_NAMES.get(event['kind'], event['kind'])}.",
              f"Published by node {event['origin']} as its block {event['origin_index']}, fingerprint "
@@ -130,6 +141,12 @@ def entry(data: dict, event: dict) -> list[str]:
         dataset = next((d for d in data["datasets"] if d.get("event_id") == event["event_id"]), {})
         lines.append("The dataset's file is on this PC." if dataset.get("local_copy") else
                      "The dataset's file isn't on this PC; the chain holds its fingerprint, not the file.")
+    wanted = {"source": record["source"], "external_id": record["external_id"]} if record else None
+    notes = [n for n in event.get("notes") or [] if wanted is None or n["about_record"] in (None, wanted)]
+    if notes:
+        lines.append(f"Notes about {'this record' if record else 'this entry'} (they don't change it):")
+        lines += [f"- {n['note_kind'].capitalize()} ({n['created_at'][:10]}, node {n['origin']}, entry "
+                  f"{n['event_id'][:8]}): {n['text']}" for n in notes]
     return lines
 
 

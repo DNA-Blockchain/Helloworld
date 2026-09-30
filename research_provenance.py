@@ -895,6 +895,97 @@ def _validate_public_research_correction(event: dict) -> None:
         raise ValueError("research correction event exceeds the 32-KiB block payload limit")
 
 
+# Record notes: a person challenges or suggests an improvement to a published entry, or replies to a
+# note. The chain is append-only, so a note never changes what it's about; it's shown beside it.
+NOTE_KINDS = frozenset({"challenge", "improvement", "reply"})
+MAX_NOTE_CHARS = 1000
+_NOTE_FIELDS = {"schema_version", "event_type", "event_id", "created_at", "classification",
+                "note_kind", "about_event_id", "about_record", "text"}
+# Personal information must never reach the shared chain: every node refuses a note containing any of
+# these, so a node running careless software can't get one replicated. It belongs in the owner's
+# encrypted vault (encrypted_data_vault.py) instead.
+_PERSONAL_INFORMATION = (
+    (re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+"), "an email address"),
+    (re.compile(r"(?<![\w-])\+?\d[\d ().-]{7,}\d(?![\w-])"), "a phone number"),
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "an ID number"),
+    (re.compile(r"\b(date of birth|born on|d\.?o\.?b\.?)\b", re.I), "a date of birth"),
+    (re.compile(r"\b\d{1,5}\s+(\w+\s+){1,3}(street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|"
+                r"court|ct|way)\b\.?", re.I), "a street address"),
+    (re.compile(r"[ACGTUacgtu]{30,}"), "a DNA or RNA sequence"),
+)
+
+
+def personal_information(text: str) -> list[str]:
+    """What in `text` looks like personal information, as plain descriptions (empty if nothing)."""
+    found = []
+    for pattern, description in _PERSONAL_INFORMATION:
+        match = pattern.search(text)
+        if match and not (description == "a phone number" and sum(c.isdigit() for c in match.group(0)) < 9):
+            found.append(description)
+    return found
+
+
+def create_public_record_note_event(
+    *,
+    note_kind: str,
+    about_event_id: str,
+    text: str,
+    about_record: dict | None = None,
+    confirm_publication: bool = False,
+) -> dict:
+    """A challenge, improvement or reply about an earlier chain entry (and, for an entry holding several
+    records, which record). Checked like every other event, including for personal information."""
+    if confirm_publication is not True:
+        raise PermissionError("explicit confirmation is required before publishing a note to the chain")
+    event = {
+        "schema_version": PROVENANCE_SCHEMA_VERSION,
+        "event_type": "public_record_note",
+        "event_id": uuid.uuid4().hex,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "classification": "public",
+        "note_kind": note_kind,
+        "about_event_id": about_event_id,
+        "about_record": ({"source": about_record["source"], "external_id": about_record["external_id"]}
+                         if about_record else None),
+        "text": text.strip(),
+    }
+    validate_public_provenance(event)
+    return event
+
+
+def _validate_public_record_note(event: dict) -> None:
+    _check_fields(event, _NOTE_FIELDS, "record note")
+    if event["schema_version"] != PROVENANCE_SCHEMA_VERSION or event["classification"] != "public":
+        raise ValueError("record note must be a public schema-1 event")
+    for field in ("event_id", "about_event_id"):
+        if not isinstance(event[field], str) or not _EVENT_RE.fullmatch(event[field]):
+            raise ValueError(f"record note has an invalid {field}")
+    if event["about_event_id"] == event["event_id"]:
+        raise ValueError("a record note cannot be about itself")
+    _require_timestamp(event["created_at"], "record note")
+    if event["note_kind"] not in NOTE_KINDS:
+        raise ValueError("record note has an unknown kind")
+    record = event["about_record"]
+    if record is not None:
+        if not isinstance(record, dict) or set(record) != {"source", "external_id"}:
+            raise ValueError("record note names its record with unsupported fields")
+        if record["source"] not in _PUBLIC_SOURCES:
+            raise ValueError("record note names a record that is not from an allowed public source")
+        limit = _PUBLISHED_RECORD_FIELDS["external_id"]
+        if not isinstance(record["external_id"], str) or not 0 < len(record["external_id"]) <= limit:
+            raise ValueError("record note names a record with an invalid external_id")
+    text = event["text"]
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_NOTE_CHARS or text != text.strip():
+        raise ValueError(f"record note text must be 1-{MAX_NOTE_CHARS} characters without surrounding space")
+    if any(ord(c) < 32 and c != "\n" for c in text):
+        raise ValueError("record note text contains control characters")
+    found = personal_information(text)
+    if found:
+        raise ValueError(f"record note contains personal information ({', '.join(found)})")
+    if len(json.dumps(event, sort_keys=True, separators=(",", ":")).encode("utf-8")) > MAX_PUBLISHED_EVENT_BYTES:
+        raise ValueError("record note exceeds the 32-KiB block payload limit")
+
+
 # Public reference-sequence databases a dataset record may point to. Only
 # metadata, a hash and the public link are published, never the sequence.
 _DATASET_SOURCES = {"ncbi_nuccore": "https://www.ncbi.nlm.nih.gov/nuccore/"}
@@ -998,6 +1089,9 @@ def validate_public_provenance(event: dict) -> None:
         return
     if isinstance(event, dict) and event.get("event_type") == "public_sequence_record":
         _validate_public_sequence_record(event)
+        return
+    if isinstance(event, dict) and event.get("event_type") == "public_record_note":
+        _validate_public_record_note(event)
         return
     if isinstance(event, dict) and event.get("event_type") == "public_data_hash":
         expected_hash_fields = {

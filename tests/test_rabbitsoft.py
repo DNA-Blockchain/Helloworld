@@ -290,6 +290,67 @@ def test_the_chain_can_be_searched_and_read_in_conversation(monkeypatch, tmp_pat
     assert s.handle("is the chain ok").text.startswith("Every node's own chain checks out.")
 
 
+# -- notes ------------------------------------------------------------------------------------------
+
+@pytest.fixture
+def noting(monkeypatch, tmp_path):
+    from rabbitsoft import chain_view
+
+    monkeypatch.setattr(chain_view, "collect", lambda paths: fake_chain())
+    s = Session(make_os(tmp_path, time.time()), ai=FakeAI())
+    s.handle("find brca1 on the chain")
+    return s
+
+
+def queued(session):
+    return sorted((session.paths.autonomous / "research-outbox").glob("*.json"))
+
+
+def test_notes_are_off_until_turned_on(noting):
+    assert noting.handle("challenge entry 1: The title leaves out the trial phase.").text.startswith("Notes are off")
+    ask = noting.handle("please turn on notes")
+    assert ask.confirm and "can never be deleted" in ask.text and not noting.notes_enabled()
+    assert noting.handle("yes").text.startswith("Notes are on.") and noting.notes_enabled()
+    assert "notes_enabled" in noting.paths.audit.read_text()
+    assert noting.handle("turn off notes").text.startswith("Notes are off.") and not noting.notes_enabled()
+
+
+def test_a_note_is_queued_exactly_as_written_after_a_yes(noting):
+    import research_provenance as rp
+
+    noting._set_notes(True)
+    ask = noting.handle("chalenge entry 1: teh titel leaves out the trial phase")   # typos kept in the note
+    assert ask.confirm and '"teh titel leaves out the trial phase"' in ask.text
+    assert '"BRCA1 carriers and risk (corrected)" in entry aa11bb22' in ask.text and queued(noting) == []
+    assert noting.handle("yes").text.startswith("Queued note ")
+    event = json.loads(queued(noting)[0].read_text())
+    rp.validate_public_provenance(event)
+    assert (event["note_kind"], event["text"], event["about_event_id"], event["about_record"]) == (
+        "challenge", "teh titel leaves out the trial phase", "aa11bb22cc33dd44ee55ff6677889900",
+        {"source": "pubmed", "external_id": "111"})
+    assert "note_queued" in noting.paths.audit.read_text()
+
+
+def test_saying_no_to_a_note_queues_nothing(noting):
+    noting._set_notes(True)
+    noting.handle("improve entry 0123456789: Say which reference genome.")
+    assert noting.handle("no").text.startswith("OK, I won't") and queued(noting) == []
+
+
+def test_personal_information_is_kept_off_the_chain(noting):
+    noting._set_notes(True)
+    reply = noting.handle("challenge entry 1: wrong title, email me at pat@example.org")
+    assert "an email address" in reply.text and "data-vault-store" in reply.text and not reply.confirm
+    assert queued(noting) == []
+
+
+def test_note_length_and_target_are_checked(noting):
+    noting._set_notes(True)
+    assert "the limit is 1000" in noting.handle("reply to entry 1: " + "x" * 1001).text
+    assert noting.handle("challenge entry 7: too far down the list").text.startswith("Search first")
+    assert noting.handle("challenge entry 1:").text.startswith("Write the note after a colon")
+
+
 # -- actions --------------------------------------------------------------------------------------
 
 def wait_for(condition, timeout=30):
