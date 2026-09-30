@@ -48,6 +48,38 @@ declaration. It does not replace or narrow the existing CC0 license.
 
 ---
 
+## Install RabbitSoftware.inc
+
+One line. It downloads this project, gives it its own Python environment, and adds a `rabbit`
+command (`rabbit chat`, `rabbit web`, `rabbit ask "..."`). Run it again any time to update; your
+chains, notes, research and settings are kept.
+
+Windows (PowerShell, no admin):
+
+```powershell
+irm https://raw.githubusercontent.com/DNA-Blockchain/Helloworld/master/install.ps1 | iex
+```
+
+Linux or WSL (no sudo):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DNA-Blockchain/Helloworld/master/install.sh | bash
+```
+
+It needs Python 3.11 or newer. It never installs anything else by itself: if Python or Ollama is
+missing it says so and gives the command.
+
+**Answering with the hosted model.** `rabbit model-server https://<gateway>` points RabbitSoftware.inc
+at the model on Hugging Face (`hosted_ai.py`; the address must be https). It then asks before
+each question is sent there. Only your words and the public records they're answered from are
+sent, never anything personal. Say no and this PC's own model (Ollama) answers instead; if the
+server doesn't answer, this PC's model takes over. `rabbit model-server --off` stops using it.
+
+Publishing the model and its gateway is in [`deploy/`](deploy/). The model goes in a private Hugging
+Face repo, behind a paid Inference Endpoint that sleeps when unused. A free gateway Space sits in
+front of it: it holds the access key, limits each person and each day, and never records
+questions. Run `python deploy/hf_publish.py` to see the steps.
+
 ## Requirements
 
 - **Python 3.14** (developed and tested on 3.14.6)
