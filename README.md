@@ -58,6 +58,11 @@ python -m pip install -r requirements.txt
 
 ## Quickstart
 
+New PC? [GETTING_STARTED.md](GETTING_STARTED.md) is a step-by-step
+checklist covering Windows and WSL, the software, the code and tests, the
+nodes, the DNA twin and swarm, the local AI, the Alpine and Rust OS builds,
+and EEG and radio hardware.
+
 Run everything (opens a loopback-only node on `127.0.0.1:8765`, seeds one research
 topic, then idles until Ctrl+C — all state is saved to JSON files beside
 the code and reloaded on the next run):
@@ -519,6 +524,88 @@ ranks the next unpublished queued topic and mines the
 `public_research_records` event in its work block. If that node is down, the
 next in line takes over. Delete the file (and restart the nodes) to stop.
 
+### Swarm-verified twin analyses
+
+With `--work-sharing --swarm`, every round has two extra jobs
+(`swarm_analysis.py`):
+- **Scan:** one node runs the DNA twin's RNA analyses (siRNA scan and
+  protein-change lookups) on a subject and publishes the result's SHA-256.
+- **Check:** a different node recomputes the same subject and publishes its
+  own SHA-256. The node that ran the scan is never in line for the check.
+
+Each node tallies what it sees. A result is **ACCEPTED** when two distinct
+nodes published the same digest, **DISPUTED** when digests differ, and
+**UNCONFIRMED** when no second node has checked yet. Every node logs verdicts,
+and each node's summary lists them on exit.
+
+Subjects are public sequences already on the chain (`public_sequence_record`),
+or, when there are none, eight fixed synthetic sequences every node derives
+identically. A person's sample is never a subject, and only digests and
+subject ids go into blocks. Agreement shows that two nodes ran the same code
+on the same input and got the same answer. It doesn't make an siRNA score
+biologically right.
+
+```sh
+python run_node_cli.py --id 1 --port 9601 --peers 127.0.0.1:9602,127.0.0.1:9603 --tofu --work-sharing --swarm
+sh linux/swarm.sh          # the same across three Alpine VMs (linux/README.md)
+```
+
+`swarm_explain.py` explains accepted results in plain language with local
+Ollama. It first recomputes the subject's analysis and refuses unless the
+SHA-256 matches the one the swarm accepted. It then prints the facts, written
+by code, followed by the model's explanation of only those facts. Output that
+drifts into treatment or medical language is withheld. Explanations are
+labelled "may be wrong" and are never published.
+
+```sh
+python run_node_cli.py ... --work-sharing --swarm --status-file node1_status.json
+python swarm_explain.py --status-file node1_status.json      # AI explanations of ACCEPTED rounds
+python swarm_explain.py --subject synthetic:3 --no-ai        # the verified facts only
+```
+
+### Signal lab: EEG, radio and network signals
+
+`signal_lab.py` moves real or simulated signals between any source and any
+sink (`signal_io.py`). Only the spec string changes when hardware arrives:
+
+| Source | Simulated today | Real hardware later |
+|---|---|---|
+| EEG | `eeg:synthetic` (BrainFlow's simulated board) | `eeg:cyton?serial_port=COM3`, `eeg:ganglion?...`, or any BrainFlow board (`signal_lab.py devices`) |
+| Radio | `rf:sim`, recordings `rf:file:x.cu8?rate=2.4e6` (.cu8 .cs8 .cf32) | `rf:soapy:driver=rtlsdr?freq=100e6&rate=2.4e6`, any SoapySDR radio |
+| Network | `udp:127.0.0.1:9700` in and out | `udp:<host>:<port>` with `--allow-remote` |
+
+```sh
+python signal_lab.py bridge --source eeg:synthetic --sink stats --seconds 5
+python signal_lab.py send-twin --twin run.json --sink file:twin.cs8           # the twin as a radio packet
+python signal_lab.py receive-twin --source "rf:file:twin.cs8?rate=250e3" --twin run.json
+python signal_lab.py eeg-control --source eeg:synthetic --twin run.json      # alpha rhythm steps the twin
+```
+
+`send-twin` sends a twin's sequence as an ordinary digital radio packet:
+2 bits per base, a sync word, a CRC-32, and continuous-phase binary FSK.
+`receive-twin` decodes it from a recording, a radio or the network, and only
+returns a sequence whose CRC matches. In tests it decodes exactly with 12 dB
+SNR and a 3 kHz tuning error. The DNA has no radio frequency of its own; the
+radio is simply carrying data. `eeg-control` calibrates a per-person
+baseline, then emits `select` when alpha (8-12 Hz) rises well above it (eyes
+closed) and `next` when it drops back. That's a band-power threshold, not a
+medical measurement.
+
+The rules:
+- **Network:** traffic stays on this machine unless `--allow-remote` is given.
+  Leaving it requires `SIGNAL_LINK_KEY` on both ends, which signs every
+  datagram with HMAC-SHA256 and drops unsigned, forged, replayed and stale
+  frames. EEG is personal data.
+- **Transmitting is regulated,** and interference can hit emergency and
+  aviation services. An over-the-air sink only opens with `--transmit` **and**
+  a `signal_tx_policy.json` naming the operator and the bands they may use
+  (see `signal_tx_policy.example.json`). The whole signal must fit inside one
+  band, and airtime is capped per band. The policy file is git-ignored.
+  Receiving, recordings and simulation are unrestricted.
+- **Real radios:** `sudo apt install python3-soapysdr soapysdr-module-all`,
+  create the venv with `--system-site-packages`, and attach the USB device to
+  WSL with `usbipd`.
+
 ### When was it published?
 
 Every event published by these tools carries a `time_anchor`: the Bitcoin
@@ -676,6 +763,18 @@ project's own codec) with a manifest of hashes and a `SAMPLE.JSON` in the
 shape `os/tasks/remission` already takes, so the kernel's MicroPython can
 model the same sequences. `--from-chain` rebuilds the twin from published
 sequence events alone, recomputing the differences from the chain.
+
+The twin's RNA layer (`twin_rna.py`) reads the sample as mRNA and adds three
+lookups to the page:
+- **The tRNA anticodon of each changed codon:** the exact reverse complement,
+  5'→3', with wobble pairing ignored.
+- **The side-chain class and Kyte-Doolittle hydropathy on each side of a
+  missense change:** for example, Val → Asp is nonpolar → negative with charge −1.
+- **An siRNA candidate scan:** 19-base windows of the sample scored with the
+  Reynolds et al. 2004 criteria, with windows covering a difference from the
+  reference listed first. These are design heuristics. No siRNA is tested,
+  off-target matches aren't checked, and a window covering a difference isn't
+  shown to spare the reference allele.
 
 The page is local and is not published: a run of a person's sample holds
 their genomic data. Nothing in the twin is a treatment. The modeled edit is a

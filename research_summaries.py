@@ -170,12 +170,16 @@ class OllamaSummarizer:
         self.timeout = timeout
 
     def summarize(self, title: str) -> str:
+        return clean_summary(self.generate(PROMPT.format(title=title)))
+
+    def generate(self, prompt: str, num_predict: int = 120) -> object:
+        """The raw text local Ollama returns for `prompt` (temperature 0)."""
         body = json.dumps({
             "model": self.model,
-            "prompt": PROMPT.format(title=title),
+            "prompt": prompt,
             "stream": False,
             "keep_alive": "5m",
-            "options": {"temperature": 0, "num_thread": self.threads, "num_predict": 120},
+            "options": {"temperature": 0, "num_thread": self.threads, "num_predict": num_predict},
         }).encode("utf-8")
         connection = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
         try:
@@ -188,10 +192,9 @@ class OllamaSummarizer:
             raise RuntimeError(f"local Ollama request failed with HTTP {response.status}: "
                                f"{raw.decode('utf-8', 'replace')[:300]}")
         try:
-            text = json.loads(raw).get("response")
+            return json.loads(raw).get("response")
         except (ValueError, AttributeError) as error:
             raise ValueError("local Ollama returned an invalid response") from error
-        return clean_summary(text)
 
 
 def clean_summary(text: object) -> str:

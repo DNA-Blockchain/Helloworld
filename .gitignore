@@ -52,3 +52,6 @@ interop_client
 
 # backup.py nightly task output
 backup_task.log
+
+# personal transmit licence/bands (signal_lab.py); see signal_tx_policy.example.json
+signal_tx_policy.json

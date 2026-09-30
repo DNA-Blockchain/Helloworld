@@ -192,6 +192,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --work-sharing: when this node is assigned a research round, fetch and rank "
                         "the next topic in the research agent's queue and publish it permanently as a "
                         "public_research_records event (this flag is the publication confirmation)")
+    p.add_argument("--swarm", action="store_true",
+                   help="with --work-sharing: every round one node runs the DNA twin's RNA analyses on a "
+                        "public or synthetic sequence and a different node recomputes them; results two "
+                        "nodes agree on are accepted (swarm_analysis.py)")
     p.add_argument("--round-seconds", type=float, default=300.0, help="work-sharing round length")
     p.add_argument("--takeover-seconds", type=float, default=20.0,
                    help="how long each next-in-line node waits before taking over a job")
@@ -264,6 +268,8 @@ async def main(argv: list[str] | None = None) -> int:
         parser.error("--provenance-queue cannot be combined with live enrichers")
     if args.publish_research_topics and not args.work_sharing:
         parser.error("--publish-research-topics requires --work-sharing")
+    if args.swarm and not args.work_sharing:
+        parser.error("--swarm requires --work-sharing")
     if args.publish_research_topics and args.allow_research_gossip:
         parser.error("--publish-research-topics replaces --allow-research-gossip's lookup; use one")
 
@@ -329,11 +335,22 @@ async def main(argv: list[str] | None = None) -> int:
                 store_paths=[Path(project, "research_store.json")],
                 live_store=Path(project, "live_store.db"),
             )
-        WorkManager(node, WorkSchedule(
+        tally = None
+        if args.swarm:
+            import swarm_analysis
+
+            ledger_dir = Path(os.path.dirname(os.path.abspath(args.workdir)))
+            runners["swarm"] = swarm_analysis.SwarmScan(ledger_dir)
+            runners["swarm_check"] = swarm_analysis.SwarmCheck(ledger_dir)
+            tally = swarm_analysis.SwarmTally(log=node.log)
+        manager = WorkManager(node, WorkSchedule(
             round_seconds=args.round_seconds,
             research_every=3 if args.allow_research_gossip or args.publish_research_topics else 0,
             external_every=2 if args.allow_external_info and not args.no_external_info else 0,
-        ), takeover_seconds=args.takeover_seconds, runners=runners).attach()
+            swarm_every=1 if args.swarm else 0,
+        ), takeover_seconds=args.takeover_seconds, runners=runners)
+        manager.swarm = tally
+        manager.attach()
 
     print("=" * 78)
     print(f"REAL NETWORK NODE  id={args.id}  bind={args.bind}:{args.port}")
@@ -385,6 +402,14 @@ async def main(argv: list[str] | None = None) -> int:
     # updates, which isn't implemented.
     awarded = {f"node-{pid}": ledger.balance(f"node-{pid}") for pid in sorted(node.peer_signing_keys)}
     print(f"tokens THIS node awarded to peers (local view only): {awarded}")
+    swarm = getattr(getattr(node, "work", None), "swarm", None)
+    if swarm is not None:
+        status = swarm.status()
+        print(f"swarm verdicts (last {len(status['recent'])} rounds): {status['counts'] or 'none yet'}")
+        for v in status["recent"]:
+            if v["status"] != "NOT_SEEN":
+                print(f"  round {v['round']}: {v['status']} {v['subject']} "
+                      f"sha256={v['analysis_sha256'][:12]}… nodes={','.join(v['agreeing_nodes'])}")
     print("=" * 78)
     return 0 if ok else 1
 

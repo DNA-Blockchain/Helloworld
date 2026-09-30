@@ -101,6 +101,7 @@ from dna_binary_codec import (
     encode_to_dna,
 )
 from research_ledger import published_events
+import twin_rna
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_BASE_DIR = ROOT / "autonomous"
@@ -332,12 +333,15 @@ def strand_pair(sequence: str) -> dict:
 def build_page(twin: dict, research: list[dict], guides: list[dict], frame: int = 1,
                clinvar: list[dict] | None = None, context: dict | None = None) -> str:
     strands = {part: strand_pair(twin[part]) for part in ("reference", "sample", "edited")}
+    rna = twin_rna.rna_view(twin["reference"], twin["sample"],
+                            protein_consequences(twin["reference"], twin["sample"], frame))
     data = {
         "twin": twin,
         "strands": strands,
         "bit_plan": bit_edit_plan(twin["reference"], twin["sample"]),
-        "protein": protein_consequences(twin["reference"], twin["sample"], frame),
+        "protein": rna.pop("protein"),
         "protein_note": PROTEIN_NOTE,
+        "rna": rna,
         "frame": frame,
         "reference_bits": strands["reference"]["forward_bits"],
         "sample_bits": strands["sample"]["forward_bits"],
@@ -639,6 +643,11 @@ def main(argv: list[str] | None = None) -> int:
               f"the modeled edit restores {entry['restores']}")
     if protein:
         print(PROTEIN_NOTE)
+    covering = twin_rna.sirna_candidates(twin["sample"], twin["reference"], top_n=1, covering_difference=True)
+    if covering:
+        best = covering[0]
+        print(f"best siRNA window covering a difference: position {best['position']} "
+              f"{best['target_mrna']} (Reynolds score {best['score']}; heuristic, untested)")
     if guides:
         print(f"{len(guides)} guide candidate(s) near a difference (efficiency heuristic, not validated)")
     if research:
@@ -727,8 +736,16 @@ button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 <h2>What the code means for the protein</h2>
 <div class="muted small" id="proteinNote"></div>
 <div class="scroll"><table><thead><tr><th>Position</th><th>Codon #</th><th>Reference codon</th>
-<th>Sample codon</th><th>Amino acid</th><th>Consequence</th><th>Modeled edit restores</th></tr></thead>
+<th>Sample codon</th><th>tRNA anticodon</th><th>Amino acid</th><th>Side chain</th><th>Consequence</th>
+<th>Modeled edit restores</th></tr></thead>
 <tbody id="protein"></tbody></table></div>
+<div class="muted small" id="propertyNote"></div>
+
+<h2>siRNA candidates in the sample's mRNA</h2>
+<div class="muted small" id="sirnaNote"></div>
+<div class="scroll"><table><thead><tr><th>Position</th><th>Target (mRNA)</th><th>Guide strand</th>
+<th>GC</th><th>Reynolds score</th><th>Differs from reference at</th></tr></thead>
+<tbody id="sirna"></tbody></table></div>
 
 <h2>Guide-RNA candidates near a difference</h2>
 <div class="muted small">A PAM-site scan with a GC-content efficiency heuristic. Reading for a human,
@@ -915,12 +932,37 @@ for (const s of plan.steps) {
 if (!plan.steps.length) row(el("bits"), ["No bit needs flipping: the sample already matches the baseline."]);
 
 el("proteinNote").textContent = `Reading frame ${DATA.frame}. ${DATA.protein_note}`;
+const sideChain = pr => {
+  const r = pr.reference, s = pr.sample;
+  if (!pr.class_changed && pr.hydropathy_change === 0) return `${r.class || "—"} (unchanged)`;
+  let text = `${r.class || "—"} → ${s.class || "—"}`;
+  if (pr.charge_change) text += `, charge ${pr.charge_change > 0 ? "+" : ""}${pr.charge_change}`;
+  if (pr.hydropathy_change !== null) text += `, hydropathy ${pr.hydropathy_change > 0 ? "+" : ""}`
+    + `${pr.hydropathy_change}`;
+  return text;
+};
 for (const p of DATA.protein) {
   row(el("protein"), [String(p.position), String(p.codon_number), p.reference_codon, p.sample_codon,
-    `${p.reference_amino_acid} → ${p.sample_amino_acid}`, p.consequence, p.restores]);
+    `${p.reference_anticodon} → ${p.sample_anticodon}`,
+    `${p.reference_amino_acid} → ${p.sample_amino_acid}`, sideChain(p.properties), p.consequence,
+    p.restores]);
 }
 if (!DATA.protein.length) row(el("protein"),
   ["No complete codon carries a difference in this reading frame."]);
+el("propertyNote").textContent = "tRNA anticodons are each codon's exact reverse complement in RNA, "
+  + "written 5'→3' (wobble pairing ignored). " + DATA.rna.property_note;
+
+el("sirnaNote").textContent = DATA.rna.sirna_note;
+const sirnaRows = [...DATA.rna.sirna_covering_difference,
+  ...DATA.rna.sirna.filter(c => !DATA.rna.sirna_covering_difference.some(d => d.position === c.position))];
+for (const c of sirnaRows) {
+  const target = document.createElement("code"); target.textContent = c.target_mrna;
+  const guide = document.createElement("code"); guide.textContent = c.guide_strand;
+  const mm = c.reference_mismatch_positions;
+  row(el("sirna"), [String(c.position), target, guide, c.gc_content.toFixed(2), String(c.score),
+    mm && mm.length ? `position ${mm.join(", ")} (covers a difference)` : "—"]);
+}
+if (!sirnaRows.length) row(el("sirna"), ["The sequence is too short or too repetitive for a 19-base window."]);
 
 for (const g of DATA.guides) {
   row(el("guides"), [g.guide_sequence, g.pam, g.strand, String(g.position + 1),

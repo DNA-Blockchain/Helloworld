@@ -1,0 +1,68 @@
+#!/bin/sh
+# First process in the Alpine image (PID 1). Brings up the VM and starts the
+# network node. Settings come from the kernel command line, which run.sh fills:
+#   nos.id=N  nos.port=P  nos.peers=host:port,...  nos.tofu=1
+#   nos.duration=S   run the node for S seconds, then power off (for tests)
+#   nos.swarm=1  nos.round=S   work sharing with swarm-verified twin analyses
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mount -t tmpfs tmpfs /tmp
+hostname -F /etc/hostname
+
+ID=1 PORT=9601 PEERS= TOFU= DURATION=0 SWARM= ROUND=30
+for arg in $(cat /proc/cmdline); do
+    case $arg in
+        nos.id=*) ID=${arg#*=} ;;
+        nos.port=*) PORT=${arg#*=} ;;
+        nos.peers=*) PEERS=${arg#*=} ;;
+        nos.tofu=1) TOFU=--tofu ;;
+        nos.duration=*) DURATION=${arg#*=} ;;
+        nos.swarm=1) SWARM=1 ;;
+        nos.round=*) ROUND=${arg#*=} ;;
+    esac
+done
+
+# Network: virtio NIC on QEMU user networking (DHCP from 10.0.2.2).
+for m in virtio_pci virtio_net 9pnet_virtio 9p; do modprobe -q $m; done
+ip link set lo up
+ip link set eth0 up
+if ! udhcpc -i eth0 -q -n -t 5 >/dev/null 2>&1; then
+    ip addr add 10.0.2.15/24 dev eth0
+    ip route add default via 10.0.2.2
+fi
+
+# Node data: the host folder run.sh shares, so keys and chain survive reboots.
+# Without it the node runs from RAM and gets new keys every boot.
+DATA=/var/lib/network-os
+mkdir -p $DATA
+if mount -t 9p -o trans=virtio,version=9p2000.L nosdata $DATA 2>/dev/null; then
+    echo "node data: host folder (persistent)"
+else
+    echo "node data: RAM (lost at power off)"
+fi
+
+echo "network-os: $(ip -4 -o addr show eth0 | awk '{print $4}'), node $ID on port $PORT"
+set -- python3 /opt/network-os/run_node_cli.py --id "$ID" --port "$PORT" \
+    --bind 0.0.0.0 --workdir "$DATA" --duration "$DURATION" $TOFU
+[ -n "$PEERS" ] && set -- "$@" --peers "$PEERS"
+[ -n "$SWARM" ] && set -- "$@" --work-sharing --swarm --round-seconds "$ROUND" \
+    --takeover-seconds "$((ROUND / 6 + 1))"
+cd /opt/network-os
+
+if [ "$DURATION" != 0 ]; then
+    "$@"
+    echo "NOS-NODE-EXIT=$?"
+    sync
+    poweroff -f
+fi
+
+"$@" &
+echo "node running (pid $!). Type 'poweroff -f' to stop the VM."
+setsid cttyhack /bin/sh -l
+poweroff -f

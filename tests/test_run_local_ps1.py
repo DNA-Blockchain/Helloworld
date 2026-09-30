@@ -54,18 +54,23 @@
 
 """Drives run_local.ps1 through Windows PowerShell with scripted -Answers,
 on a copy of the project so option 2 doesn't write node_data/ into the
-repo. Skipped where powershell.exe isn't available."""
+repo. Skipped off Windows: under WSL powershell.exe is on PATH but can't
+open the Linux temp paths the tests hand it."""
 import glob
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POWERSHELL = shutil.which("powershell.exe") or shutil.which("powershell")
 
-pytestmark = pytest.mark.skipif(POWERSHELL is None, reason="Windows PowerShell not available")
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32" or POWERSHELL is None,
+    reason="needs Windows Python and Windows PowerShell",
+)
 
 
 @pytest.fixture

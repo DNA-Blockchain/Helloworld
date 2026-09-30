@@ -1,0 +1,8 @@
+{
+  "_read_me": "Copy to signal_tx_policy.json and fill in operator. Transmitting is refused while operator is empty. List only bands YOU are licensed or permitted to use, and check your country's current rules and band plan: these example ranges are the US amateur 2 m and 70 cm allocations, usable only with an amateur licence, and parts of them are reserved for satellites, repeaters and weak-signal work.",
+  "operator": "",
+  "bands": [
+    {"name": "US amateur 2 m", "low_hz": 144000000, "high_hz": 148000000, "max_seconds": 30},
+    {"name": "US amateur 70 cm", "low_hz": 420000000, "high_hz": 450000000, "max_seconds": 30}
+  ]
+}
