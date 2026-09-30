@@ -69,8 +69,10 @@ given directly):
      AI. These facts are always printed.
   4. Ask local Ollama (loopback only, as research_summaries.py does) to
      explain those facts for a general reader. The prompt allows no facts
-     beyond the ones given and no medical claims. The output is labelled
-     machine-generated and may be wrong, and it's never published.
+     beyond the ones given and no medical claims. Code then withholds any
+     explanation that uses health words, states a number the facts don't
+     contain, or gets the direction of a hydropathy change wrong. The output is labelled machine-generated and may be wrong, and
+     it's never published.
 
   python swarm_explain.py --status-file node1_status.json
   python swarm_explain.py --subject synthetic:3 --sha256 451641ec...
@@ -81,6 +83,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -102,6 +105,36 @@ PROMPT = (
 # Checked in code after generation: small models drift from prompt rules.
 FORBIDDEN = ("treat", "cure", "therap", "patient", "disease", "diagnos", "heal", "medic", "correct this",
              "fix this")
+# Counts a model may spell out. "one" is left out: it is too often not a count ("one of the windows").
+NUMBER_WORDS = {w: n for n, w in enumerate(
+    "zero _ two three four five six seven eight nine ten eleven twelve".split()) if w != "_"}
+
+
+# Hydropathy is the only signed fact, so its direction is checked separately from its magnitude.
+DIRECTION_WORDS = {
+    "up": r"\b(increas|ris|rose|higher|up\b|gain|more hydrophobic|less hydrophilic|positive)",
+    "down": r"\b(decreas|drop|fall|fell|lower|down\b|reduc|declin|less hydrophobic|more hydrophilic|negative)",
+}
+
+
+def _numbers(text: str) -> set[float]:
+    """Magnitudes stated in text, as digits or number words. Signs are dropped, so '-3.5' and '3.5' agree."""
+    found = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", text)}
+    found |= {float(NUMBER_WORDS[w]) for w in re.findall(r"[a-z]+", text.lower()) if w in NUMBER_WORDS}
+    return found
+
+
+def _wrong_hydropathy_direction(text: str, facts: list[str]) -> Optional[str]:
+    """A direction ('up' or 'down') the text gives hydropathy that no hydropathy change in the facts has."""
+    changes = [float(v) for v in re.findall(r"hydropathy changes by (-?\d+(?:\.\d+)?)", " ".join(facts))]
+    actual = {"up" if v > 0 else "down" for v in changes if v != 0}
+    for sentence in re.split(r"(?<=[.!?;])\s+", text.lower()):
+        if not re.search(r"hydropath|hydrophobic|hydrophilic", sentence):
+            continue
+        for direction, pattern in DIRECTION_WORDS.items():
+            if re.search(pattern, sentence) and direction not in actual:
+                return direction
+    return None
 
 
 def accepted_from_status(path: Path) -> list[dict]:
@@ -154,10 +187,21 @@ def explain(facts: list[str], model) -> str:
     text = model.generate(PROMPT.format(facts="\n".join(f"- {f}" for f in facts)), num_predict=220)
     if not isinstance(text, str) or not text.strip():
         raise ValueError("the model returned no text")
-    cleaned = " ".join(text.split())[:1200]
+    lines = text.strip().splitlines()
+    if len(lines) > 1 and lines[0].rstrip().endswith(":"):     # "Here's an explanation in 3-5 sentences:"
+        lines = lines[1:]
+    cleaned = " ".join(" ".join(lines).split())[:1200]
     hit = next((word for word in FORBIDDEN if word in cleaned.lower()), None)
     if hit:
         raise ValueError(f"withheld: the model's explanation used '{hit}', which the facts don't support")
+    unsupported = _numbers(cleaned) - _numbers(" ".join(facts))
+    if unsupported:
+        stated = ", ".join(f"{n:g}" for n in sorted(unsupported))
+        raise ValueError(f"withheld: the model's explanation states {stated}, which the facts don't contain")
+    direction = _wrong_hydropathy_direction(cleaned, facts)
+    if direction:
+        raise ValueError(f"withheld: the model's explanation says hydropathy goes {direction}, "
+                         "which the facts don't support")
     return cleaned
 
 
@@ -214,7 +258,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             print(f"  AI    {explain(facts, model)}")
             print(f"        [{NOTE} Model {args.model}, prompt v{PROMPT_VERSION}.]")
-        except (OSError, RuntimeError, ValueError) as error:
+        except ValueError as error:
+            print(f"  AI    not shown ({error}). The facts above stand on their own.")
+        except (OSError, RuntimeError) as error:
             print(f"  AI    unavailable ({error}). Is Ollama running? The facts above stand on their own.")
     return status
 
