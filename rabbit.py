@@ -5,9 +5,11 @@ or a web page.
     python rabbit.py chat                          # terminal conversation
     python rabbit.py web                           # web page at http://127.0.0.1:8792
     python rabbit.py ask "how are the nodes"       # one question, one answer
+    python rabbit.py model-server https://...      # answer with your model on a server (asks each time)
+    python rabbit.py model-server --off            # answer only with this PC's model
 
-Everything runs on this PC. Looking things up changes nothing; a public research search is the
-only thing that sends data out, and it asks first. See rabbitsoft/.
+Everything runs on this PC unless you say yes: a public research search, and sending a question to
+the model server, each ask first. See rabbitsoft/.
 """
 from __future__ import annotations
 
@@ -63,6 +65,29 @@ def web(port: int, open_browser: bool) -> int:
     return 0
 
 
+def model_server(url: str | None, off: bool, settings_file=None) -> int:
+    from hosted_ai import configured_url, save_url
+    from rabbitsoft import tools
+
+    settings_file = settings_file or tools.Paths().rabbit / "settings.json"
+    if off:
+        save_url(settings_file, None)
+        print(f"{NAME} now answers only with this PC's model.")
+        return 0
+    if url:
+        try:
+            saved = save_url(settings_file, url)
+        except ValueError as error:
+            print(f"That address can't be used: {error}.")
+            return 1
+        print(f"Model server set to {saved}. {NAME} asks before each question is sent there; "
+              "say no to answer with this PC's model instead.")
+        return 0
+    current = configured_url(settings_file)
+    print(f"Model server: {current}" if current else "No model server: answers use this PC's model.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):          # the Windows console isn't UTF-8 by default
         if hasattr(stream, "reconfigure"):
@@ -75,12 +100,17 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--no-browser", action="store_true", help="don't open the page automatically")
     a = sub.add_parser("ask", help="one question, one answer")
     a.add_argument("question", nargs="+")
+    m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
+    m.add_argument("url", nargs="?", help="the server's https address")
+    m.add_argument("--off", action="store_true", help="stop using a model server")
     args = p.parse_args(argv)
 
     if args.command == "chat":
         return chat()
     if args.command == "web":
         return web(args.port, not args.no_browser)
+    if args.command == "model-server":
+        return model_server(args.url, args.off)
     show(Session().handle(" ".join(args.question)))
     return 0
 

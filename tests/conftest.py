@@ -80,6 +80,8 @@ def _no_real_embedding_model(monkeypatch):
     """RabbitSoftware.inc sessions in tests match by words (TF-IDF), never through a real local model."""
     import rabbitsoft.assistant
     monkeypatch.setattr(rabbitsoft.assistant, "default_embedder", lambda: None)
+    for name in ("RABBIT_MODEL_URL", "RABBIT_MODEL_KEY", "RABBIT_MODEL_NAME"):   # never this PC's model server
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

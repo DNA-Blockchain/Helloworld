@@ -3,7 +3,8 @@
 A Session turns what someone typed into a Reply: short sentences, plus numbered choices or
 a yes/no question when there's something to decide. Looking things up never changes anything.
 Anything that changes something or sends data off this PC waits for a yes and is written to the
-activity log: a public research search (logged as a hash of the query, not its text), fetching abstracts
+activity log: a public research search (logged as a hash of the query, not its text), sending a question to
+the model server outside this PC (asked every time; "no" answers with this PC's model), fetching abstracts
 for saved records, downloading the local meaning model, running the self-tests or integrity check, and
 starting or stopping the research agent.
 """
@@ -87,7 +88,28 @@ def default_embedder():
     return embedder if embedder.available() else None
 
 
-AUTO = object()          # "find the local embedding model if there is one"
+AUTO = object()          # "find it from this PC's settings": the local embedding model, the model server
+
+
+class NeedsModelChoice(Exception):
+    """Raised when the AI is needed and a model server is set up: the person decides, each time, whether
+    the question goes to the server or stays on this PC."""
+
+
+class ServerThenLocal:
+    """The model server, and this PC's model if the server doesn't answer."""
+
+    def __init__(self, server, local: Callable[[], object]):
+        self.server = server
+        self.local = local
+        self.fell_back = ""
+
+    def generate(self, prompt: str, num_predict: int = 220) -> str:
+        try:
+            return self.server.generate(prompt, num_predict=num_predict)
+        except RuntimeError as error:
+            self.fell_back = str(error)
+            return self.local().generate(prompt, num_predict=num_predict)
 
 
 class Session:
@@ -95,9 +117,13 @@ class Session:
                  explain_ai=None, jobs: Jobs | None = None, agent: Service | None = None,
                  self_test_command: list[str] | None = None, integrity_command: list[str] | None = None,
                  embedder=AUTO, abstract_fetchers: dict | None = None,
-                 embed_model_command: list[str] | None = None):
+                 embed_model_command: list[str] | None = None, hosted=AUTO):
         self.paths = paths or tools.Paths()
         self._ai = ai
+        self._hosted = hosted
+        self._model_choice: bool | None = None      # for the step being answered: True = the model server
+        self._server_ai: ServerThenLocal | None = None
+        self.pending_no: Callable[[], Reply] | None = None
         self._explain_ai = explain_ai
         self._embedder = embedder
         self._corpus = None
@@ -122,10 +148,61 @@ class Session:
 
     # -- the AI is only started when something needs it ------------------------------------------
     @property
-    def ai(self):
+    def hosted(self):
+        """The model server outside this PC, if one is set up (`rabbit model-server <url>`)."""
+        if self._hosted is AUTO:
+            from hosted_ai import from_settings
+
+            self._hosted = from_settings(self._settings_file)
+        return self._hosted
+
+    def _local_ai(self):
         if self._ai is None:
             self._ai = LocalAI()
         return self._ai
+
+    @property
+    def ai(self):
+        if self.hosted is None or self._model_choice is False:
+            return self._local_ai()
+        if self._model_choice is None:
+            raise NeedsModelChoice()
+        self._server_ai = self._server_ai or ServerThenLocal(self.hosted, self._local_ai)
+        return self._server_ai
+
+    def _run(self, step: Callable[[], Reply], prefix: str = "") -> Reply:
+        """Runs one step. If it needs the AI and a model server is set up, asks first whether to send it
+        there ("yes") or answer on this PC ("no"), then runs the step with that choice."""
+        try:
+            reply = step()
+        except NeedsModelChoice:
+            return self._ask(prefix + f"This needs the AI. Send your words, and the public records they're "
+                             f"answered from, to the model server {self.hosted.host}? Nothing personal is sent. "
+                             "Say no to answer with this PC's own model instead.",
+                             lambda: self._prefix(prefix, self._with_model(True, step)),
+                             on_no=lambda: self._prefix(prefix, self._with_model(False, step)))
+        reply.text = prefix + reply.text
+        return reply
+
+    def _ai_note(self) -> str:
+        """Who wrote the answer: the model server, or the local AI (also when the server fell back to it)."""
+        if self._model_choice and self._server_ai and not self._server_ai.fell_back:
+            return AI_NOTE.replace("the local AI", f"your model on {self.hosted.host}")
+        return AI_NOTE
+
+    def _with_model(self, server: bool, step: Callable[[], Reply]) -> Reply:
+        self._model_choice, self._server_ai = server, None
+        try:
+            reply = step()
+        finally:
+            self._model_choice = None
+        if server:
+            self._log("model_server_used", {"host": self.hosted.host,
+                                            "fell_back": bool(self._server_ai and self._server_ai.fell_back)})
+            if self._server_ai and self._server_ai.fell_back:
+                reply.text = (f"(The model server didn't answer: {self._server_ai.fell_back}. This PC's model "
+                              f"answered instead.)\n{reply.text}")
+        return reply
 
     def _catalog(self):
         from research_catalog import ResearchCatalog
@@ -176,19 +253,21 @@ class Session:
         if not text:
             return self.menu("Type what you'd like to know, in your own words, or pick a number:")
         if self.pending is not None:
-            action, self.pending = self.pending, None
+            (action, self.pending), (on_no, self.pending_no) = (self.pending, None), (self.pending_no, None)
             answer = words.yes_or_no(text)
             if answer is True:
-                return self._remember(action())
+                return self._remember(self._run(action))
             if answer is False:
+                if on_no is not None:
+                    return self._remember(self._run(on_no))
                 return Reply("OK, I won't do that. What else can I help with?")
             # Neither yes nor no: treat it as a new request, and the question lapses.
         if self.choices:
             number = words.choice_number(text, len(self.choices))
             chosen, self.choices = (self.choices[number - 1][1] if number else None), []
             if chosen:
-                return self._remember(chosen())
-        return self._remember(self._understand(text))
+                return self._remember(self._run(chosen))
+        return self._remember(self._run(lambda: self._understand(text)))
 
     def _remember(self, reply: Reply) -> Reply:
         if not reply.choices and not reply.confirm:
@@ -354,7 +433,8 @@ class Session:
         if not found:
             return Reply(head + "None of them match your words closely enough to answer from. "
                                 "Try asking with different words.")
-        return Reply(head + self.answer(query, found).text)
+        # Only the answer is asked about and redone, never the search that already happened.
+        return self._run(lambda: self.answer(query, found), prefix=head)
 
     def answer(self, question: str, records: list[dict]) -> Reply:
         listing = "\n".join(f"[{i}] {r['citation']['title']}. {(r['abstract'] or '')[:900]}"
@@ -366,9 +446,9 @@ class Session:
         try:
             raw = self.ai.generate(ANSWER_PROMPT.format(name=NAME, question=question, records=listing))
         except (OSError, RuntimeError, ValueError) as error:
-            return Reply(f"The local AI didn't answer ({error}). Is Ollama running? Here are the records:\n{sources}")
+            return Reply(f"The AI didn't answer ({error}). Is Ollama running? Here are the records:\n{sources}")
         text = tidy_answer(raw, len(records))
-        return Reply(f"{text}\n\nSources:\n{sources}\n\n{AI_NOTE}")
+        return Reply(f"{text}\n\nSources:\n{sources}\n\n{self._ai_note()}")
 
     def simpler(self) -> Reply:
         if not self.last_answer:
@@ -376,9 +456,9 @@ class Session:
         body = self.last_answer.split("\n\nSources:")[0]
         try:
             return Reply(tidy_answer(self.ai.generate(SIMPLER_PROMPT.format(text=body), num_predict=160), 99)
-                         + f"\n\n{AI_NOTE}")
+                         + f"\n\n{self._ai_note()}")
         except (OSError, RuntimeError, ValueError) as error:
-            return Reply(f"The local AI didn't answer ({error}). Is Ollama running?")
+            return Reply(f"The AI didn't answer ({error}). Is Ollama running?")
 
     # -- reading the shared chain (everything on it is public) --------------------------------------
     def find_on_chain(self, terms: str) -> Reply:
@@ -489,8 +569,8 @@ class Session:
         reply.text = heard + reply.text
         return reply
 
-    def _ask(self, question: str, action: Callable[[], Reply]) -> Reply:
-        self.pending = action
+    def _ask(self, question: str, action: Callable[[], Reply], on_no: Callable[[], Reply] | None = None) -> Reply:
+        self.pending, self.pending_no = action, on_no
         return Reply(question, choices=["Yes", "No"], confirm=True)
 
     def agent_status(self) -> str:
