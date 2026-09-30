@@ -22,6 +22,12 @@ def test_a_question_without_the_records_words_is_answered_by_meaning(tmp_path):
     assert "I don't have saved records" in word_only.handle("heart tumor research").text
 
 
+def test_an_everyday_word_in_a_title_is_not_a_match(tmp_path):
+    s = Session(make_os(tmp_path, time.time()), ai=FakeAI(), search=lambda q: [])
+    s._catalog().add_records([{**HEART, "external_id": "502", "title": "Sickle cell disease: from ancient origins"}])
+    assert "I don't have saved records" in s.handle("heart attack risk from cholesterol").text
+
+
 def test_the_corpus_status_says_how_it_searches(tmp_path):
     s = Session(make_os(tmp_path, time.time()), ai=FakeAI())
     assert "The research corpus is empty" in s.handle("what is in the corpus").text

@@ -102,7 +102,8 @@ OLLAMA_HOST = "http://127.0.0.1:11434"
 TFIDF = "tfidf"
 # Below these, a match shares too little with the question to answer from. The two methods score on
 # different scales: TF-IDF only counts shared words, neural embeddings of any two sentences are somewhat alike.
-MIN_SIMILARITY = {TFIDF: 0.12, "neural": 0.55}
+# With nomic-embed-text on the real catalog, related questions scored 0.72-0.83 and unrelated ones up to 0.55.
+MIN_SIMILARITY = {TFIDF: 0.12, "neural": 0.62}
 
 
 class OllamaEmbedder:
