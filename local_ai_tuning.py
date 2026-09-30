@@ -22,6 +22,10 @@ one worked example to the prompt. Build the custom models first:
     python local_ai_tuning.py create
     python local_ai_tuning.py run                        # every variant, both jobs
     python local_ai_tuning.py run --variants baseline,examples --tasks summary --titles 20
+    python local_ai_tuning.py export                     # training prompts for Colab, no test cases
+    # after colab/local_ai_lora_colab.ipynb: unzip into ollama/nos-lora/, then
+    python local_ai_tuning.py create                     # also builds nos-explain-lora, nos-summary-lora
+    python local_ai_tuning.py run --variants system,lora
 
 Each run writes every output and score to autonomous/ai-tuning/.
 Everything stays on this machine: Ollama is reached on loopback only.
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import re
 import subprocess
@@ -45,8 +50,11 @@ import swarm_explain as se
 
 ROOT = Path(__file__).resolve().parent
 OUT_DIR = ROOT / "autonomous" / "ai-tuning"
+TEST_TITLES = 12        # summary test cases; export leaves these out of the training data
 CUSTOM_MODELS = {"nos-explain": ROOT / "ollama" / "nos-explain.Modelfile",
                  "nos-summary": ROOT / "ollama" / "nos-summary.Modelfile"}
+# The LoRA from colab/local_ai_lora_colab.ipynb, unzipped here (gitignored: ~100 MB of weights).
+LORA_ADAPTER = ROOT / "ollama" / "nos-lora" / "adapter"
 
 # One worked example per job, written by hand from facts that are not test cases.
 EXPLAIN_EXAMPLE_FACTS = [
@@ -102,7 +110,9 @@ VARIANTS = {v.name: v for v in (
     Variant("system", {"explain": "nos-explain", "summary": "nos-summary"}, "current"),
     Variant("examples", {"explain": rs.DEFAULT_MODEL, "summary": rs.DEFAULT_MODEL}, "example"),
     Variant("system+examples", {"explain": "nos-explain", "summary": "nos-summary"}, "example"),
+    Variant("lora", {"explain": "nos-explain-lora", "summary": "nos-summary-lora"}, "current"),
 )}
+DEFAULT_VARIANTS = ["baseline", "system", "examples", "system+examples"]   # "lora" once the adapter exists
 
 FALLBACK_TITLES = [
     "BRCA1 and BRCA2 mutation carriers and breast cancer risk: a prospective cohort study",
@@ -131,12 +141,33 @@ def names_in(title: str) -> list[str]:
                                                 or len(re.findall(r"[A-Z]", w)) >= 2)]
 
 
+def key_facts(facts: list[str]) -> dict[str, float]:
+    """The two numbers an explanation must state: how many positions differ, and the best design score."""
+    found = {}
+    for fact in facts:
+        if m := re.search(r"differs from its reference at (\d+) position", fact):
+            found["positions that differ"] = float(m.group(1))
+        if m := re.search(r"highest siRNA design score is (\d+(?:\.\d+)?)", fact):
+            found["highest design score"] = float(m.group(1))
+    return found
+
+
+def missing_key_facts(text: str, facts: list[str]) -> list[str]:
+    stated = se._numbers(text)
+    if re.search(r"\b(one|single)\b", text, re.I):      # se._numbers leaves "one" out on purpose
+        stated.add(1.0)
+    return [name for name, value in key_facts(facts).items() if value not in stated]
+
+
 def score_explain(facts: list[str], model, prompt: str) -> dict:
     try:
         text = se.explain(facts, model, prompt)
     except ValueError as error:
         return {"ok": False, "withheld": str(error), "flags": ["withheld"]}
     flags = []
+    missing = missing_key_facts(text, facts)
+    if missing:
+        flags.append(f"missing key facts: {', '.join(missing)}")
     if not 3 <= len(sentences(text)) <= 5:
         flags.append(f"{len(sentences(text))} sentences")
     if PREAMBLE.match(text):
@@ -228,6 +259,54 @@ def table(report: dict) -> str:
     return "\n".join(lines)
 
 
+def training_subjects(count: int) -> list[dict]:
+    """Synthetic subjects for training data, never the test cases: the same SHA-256 expansion as
+    swarm_analysis.synthetic_subjects() from a different seed, with 90-150 bases and 1-3 substitutions
+    so the facts cover silent, missense and nonsense changes and both hydropathy directions."""
+    subjects = []
+    for n in range(count):
+        stream, block = b"", f"tuning-train-{n}".encode()
+        while len(stream) < 64:
+            block = hashlib.sha256(block).digest()
+            stream += block
+        length = 90 + stream[0] % 61
+        reference = "".join("ACGT"[(byte >> shift) & 3] for byte in stream for shift in (6, 4, 2, 0))[:length]
+        sample = list(reference)
+        for k in range(1 + stream[1] % 3):
+            position = 20 + stream[2 + k] % (length - 40)
+            sample[position] = {"A": "C", "C": "G", "G": "T", "T": "A"}[reference[position]]
+        subjects.append({"id": f"train:{n}", "label": f"synthetic training subject {n} (not a real gene)",
+                         "reference": reference, "sample": "".join(sample)})
+    return subjects
+
+
+def modelfile_system(path: Path) -> str:
+    """The SYSTEM text of an Ollama Modelfile, so training sees what the model sees."""
+    match = re.search(r'^SYSTEM """(.*?)"""', path.read_text(encoding="utf-8"), re.S | re.M)
+    if not match:
+        raise ValueError(f"no SYSTEM block in {path}")
+    return match.group(1).strip()
+
+
+def training_inputs(subjects: int) -> list[dict]:
+    """Prompts for the Colab teacher: new synthetic subjects, and this machine's published titles
+    minus the ones summary_cases() tests with."""
+    rows = []
+    system = modelfile_system(CUSTOM_MODELS["nos-explain"])
+    for subject in training_subjects(subjects):
+        facts = se.facts_for(swarm_analysis.analyze(subject), subject)
+        rows.append({"id": subject["id"], "task": "explain", "input": facts, "system": system,
+                     "prompt": se.PROMPT.format(facts="\n".join(f"- {f}" for f in facts))})
+    seen = {title for _, title in summary_cases(TEST_TITLES)}     # by text: records can share a title
+    system = modelfile_system(CUSTOM_MODELS["nos-summary"])
+    for key, title in summary_cases(10_000):
+        if title not in seen:
+            seen.add(title)
+            rows.append({"id": str(key), "task": "summary", "input": title, "system": system,
+                         "prompt": rs.PROMPT.format(title=title)})
+    return rows
+
+
 class Replay:
     """Stands in for the model when rescoring: returns the saved output."""
 
@@ -255,7 +334,18 @@ def rescore(report: dict) -> dict:
 
 
 def create_models() -> int:
-    for name, modelfile in CUSTOM_MODELS.items():
+    """The custom models, plus -lora versions (same Modelfile + ADAPTER) when the trained adapter is present."""
+    builds = [(name, modelfile) for name, modelfile in CUSTOM_MODELS.items()]
+    if LORA_ADAPTER.is_dir():
+        for name, modelfile in CUSTOM_MODELS.items():
+            lora_file = OUT_DIR / f"{name}-lora.Modelfile"
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+            lora_file.write_text(modelfile.read_text(encoding="utf-8") + f'\nADAPTER "{LORA_ADAPTER.as_posix()}"\n',
+                                 encoding="utf-8")
+            builds.append((f"{name}-lora", lora_file))
+    else:
+        print(f"(no trained adapter at {LORA_ADAPTER}; skipping the -lora models)")
+    for name, modelfile in builds:
         print(f"ollama create {name}")
         result = subprocess.run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True)
         if result.returncode != 0:
@@ -269,16 +359,29 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("create", help="build the custom models in ollama/*.Modelfile")
     r = sub.add_parser("run", help="score variants and save every output")
-    r.add_argument("--variants", default=",".join(VARIANTS), help=f"comma-separated: {', '.join(VARIANTS)}")
+    r.add_argument("--variants", default=",".join(DEFAULT_VARIANTS),
+                   help=f"comma-separated: {', '.join(VARIANTS)} (default: all but lora)")
     r.add_argument("--tasks", default="explain,summary")
-    r.add_argument("--titles", type=int, default=12, help="title cases for the summary job (default 12)")
+    r.add_argument("--titles", type=int, default=TEST_TITLES,
+                   help=f"title cases for the summary job (default {TEST_TITLES})")
     r.add_argument("--endpoint", default=rs.DEFAULT_ENDPOINT, help="local Ollama (numeric loopback IP only)")
     rescore_cmd = sub.add_parser("rescore", help="score a saved run again with the current checks")
     rescore_cmd.add_argument("report", type=Path, help="a run-*.json from autonomous/ai-tuning/")
+    export = sub.add_parser("export", help="training prompts for colab/local_ai_lora_colab.ipynb (no test cases)")
+    export.add_argument("--subjects", type=int, default=300, help="synthetic subjects to explain (default 300)")
     args = p.parse_args(argv)
 
     if args.command == "create":
         return create_models()
+    if args.command == "export":
+        rows = training_inputs(args.subjects)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        path = OUT_DIR / "train-inputs.jsonl"
+        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+        counts = {t: sum(r["task"] == t for r in rows) for t in ("explain", "summary")}
+        print(f"{len(rows)} prompts ({counts['explain']} explain, {counts['summary']} summary) -> {path}")
+        print("Upload this file in the Colab notebook. It holds synthetic facts and public paper titles only.")
+        return 0
     if args.command == "rescore":
         print(table(rescore(json.loads(args.report.read_text(encoding="utf-8")))))
         return 0

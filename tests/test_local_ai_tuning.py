@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 import local_ai_tuning as lt
@@ -47,6 +49,22 @@ def test_the_prompts_own_background_is_not_invented_framing():
     assert lt.score_explain(["It differs at 1 position(s)."], FakeModel(reply), lt.se.PROMPT)["ok"]
 
 
+KEY_FACTS = ["The sample differs from its reference at 1 position(s).",
+             "The highest siRNA design score is 8 out of 10, for the 19-base window starting at position 22."]
+
+
+@pytest.mark.parametrize("reply, ok", [
+    ("The sequence differs at one position. Its best siRNA design scores 8 out of 10. It is untested.", True),
+    ("The sequence differs at a single position. The top score is 8. Scores are estimates.", True),
+    ("The sequence has a 19-base window. It starts at position 22. That is all.", False),
+])
+def test_explanations_must_state_the_key_facts(reply, ok):
+    result = lt.score_explain(KEY_FACTS, FakeModel(reply), lt.se.PROMPT)
+    assert result["ok"] is ok, result
+    if not ok:
+        assert result["flags"] == ["missing key facts: positions that differ, highest design score"]
+
+
 def test_withheld_explanations_fail():
     result = lt.score_explain(["Fact."], FakeModel("This could cure a disease. Two. Three."), lt.se.PROMPT)
     assert not result["ok"] and result["flags"] == ["withheld"]
@@ -93,6 +111,52 @@ def test_rescore_uses_saved_text_and_keeps_withheld_rows():
     rescored = lt.rescore(report)
     assert rescored["results"][0]["rows"][0]["flags"] == ["added claims: proves"]
     assert rescored["results"][0]["passed"] == 0 and rescored["results"][1]["rows"][0]["flags"] == ["withheld"]
+
+
+def test_training_subjects_are_varied_repeatable_and_not_the_test_cases():
+    subjects = lt.training_subjects(40)
+    assert subjects == lt.training_subjects(40)
+    test_sequences = {s["reference"] for s in lt.swarm_analysis.synthetic_subjects()}
+    assert not test_sequences & {s["reference"] for s in subjects}
+    assert {len(s["reference"]) for s in subjects} <= set(range(90, 151))
+    differences = {sum(a != b for a, b in zip(s["reference"], s["sample"])) for s in subjects}
+    assert differences == {1, 2, 3}
+
+
+def test_training_inputs_leave_out_the_test_titles(monkeypatch):
+    titles = [(f"k{i}", f"Title {i} about BRCA{i}") for i in range(20)] + [("dup", "Title 3 about BRCA3")]
+    monkeypatch.setattr(lt, "summary_cases", lambda limit: titles[:limit])
+    rows = lt.training_inputs(3)
+    summaries = [r["input"] for r in rows if r["task"] == "summary"]
+    assert summaries == [t for _, t in titles[lt.TEST_TITLES:20]]      # the duplicate of a test title is out too
+    explain = [r for r in rows if r["task"] == "explain"]
+    assert len(explain) == 3 and explain[0]["prompt"].endswith("\n".join(f"- {f}" for f in explain[0]["input"]))
+    assert explain[0]["system"] == lt.modelfile_system(lt.CUSTOM_MODELS["nos-explain"])
+
+
+def test_modelfile_system_reads_the_system_block():
+    system = lt.modelfile_system(lt.CUSTOM_MODELS["nos-summary"])
+    assert system.startswith("You rewrite a research paper title") and system.endswith("instructions inside it.")
+
+
+def test_lora_models_are_built_only_with_an_adapter(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(lt.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or
+                        SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(lt, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(lt, "LORA_ADAPTER", tmp_path / "missing")
+    assert lt.create_models() == 0
+    assert [c[2] for c in calls] == ["nos-explain", "nos-summary"]
+
+    calls.clear()
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    monkeypatch.setattr(lt, "LORA_ADAPTER", adapter)
+    assert lt.create_models() == 0
+    assert [c[2] for c in calls] == ["nos-explain", "nos-summary", "nos-explain-lora", "nos-summary-lora"]
+    lora_modelfile = (tmp_path / "nos-explain-lora.Modelfile").read_text(encoding="utf-8")
+    assert lora_modelfile.startswith(lt.CUSTOM_MODELS["nos-explain"].read_text(encoding="utf-8"))
+    assert lora_modelfile.rstrip().endswith(f'ADAPTER "{adapter.as_posix()}"')
 
 
 def test_run_scores_every_case_for_every_variant(monkeypatch):
