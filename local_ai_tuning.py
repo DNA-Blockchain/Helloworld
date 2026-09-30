@@ -194,6 +194,9 @@ def score_explain(facts: list[str], model, prompt: str) -> dict:
         flags.append("invented detail: 'perfect'")      # e.g. "a perfect score of 7"
     if OVERCLAIM.search(text):
         flags.append(f"overclaim: '{OVERCLAIM.search(text).group(0)}'")
+    anticodons = re.findall(r"tRNA anticodons are (\w+) and (\w+)", " ".join(facts))
+    if re.search(r"\bsame tRNA", text, re.I) and any(a != b for a, b in anticodons):
+        flags.append("contradicts the facts: 'same tRNA'")   # the round-2 LoRA's reason for silent changes
     return {"ok": not flags, "text": text, "flags": flags}
 
 

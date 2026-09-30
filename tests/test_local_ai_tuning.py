@@ -119,6 +119,14 @@ def test_overclaims_seen_in_round_two_are_caught(claim, flag):
     assert not result["ok"] and flag in result["flags"], result
 
 
+def test_same_trna_contradicts_different_anticodons():
+    wrong = GOOD + " Both codons are read by the same tRNA molecules."
+    assert lt.score_explain(CHANGE_FACTS, FakeModel(wrong), lt.se.PROMPT)["flags"] == \
+        ["contradicts the facts: 'same tRNA'"]                  # CHANGE_FACTS lists CAG and AAG
+    same = [f.replace("CAG and AAG", "CAG and CAG") for f in CHANGE_FACTS]
+    assert lt.score_explain(same, FakeModel(wrong), lt.se.PROMPT)["ok"]
+
+
 @pytest.mark.parametrize("claim", ["These scores have not been tested.", "The designs haven't been tested.",
                                    "Lab researchers design siRNAs to switch off a gene's message."])
 def test_accurate_caveats_are_not_overclaims(claim):
