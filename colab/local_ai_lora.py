@@ -267,7 +267,7 @@ def merge_adapter_streaming(adapter: str | Path, base_dir: str | Path, out_dir: 
         nonlocal pending, pending_bytes, files
         if pending:
             files += 1
-            name = f"part-{files:05d}.safetensors"
+            name = f"part-{files:05d}.safetensors"      # renamed below once the count is known
             save_file(pending, out_dir / name, metadata={"format": "pt"})
             weight_map.update({key: name for key in pending})
             pending, pending_bytes = {}, 0
@@ -286,6 +286,12 @@ def merge_adapter_streaming(adapter: str | Path, base_dir: str | Path, out_dir: 
                 pending[name] = weight
                 pending_bytes += size
     flush()
+    # The standard Hugging Face names: llama.cpp's converter only reads files named model*.safetensors,
+    # and with any other name it silently writes a model with no weights.
+    names = {f"part-{i:05d}.safetensors": f"model-{i:05d}-of-{files:05d}.safetensors" for i in range(1, files + 1)}
+    for old, new in names.items():
+        (out_dir / old).rename(out_dir / new)
+    weight_map = {key: names[name] for key, name in weight_map.items()}
     if merged != set(pairs):
         raise ValueError(f"LoRA weights with no base tensor: {sorted(set(pairs) - merged)[:3]}")
     for extra in base_dir.iterdir():        # config, tokenizer (the base's shard index no longer applies)
@@ -299,7 +305,7 @@ def build_llama_cpp(where: str | Path = "llama.cpp") -> Path:
     """llama.cpp's converter and quantizer: the tools that make Ollama's GGUF model files."""
     import subprocess
 
-    where = Path(where)
+    where = Path(where).resolve()   # through a symlink, cmake sees a different path from its cached build
     if not where.exists():
         subprocess.run(["git", "clone", "-q", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git",
                         str(where)], check=True)
@@ -323,6 +329,10 @@ def to_gguf(model_dir: str | Path, out_file: str | Path, *, llama_cpp: str | Pat
     f16 = out_file.with_name(out_file.stem + ".f16.gguf")
     subprocess.run([sys.executable, str(llama_cpp / "convert_hf_to_gguf.py"), str(model_dir),
                     "--outtype", "f16", "--outfile", str(f16)], check=True)
+    weights = sum(p.stat().st_size for p in Path(model_dir).glob("*.safetensors"))
+    if f16.stat().st_size < 0.9 * weights:      # 16-bit in, 16-bit out: sizes should match
+        raise RuntimeError(f"the converter wrote {f16.stat().st_size / 1e9:.2f} GB from {weights / 1e9:.2f} GB "
+                           f"of weights in {model_dir}; it missed some of the weight files")
     subprocess.run([str(llama_cpp / "build" / "bin" / "llama-quantize"), str(f16), str(out_file), quant],
                    check=True, stdout=subprocess.DEVNULL)
     f16.unlink()
