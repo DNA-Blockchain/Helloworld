@@ -126,8 +126,11 @@ FALLBACK_TITLES = [
 # background ("lab researchers design" siRNAs) is allowed.
 INVENTED_FRAMING = re.compile(
     r"\b(scientists?|a study|this study|experiment|new approach|to test|"
-    r"(researchers?|they|someone) (designed|created|made|built|developed) (a|an|the|this) "
-    r"(synthetic |short |new )?(dna|sequence))\b", re.I)
+    r"(researchers?|they|someone) (designed|created|made|built|developed|tested))\b", re.I)
+# Claims the facts rule out: the siRNA scores are untested formula estimates, and nothing is said about
+# stability, charge, or how easily anything happens. "have not been tested" is fine.
+OVERCLAIM = re.compile(r"\b(stab(le|ility)|favou?rable|worked|work(s|ing) well|effective(ly)?|successful(ly)?|"
+                       r"harder|easier|charge[sd]?)\b|(?<!not )(?<!n't )\b(was|were|been) tested\b", re.I)
 # Detail no fact states, seen in the first LoRA's and its teacher's answers: where in the sequence a
 # change is ("in the middle"), molecules binding, protein shape.
 INVENTED_DETAIL = re.compile(r"\b(middle|bind(s|ing)?|shape|structures?|fold(s|ing)?)\b", re.I)
@@ -189,6 +192,8 @@ def score_explain(facts: list[str], model, prompt: str) -> dict:
         flags.append(f"invented detail: '{INVENTED_DETAIL.search(text).group(0)}'")
     if re.search(r"\bperfect\b", text, re.I) and key_facts(facts).get("highest design score") != 10:
         flags.append("invented detail: 'perfect'")      # e.g. "a perfect score of 7"
+    if OVERCLAIM.search(text):
+        flags.append(f"overclaim: '{OVERCLAIM.search(text).group(0)}'")
     return {"ok": not flags, "text": text, "flags": flags}
 
 

@@ -105,6 +105,26 @@ def test_stricter_explanation_checks(reply, flag):
     assert not result["ok"] and flag in result["flags"], result
 
 
+@pytest.mark.parametrize("claim, flag", [
+    ("The best design worked well.", "overclaim: 'worked'"),
+    ("The design was tested on this sequence.", "overclaim: 'was tested'"),
+    ("It scores as working well.", "overclaim: 'working well'"),
+    ("The change makes it less stable.", "overclaim: 'stable'"),
+    ("It is harder for RNA to turn the gene off.", "overclaim: 'harder'"),
+    ("It does not change the protein's charge.", "overclaim: 'charge'"),
+    ("Researchers designed several siRNAs for it.", "invented framing: 'Researchers designed'"),
+])
+def test_overclaims_seen_in_round_two_are_caught(claim, flag):
+    result = lt.score_explain(CHANGE_FACTS, FakeModel(f"{GOOD} {claim}"), lt.se.PROMPT)
+    assert not result["ok"] and flag in result["flags"], result
+
+
+@pytest.mark.parametrize("claim", ["These scores have not been tested.", "The designs haven't been tested.",
+                                   "Lab researchers design siRNAs to switch off a gene's message."])
+def test_accurate_caveats_are_not_overclaims(claim):
+    assert lt.score_explain(CHANGE_FACTS, FakeModel(f"{GOOD} {claim}"), lt.se.PROMPT)["ok"]
+
+
 def test_an_explanation_with_every_key_fact_and_no_invented_detail_passes():
     assert lt.score_explain(CHANGE_FACTS, FakeModel(GOOD), lt.se.PROMPT)["ok"]
 
