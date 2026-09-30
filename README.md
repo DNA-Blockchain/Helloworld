@@ -545,6 +545,49 @@ python run_node_cli.py --id 1 --port 9601 --peers 127.0.0.1:9602,127.0.0.1:9603 
 sh linux/swarm.sh          # the same across three Alpine VMs (linux/README.md)
 ```
 
+### Signal lab: EEG, radio and network signals
+
+`signal_lab.py` moves real or simulated signals between any source and any
+sink (`signal_io.py`). Only the spec string changes when hardware arrives:
+
+| Source | Simulated today | Real hardware later |
+|---|---|---|
+| EEG | `eeg:synthetic` (BrainFlow's simulated board) | `eeg:cyton?serial_port=COM3`, `eeg:ganglion?...`, or any BrainFlow board (`signal_lab.py devices`) |
+| Radio | `rf:sim`, recordings `rf:file:x.cu8?rate=2.4e6` (.cu8 .cs8 .cf32) | `rf:soapy:driver=rtlsdr?freq=100e6&rate=2.4e6`, any SoapySDR radio |
+| Network | `udp:127.0.0.1:9700` in and out | `udp:<host>:<port>` with `--allow-remote` |
+
+```sh
+python signal_lab.py bridge --source eeg:synthetic --sink stats --seconds 5
+python signal_lab.py send-twin --twin run.json --sink file:twin.cs8           # the twin as a radio packet
+python signal_lab.py receive-twin --source "rf:file:twin.cs8?rate=250e3" --twin run.json
+python signal_lab.py eeg-control --source eeg:synthetic --twin run.json      # alpha rhythm steps the twin
+```
+
+`send-twin` sends a twin's sequence as an ordinary digital radio packet:
+2 bits per base, a sync word, a CRC-32, and continuous-phase binary FSK.
+`receive-twin` decodes it from a recording, a radio or the network, and only
+returns a sequence whose CRC matches. In tests it decodes exactly with 12 dB
+SNR and a 3 kHz tuning error. The DNA has no radio frequency of its own; the
+radio is simply carrying data. `eeg-control` calibrates a per-person
+baseline, then emits `select` when alpha (8-12 Hz) rises well above it (eyes
+closed) and `next` when it drops back. That's a band-power threshold, not a
+medical measurement.
+
+The rules:
+- **Network:** traffic stays on this machine unless `--allow-remote` is given.
+  Leaving it requires `SIGNAL_LINK_KEY` on both ends, which signs every
+  datagram with HMAC-SHA256 and drops unsigned, forged, replayed and stale
+  frames. EEG is personal data.
+- **Transmitting is regulated,** and interference can hit emergency and
+  aviation services. An over-the-air sink only opens with `--transmit` **and**
+  a `signal_tx_policy.json` naming the operator and the bands they may use
+  (see `signal_tx_policy.example.json`). The whole signal must fit inside one
+  band, and airtime is capped per band. The policy file is git-ignored.
+  Receiving, recordings and simulation are unrestricted.
+- **Real radios:** `sudo apt install python3-soapysdr soapysdr-module-all`,
+  create the venv with `--system-site-packages`, and attach the USB device to
+  WSL with `usbipd`.
+
 ### When was it published?
 
 Every event published by these tools carries a `time_anchor`: the Bitcoin
