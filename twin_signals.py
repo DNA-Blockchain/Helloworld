@@ -186,17 +186,19 @@ def iq_to_dna(iq: np.ndarray, modem: Modem = Modem()) -> Decoded:
 # ------------------------------------------------------------ EEG controls
 
 def band_power(data: np.ndarray, rate: float, low: float, high: float) -> np.ndarray:
-    """Mean power per channel between low and high Hz (Hann-windowed FFT)."""
+    """Total power per channel between low and high Hz (Hann-windowed FFT).
+    Summed, not averaged, so bands of different widths compare fairly and a
+    sub-band can never exceed the band containing it."""
     x = data - data.mean(axis=-1, keepdims=True)
     spectrum = np.abs(np.fft.rfft(x * np.hanning(x.shape[-1]), axis=-1)) ** 2
     freqs = np.fft.rfftfreq(x.shape[-1], 1 / rate)
     mask = (freqs >= low) & (freqs < high)
-    return spectrum[..., mask].mean(axis=-1) if mask.any() else np.zeros(x.shape[:-1])
+    return spectrum[..., mask].sum(axis=-1) if mask.any() else np.zeros(x.shape[:-1])
 
 
 def relative_alpha(data: np.ndarray, rate: float) -> float:
-    """Alpha (8-12 Hz) power as a fraction of 1-30 Hz power, median across
-    channels."""
+    """Alpha (8-12 Hz) power as a fraction (0-1) of 1-30 Hz power, median
+    across channels."""
     alpha = band_power(data, rate, 8, 12)
     total = band_power(data, rate, 1, 30) + 1e-12
     return float(np.median(alpha / total))
