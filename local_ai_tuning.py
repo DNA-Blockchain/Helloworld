@@ -360,7 +360,8 @@ def create_models() -> int:
         print(f"(no merged LoRA model at {LORA_GGUF}; skipping the -lora models)")
     for name, modelfile in builds:
         print(f"ollama create {name}")
-        result = subprocess.run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True)
+        result = subprocess.run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")     # its progress spinner isn't cp1252
         if result.returncode != 0:
             print(result.stderr.strip() or result.stdout.strip(), file=sys.stderr)
             return 1
