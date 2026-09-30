@@ -24,7 +24,9 @@ INTENTS: dict[str, tuple[str, ...]] = {
     "agents": ("agent", "agents", "research agent", "research agents", "topic", "topics", "queue", "queued"),
     "report": ("report", "reports", "daily", "today", "yesterday", "overnight"),
     "selftest": ("self-test", "self-tests", "self test", "self tests", "selftest", "selftests", "run tests",
-                 "run the tests", "test everything", "check everything", "health check", "run checks"),
+                 "run the tests", "test everything", "health check", "run checks"),
+    "integrity": ("integrity", "check everything", "verify everything", "everything true", "still true",
+                  "full check", "check the whole system", "tampered", "integrity report"),
     "jobs": ("jobs", "job", "what's running", "whats running", "background", "still running"),
     "research": ("research", "study", "studies", "paper", "papers", "trial", "trials", "gene", "genes",
                  "disease", "treatment", "therapy", "cancer", "mutation", "editing", "crispr", "search",
@@ -41,6 +43,7 @@ LABELS = {
     "report": "Latest daily report",
     "research": "Ask a research question",
     "selftest": "Run the self-tests",
+    "integrity": "Check the integrity of the whole OS",
     "jobs": "What's running in the background",
 }
 # Reading the shared chain: "what's on the chain", "find BRCA1 on the chain", "show entry 3".
@@ -89,7 +92,8 @@ NO = {"n", "no", "nope", "stop", "cancel", "don't", "dont", "not now", "2"}
 COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list", "tell", "give", "explain",
                  "entry", "entries", "start", "stop", "run", "what", "which", "where", "when", "why", "who",
                  "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and",
-                 "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable")
+                 "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable",
+                 "latest", "last", "newest", "recent", "still", "true", "everything", "whole", "system", "check")
 
 
 def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:

@@ -159,7 +159,7 @@ def test_a_tool_question_is_answered_directly(session):
 def test_a_greeting_gets_the_menu_and_a_number_picks_from_it(session):
     reply = session.handle("hi!")
     assert reply.text.startswith("Hello! I'm RabbitSoftware.inc, the assistant from RabbitSoftware, Inc.")
-    assert len(reply.choices) == 10
+    assert len(reply.choices) == 11
     assert session.handle("4").text.startswith("node-2: 6 credits")
 
 
@@ -473,7 +473,7 @@ def test_the_page_uses_the_same_names_as_the_code():
 def test_messages_keep_their_conversation(server):
     key, headers = str(uuid.uuid4()), {"X-Rabbit": "1", "Content-Type": "application/json"}
     status, body = call(server, "POST", "/api/message", {"session": key, "text": "hello"}, headers)
-    assert status == 200 and len(json.loads(body)["choices"]) == 10
+    assert status == 200 and len(json.loads(body)["choices"]) == 11
     status, body = call(server, "POST", "/api/message", {"session": key, "text": "4"}, headers)
     assert json.loads(body)["text"].startswith("node-2: 6 credits")
 

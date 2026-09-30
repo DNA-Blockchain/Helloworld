@@ -670,6 +670,21 @@ address or a long DNA/RNA sequence. RabbitSoftware.inc refuses it first and
 points to the encrypted digital-twin vault instead (`python dna_shell.py
 data-vault-store <file>`, AES-256-GCM with your passphrase, kept on this PC).
 
+"Check integrity" (or "is everything still true?") checks the whole OS in
+the background and saves a report on this PC (`autonomous/integrity/`, as
+JSON and a readable page, with the report's SHA-256 as its fingerprint):
+
+- **Records and data:** every node's own chain, the shared research chain
+  (each copy, and every entry against today's rules), the activity log's
+  hash chain, the Maxwell chain if one is on this PC, and local dataset
+  files against their fingerprints on the chain.
+- **Code enforcement:** the code against its saved fingerprint
+  (`project_identifier.py`), uncommitted changes, the test suite and every
+  component's self-test.
+
+It only reads, and nothing leaves this PC. "Show the integrity report" reads
+the latest one; `python -m rabbitsoft.integrity` runs it directly.
+
 It can also act, always after a plain yes/no question and with an entry in
 the activity log:
 
