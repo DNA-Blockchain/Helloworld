@@ -10,8 +10,12 @@ Used by colab/local_ai_lora_colab.ipynb on a Colab GPU.
    sampling. What was kept and what was rejected are both saved.
 3. A LoRA is trained on Llama-3.2-3B-Instruct, the model Ollama runs as
    llama3.2:3b, on the kept answers only (loss on the answer, not the
-   prompt). The adapter is saved in the safetensors layout Ollama's
-   ADAPTER instruction reads.
+   prompt).
+4. Ollama 0.34+ no longer loads separate adapters, so the LoRA is merged
+   into the base weights and converted to one Q4_K_M GGUF file: in Colab
+   (notebook cell 10), or on a PC without much memory:
+
+     python3 colab/local_ai_lora.py nos-lora.zip      # in WSL; needs hf auth login
 """
 from __future__ import annotations
 
@@ -199,6 +203,148 @@ def train_lora(kept: list[dict], out_dir: str | Path, *, student: str = STUDENT,
     return adapter
 
 
+def merge_adapter(adapter: str | Path, out_dir: str | Path, *, student: str = STUDENT) -> Path:
+    """The student with the LoRA folded into its weights, saved as a complete fp16 model. Ollama 0.34+
+    no longer loads separate LoRA adapters, so this is what gets converted for it."""
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(student)
+    model = AutoModelForCausalLM.from_pretrained(student, dtype=torch.float16)
+    model = PeftModel.from_pretrained(model, str(adapter)).merge_and_unload()
+    out_dir = Path(out_dir)
+    model.save_pretrained(out_dir, safe_serialization=True)
+    tokenizer.save_pretrained(out_dir)
+    del model
+    release_gpu_memory()
+    return out_dir
+
+
+def merge_adapter_streaming(adapter: str | Path, base_dir: str | Path, out_dir: str | Path,
+                            max_shard_bytes: int = 1 << 30) -> Path:
+    """merge_adapter() one weight matrix at a time, for machines without ~8 GB of free RAM: each base
+    tensor gets W + (alpha/r) * B @ A added when the LoRA covers it. Output goes in files of at most
+    max_shard_bytes, so memory stays near that size. base_dir is a downloaded copy of the student
+    (config, tokenizer, *.safetensors)."""
+    import shutil
+
+    from safetensors import safe_open
+    from safetensors.torch import load_file, save_file
+
+    adapter, base_dir, out_dir = Path(adapter), Path(base_dir), Path(out_dir)
+    config = json.loads((adapter / "adapter_config.json").read_text())
+    if config.get("use_rslora") or config.get("use_dora"):
+        raise ValueError("streaming merge covers plain LoRA only")
+    scale = config["lora_alpha"] / config["r"]
+    lora = load_file(adapter / "adapter_model.safetensors")
+    pairs = {}                              # base weight name -> (A, B)
+    for key in lora:
+        if key.endswith(".lora_A.weight"):
+            name = key.removeprefix("base_model.model.").replace(".lora_A.weight", ".weight")
+            pairs[name] = (lora[key], lora[key.replace("lora_A", "lora_B")])
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    merged, weight_map = set(), {}
+    pending, pending_bytes, files = {}, 0, 0
+
+    def flush():
+        nonlocal pending, pending_bytes, files
+        if pending:
+            files += 1
+            name = f"part-{files:05d}.safetensors"
+            save_file(pending, out_dir / name, metadata={"format": "pt"})
+            weight_map.update({key: name for key in pending})
+            pending, pending_bytes = {}, 0
+
+    for shard in sorted(base_dir.glob("*.safetensors")):
+        with safe_open(shard, framework="pt") as f:
+            for name in f.keys():
+                weight = f.get_tensor(name)
+                if name in pairs:
+                    a, b = pairs[name]
+                    weight = (weight.float() + scale * (b.float() @ a.float())).to(weight.dtype)
+                    merged.add(name)
+                size = weight.numel() * weight.element_size()
+                if pending and pending_bytes + size > max_shard_bytes:
+                    flush()
+                pending[name] = weight
+                pending_bytes += size
+    flush()
+    if merged != set(pairs):
+        raise ValueError(f"LoRA weights with no base tensor: {sorted(set(pairs) - merged)[:3]}")
+    for extra in base_dir.iterdir():        # config, tokenizer (the base's shard index no longer applies)
+        if extra.is_file() and extra.suffix != ".safetensors" and not extra.name.endswith(".index.json"):
+            shutil.copy(extra, out_dir / extra.name)
+    (out_dir / "model.safetensors.index.json").write_text(json.dumps({"metadata": {}, "weight_map": weight_map}))
+    return out_dir
+
+
+def build_llama_cpp(where: str | Path = "llama.cpp") -> Path:
+    """llama.cpp's converter and quantizer: the tools that make Ollama's GGUF model files."""
+    import subprocess
+
+    where = Path(where)
+    if not where.exists():
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git",
+                        str(where)], check=True)
+    # The converter imports sentencepiece before it tries a model's other tokenizer formats.
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", str(where / "gguf-py"), "sentencepiece",
+                    "protobuf"], check=True)
+    subprocess.run(["cmake", "-B", str(where / "build"), "-S", str(where), "-DLLAMA_CURL=OFF",
+                    "-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF", "-DCMAKE_BUILD_TYPE=Release"],
+                   check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["cmake", "--build", str(where / "build"), "--target", "llama-quantize", "-j", "4"],
+                   check=True, stdout=subprocess.DEVNULL)
+    return where
+
+
+def to_gguf(model_dir: str | Path, out_file: str | Path, *, llama_cpp: str | Path = "llama.cpp",
+            quant: str = "Q4_K_M") -> Path:
+    """One GGUF file at `quant`, the compression Ollama's llama3.2:3b uses (so it runs as fast)."""
+    import subprocess
+
+    llama_cpp, out_file = Path(llama_cpp), Path(out_file)
+    f16 = out_file.with_name(out_file.stem + ".f16.gguf")
+    subprocess.run([sys.executable, str(llama_cpp / "convert_hf_to_gguf.py"), str(model_dir),
+                    "--outtype", "f16", "--outfile", str(f16)], check=True)
+    subprocess.run([str(llama_cpp / "build" / "bin" / "llama-quantize"), str(f16), str(out_file), quant],
+                   check=True, stdout=subprocess.DEVNULL)
+    f16.unlink()
+    return out_file
+
+
+def merge_on_this_pc(adapter_zip: str | Path, out_dir: str | Path, work: str | Path) -> Path:
+    """The whole merge without Colab, from the notebook's nos-lora.zip: download the student, merge with
+    little memory, convert, and put the GGUF plus the adapter and its kept/rejected answers in out_dir.
+    Needs `hf auth login` (the student is gated) and llama.cpp; about 20 GB free in `work`."""
+    import shutil
+    import zipfile
+
+    from huggingface_hub import snapshot_download
+
+    work, out_dir = Path(work), Path(out_dir)
+    if (work / "nos-lora").exists():
+        shutil.rmtree(work / "nos-lora")
+    with zipfile.ZipFile(adapter_zip) as z:
+        z.extractall(work)
+    print("downloading the base model (6.4 GB the first time)", flush=True)
+    base = snapshot_download(STUDENT, local_dir=work / "base", allow_patterns=["*.json", "*.safetensors"],
+                             ignore_patterns=["original/*"])
+    print("merging", flush=True)
+    merged = merge_adapter_streaming(work / "nos-lora" / "adapter", base, work / "merged")
+    print("converting", flush=True)
+    gguf = to_gguf(merged, work / "nos-lora.Q4_K_M.gguf", llama_cpp=build_llama_cpp(work / "llama.cpp"))
+    shutil.rmtree(merged)
+    # copyfile, not copy: a Windows drive mounted in WSL refuses Linux permission changes.
+    (out_dir / "adapter").mkdir(parents=True, exist_ok=True)
+    for src in [gguf, work / "nos-lora" / "kept.jsonl", work / "nos-lora" / "rejected.jsonl"]:
+        shutil.copyfile(src, out_dir / src.name)
+    for src in (work / "nos-lora" / "adapter").iterdir():
+        shutil.copyfile(src, out_dir / "adapter" / src.name)
+    return out_dir / gguf.name
+
+
 def try_adapter(adapter: str | Path, rows: list[dict], *, student: str = STUDENT) -> list[tuple[dict, str, dict]]:
     """The trained model's answers to rows it was not trained on (test_rows()), with their scores."""
     from peft import PeftModel
@@ -209,3 +355,16 @@ def try_adapter(adapter: str | Path, rows: list[dict], *, student: str = STUDENT
     del model
     release_gpu_memory()
     return [(row, answer, check(row, answer)) for row, (answer, _) in zip(rows, answers)]
+
+
+if __name__ == "__main__":
+    import argparse
+
+    p = argparse.ArgumentParser(description="Merge the Colab-trained LoRA into one GGUF for Ollama, on this PC "
+                                            "(run in WSL/Linux with torch, transformers, peft and cmake).")
+    p.add_argument("adapter_zip", type=Path, help="nos-lora.zip from colab/local_ai_lora_colab.ipynb")
+    p.add_argument("--out", type=Path, default=REPO / "ollama" / "nos-lora", help="default: ollama/nos-lora/")
+    p.add_argument("--work", type=Path, default=Path.home() / "nos-lora-work", help="scratch space (~20 GB)")
+    args = p.parse_args()
+    print(f"done: {merge_on_this_pc(args.adapter_zip, args.out, args.work)}")
+    print("next, on Windows: python local_ai_tuning.py create")

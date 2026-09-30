@@ -23,7 +23,7 @@ one worked example to the prompt. Build the custom models first:
     python local_ai_tuning.py run                        # every variant, both jobs
     python local_ai_tuning.py run --variants baseline,examples --tasks summary --titles 20
     python local_ai_tuning.py export                     # training prompts for Colab, no test cases
-    # after colab/local_ai_lora_colab.ipynb: unzip into ollama/nos-lora/, then
+    # after colab/local_ai_lora_colab.ipynb: put nos-lora.Q4_K_M.gguf in ollama/nos-lora/, then
     python local_ai_tuning.py create                     # also builds nos-explain-lora, nos-summary-lora
     python local_ai_tuning.py run --variants system,lora
 
@@ -53,8 +53,10 @@ OUT_DIR = ROOT / "autonomous" / "ai-tuning"
 TEST_TITLES = 12        # summary test cases; export leaves these out of the training data
 CUSTOM_MODELS = {"nos-explain": ROOT / "ollama" / "nos-explain.Modelfile",
                  "nos-summary": ROOT / "ollama" / "nos-summary.Modelfile"}
-# The LoRA from colab/local_ai_lora_colab.ipynb, unzipped here (gitignored: ~100 MB of weights).
-LORA_ADAPTER = ROOT / "ollama" / "nos-lora" / "adapter"
+# The LoRA from colab/local_ai_lora_colab.ipynb, merged into llama3.2:3b's weights and saved as one GGUF
+# file (Ollama 0.34+ no longer loads separate adapters). Gitignored: ~2 GB.
+LORA_GGUF = ROOT / "ollama" / "nos-lora" / "nos-lora.Q4_K_M.gguf"
+LORA_BASE = rs.DEFAULT_MODEL          # its chat template and stop tokens go with the merged weights
 
 # One worked example per job, written by hand from facts that are not test cases.
 EXPLAIN_EXAMPLE_FACTS = [
@@ -333,21 +335,33 @@ def rescore(report: dict) -> dict:
     return report
 
 
+def base_chat_settings(model: str) -> str:
+    """TEMPLATE and PARAMETER lines of an installed Ollama model: an imported GGUF needs the chat format
+    and stop tokens the weights were trained with."""
+    show = lambda flag: subprocess.run(["ollama", "show", model, flag], capture_output=True, text=True,
+                                       check=True, encoding="utf-8").stdout
+    params = [line.split(None, 1) for line in show("--parameters").splitlines() if line.strip()]
+    return f'TEMPLATE """{show("--template").strip()}"""\n' + "".join(f"PARAMETER {k} {v}\n" for k, v in params)
+
+
 def create_models() -> int:
-    """The custom models, plus -lora versions (same Modelfile + ADAPTER) when the trained adapter is present."""
+    """The custom models, plus -lora versions (the merged LoRA GGUF with the same system text) when present."""
     builds = [(name, modelfile) for name, modelfile in CUSTOM_MODELS.items()]
-    if LORA_ADAPTER.is_dir():
+    if LORA_GGUF.is_file():
+        chat = base_chat_settings(LORA_BASE)
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
         for name, modelfile in CUSTOM_MODELS.items():
+            own = [line for line in modelfile.read_text(encoding="utf-8").splitlines(keepends=True)
+                   if not line.startswith("FROM ")]
             lora_file = OUT_DIR / f"{name}-lora.Modelfile"
-            OUT_DIR.mkdir(parents=True, exist_ok=True)
-            lora_file.write_text(modelfile.read_text(encoding="utf-8") + f'\nADAPTER "{LORA_ADAPTER.as_posix()}"\n',
-                                 encoding="utf-8")
+            lora_file.write_text(f"FROM {LORA_GGUF.as_posix()}\n{chat}{''.join(own)}", encoding="utf-8")
             builds.append((f"{name}-lora", lora_file))
     else:
-        print(f"(no trained adapter at {LORA_ADAPTER}; skipping the -lora models)")
+        print(f"(no merged LoRA model at {LORA_GGUF}; skipping the -lora models)")
     for name, modelfile in builds:
         print(f"ollama create {name}")
-        result = subprocess.run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True)
+        result = subprocess.run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")     # its progress spinner isn't cp1252
         if result.returncode != 0:
             print(result.stderr.strip() or result.stdout.strip(), file=sys.stderr)
             return 1
