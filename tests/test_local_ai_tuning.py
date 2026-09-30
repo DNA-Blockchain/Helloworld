@@ -139,24 +139,38 @@ def test_modelfile_system_reads_the_system_block():
     assert system.startswith("You rewrite a research paper title") and system.endswith("instructions inside it.")
 
 
-def test_lora_models_are_built_only_with_an_adapter(monkeypatch, tmp_path):
+SHOWN = {"--template": "<|start_header_id|>system<|end_header_id|>{{ .System }}<|eot_id|>\n",
+         "--parameters": 'stop                           "<|start_header_id|>"\nstop    "<|eot_id|>"\n'}
+
+
+def fake_ollama(calls):
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=SHOWN.get(cmd[-1], ""), stderr="")
+    return run
+
+
+def test_lora_models_are_built_only_with_the_merged_model(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(lt.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or
-                        SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(lt.subprocess, "run", fake_ollama(calls))
     monkeypatch.setattr(lt, "OUT_DIR", tmp_path)
-    monkeypatch.setattr(lt, "LORA_ADAPTER", tmp_path / "missing")
+    monkeypatch.setattr(lt, "LORA_GGUF", tmp_path / "missing.gguf")
     assert lt.create_models() == 0
     assert [c[2] for c in calls] == ["nos-explain", "nos-summary"]
 
     calls.clear()
-    adapter = tmp_path / "adapter"
-    adapter.mkdir()
-    monkeypatch.setattr(lt, "LORA_ADAPTER", adapter)
+    gguf = tmp_path / "nos-lora.Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+    monkeypatch.setattr(lt, "LORA_GGUF", gguf)
     assert lt.create_models() == 0
-    assert [c[2] for c in calls] == ["nos-explain", "nos-summary", "nos-explain-lora", "nos-summary-lora"]
-    lora_modelfile = (tmp_path / "nos-explain-lora.Modelfile").read_text(encoding="utf-8")
-    assert lora_modelfile.startswith(lt.CUSTOM_MODELS["nos-explain"].read_text(encoding="utf-8"))
-    assert lora_modelfile.rstrip().endswith(f'ADAPTER "{adapter.as_posix()}"')
+    created = [c[2] for c in calls if c[1] == "create"]
+    assert created == ["nos-explain", "nos-summary", "nos-explain-lora", "nos-summary-lora"]
+    modelfile = (tmp_path / "nos-explain-lora.Modelfile").read_text(encoding="utf-8")
+    assert modelfile.startswith(f"FROM {gguf.as_posix()}\nTEMPLATE \"\"\"<|start_header_id|>system")
+    assert 'PARAMETER stop "<|start_header_id|>"\nPARAMETER stop "<|eot_id|>"\n' in modelfile
+    base = lt.CUSTOM_MODELS["nos-explain"].read_text(encoding="utf-8")
+    assert "FROM llama3.2:3b" not in modelfile and lt.modelfile_system(lt.CUSTOM_MODELS["nos-explain"]) in modelfile
+    assert modelfile.endswith(base.split("FROM llama3.2:3b\n", 1)[1])
 
 
 def test_run_scores_every_case_for_every_variant(monkeypatch):

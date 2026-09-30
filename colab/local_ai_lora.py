@@ -199,6 +199,58 @@ def train_lora(kept: list[dict], out_dir: str | Path, *, student: str = STUDENT,
     return adapter
 
 
+def merge_adapter(adapter: str | Path, out_dir: str | Path, *, student: str = STUDENT) -> Path:
+    """The student with the LoRA folded into its weights, saved as a complete fp16 model. Ollama 0.34+
+    no longer loads separate LoRA adapters, so this is what gets converted for it."""
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(student)
+    model = AutoModelForCausalLM.from_pretrained(student, dtype=torch.float16)
+    model = PeftModel.from_pretrained(model, str(adapter)).merge_and_unload()
+    out_dir = Path(out_dir)
+    model.save_pretrained(out_dir, safe_serialization=True)
+    tokenizer.save_pretrained(out_dir)
+    del model
+    release_gpu_memory()
+    return out_dir
+
+
+def build_llama_cpp(where: str | Path = "llama.cpp") -> Path:
+    """llama.cpp's converter and quantizer: the tools that make Ollama's GGUF model files."""
+    import subprocess
+
+    where = Path(where)
+    if not where.exists():
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "https://github.com/ggml-org/llama.cpp.git",
+                        str(where)], check=True)
+    # The converter imports sentencepiece before it tries a model's other tokenizer formats.
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", str(where / "gguf-py"), "sentencepiece",
+                    "protobuf"], check=True)
+    subprocess.run(["cmake", "-B", str(where / "build"), "-S", str(where), "-DLLAMA_CURL=OFF",
+                    "-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF", "-DCMAKE_BUILD_TYPE=Release"],
+                   check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["cmake", "--build", str(where / "build"), "--target", "llama-quantize", "-j", "4"],
+                   check=True, stdout=subprocess.DEVNULL)
+    return where
+
+
+def to_gguf(model_dir: str | Path, out_file: str | Path, *, llama_cpp: str | Path = "llama.cpp",
+            quant: str = "Q4_K_M") -> Path:
+    """One GGUF file at `quant`, the compression Ollama's llama3.2:3b uses (so it runs as fast)."""
+    import subprocess
+
+    llama_cpp, out_file = Path(llama_cpp), Path(out_file)
+    f16 = out_file.with_name(out_file.stem + ".f16.gguf")
+    subprocess.run([sys.executable, str(llama_cpp / "convert_hf_to_gguf.py"), str(model_dir),
+                    "--outtype", "f16", "--outfile", str(f16)], check=True)
+    subprocess.run([str(llama_cpp / "build" / "bin" / "llama-quantize"), str(f16), str(out_file), quant],
+                   check=True, stdout=subprocess.DEVNULL)
+    f16.unlink()
+    return out_file
+
+
 def try_adapter(adapter: str | Path, rows: list[dict], *, student: str = STUDENT) -> list[tuple[dict, str, dict]]:
     """The trained model's answers to rows it was not trained on (test_rows()), with their scores."""
     from peft import PeftModel
