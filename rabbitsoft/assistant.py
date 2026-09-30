@@ -283,8 +283,10 @@ class Session:
     def _records(self, query: str, limit: int = 5) -> list[dict]:
         """Relevant saved records, each paper once (PubMed and Europe PMC often both have it): the ones
         using the question's words first, then the ones that mean the same without using them."""
+        # Everyday words ("from", "about") in a title aren't a match.
+        terms = " ".join(w for w in re.findall(r"[\w-]+", query) if w.lower() not in words.STOPWORDS) or query
         try:
-            found = [r for r in self._catalog().retrieve(query, limit=limit * 3) if r["retrieval_score"] >= 3]
+            found = [r for r in self._catalog().retrieve(terms, limit=limit * 3) if r["retrieval_score"] >= 3]
         except ValueError:
             return []
         unique, titles = [], set()
