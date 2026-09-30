@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import GREETING, NAME, tools, words
+from . import GREETING, NAME, chain_view, tools, words
 from .jobs import Job, Jobs, Service
 
 AGENT_HOST, AGENT_PORT = "127.0.0.1", 8765
@@ -94,6 +94,7 @@ class Session:
         self.choices: list[tuple[str, Callable[[], Reply]]] = []
         self.pending: Callable[[], Reply] | None = None
         self.last_answer = ""
+        self.chain_listing: list[dict] = []        # the last "find ... on the chain", for "show entry N"
 
     # -- the AI is only started when something needs it ------------------------------------------
     @property
@@ -166,6 +167,15 @@ class Session:
             return self.simpler()
         if m := re.search(r"\bexplain\b.*?\bsynthetic\W*(\d)\b|\bsynthetic\W*(\d)\b", fixed, re.I):
             return self.explain_subject(int(m.group(1) or m.group(2)), heard)
+        if m := words.SHOW_ENTRY.search(fixed):
+            return self._prefix(heard, self.show_entry(m.group("ref")))
+        if re.search(r"\b(show|open|read|see)\b.*\bentry\b", fixed, re.I):
+            return Reply(heard + "Say \"show entry\" and a number from a chain search (\"find BRCA1 on the chain\"), "
+                                 "or the first 6 or more characters of an entry's ID.")
+        if m := words.CHAIN_FIND.search(fixed):
+            return self._prefix(heard, self.find_on_chain(m.group("terms")))
+        if words.CHAIN_CONTENTS.search(fixed):
+            return Reply(heard + "\n".join(chain_view.summary(chain_view.collect(self.paths))))
         intent, ranked = words.best_intent(fixed)
         if intent == "help":
             return self.menu(heard + "Here's what I can do. Pick a number, or just type in your own words:")
@@ -297,6 +307,32 @@ class Session:
                          + f"\n\n{AI_NOTE}")
         except (OSError, RuntimeError, ValueError) as error:
             return Reply(f"The local AI didn't answer ({error}). Is Ollama running?")
+
+    # -- reading the shared chain (everything on it is public) --------------------------------------
+    def find_on_chain(self, terms: str) -> Reply:
+        data = chain_view.collect(self.paths)
+        lines, shown = chain_view.find(data, terms)
+        self.chain_listing = shown
+        if not shown:
+            return Reply("\n".join(lines))
+        options = [(re.sub(r"^\d+\.\s*", "", line), lambda e=e: Reply("\n".join(chain_view.entry(data, e))))
+                   for line, e in zip(lines[1:], shown)]
+        return self._offer(options, lines[0] + " Pick a number to see everything in an entry.")
+
+    def show_entry(self, ref: str) -> Reply:
+        data = chain_view.collect(self.paths)
+        if ref.isdigit() and len(ref) <= 2:          # a list number; longer digit runs are ID prefixes (hex)
+            number = int(ref)
+            if not 1 <= number <= len(self.chain_listing):
+                return Reply("Search first, for example \"find BRCA1 on the chain\", then say \"show entry\" "
+                             "and a number from the list.")
+            event = next((e for e in data["events"] if e["event_id"] == self.chain_listing[number - 1]["event_id"]),
+                         None)
+        else:
+            event = chain_view.find_event(data, ref)
+        if event is None:
+            return Reply(f"I couldn't find entry {ref} on the chain.")
+        return Reply("\n".join(chain_view.entry(data, event)))
 
     # -- actions: each asks first and is written to the activity log --------------------------------
     @staticmethod

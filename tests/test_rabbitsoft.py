@@ -212,6 +212,84 @@ def test_a_synthetic_subject_is_explained_from_verified_facts(tmp_path):
     assert "may be wrong" in reply.text
 
 
+# -- reading the chain ----------------------------------------------------------------------------
+
+def fake_chain():
+    records_event = {
+        "event_id": "aa11bb22cc33dd44ee55ff6677889900", "kind": "public_research_records", "origin": 0,
+        "origin_index": 3, "block_hash_hex": "f" * 64, "replicas": [0, 1, 2],
+        "block": {"research_provenance": {
+            "event_type": "public_research_records", "event_id": "aa11bb22cc33dd44ee55ff6677889900",
+            "created_at": "2026-09-29T17:15:05+00:00", "query": "brca1 carriers", "published_at": "",
+            "records": [{"source": "pubmed", "external_id": "111", "title": "BRCA1 carriers and risk",
+                         "source_url": "https://example.org/111"}]}}}
+    dataset_event = {
+        "event_id": "0123456789abcdef0123456789abcdef", "kind": "public_dataset_record", "origin": 1,
+        "origin_index": 9, "block_hash_hex": "e" * 64, "replicas": [1],
+        "block": {"research_provenance": {"event_type": "public_dataset_record", "created_at": "2026-09-30T08:00:00+00:00",
+                                          "title": "TP53 reference sequences", "accession": "NC_000017"}}}
+    record = {"source": "pubmed", "external_id": "111", "title": "BRCA1 carriers and risk (corrected)",
+              "source_url": "https://example.org/111", "query": "brca1 carriers", "event_id": records_event["event_id"],
+              "published_at": "2026-09-29T17:15:05+00:00", "replicas": [0, 1, 2],
+              "correction": {"corrected_at": "2026-09-30T09:00:00+00:00", "reason": "text decoding fault",
+                             "published_title": "BRCA1 carriers and risk"}}
+    return {"nodes": {0: {"ledger_ok": True}, 1: {"ledger_ok": True}, 2: {"ledger_ok": True}},
+            "events": [records_event, dataset_event], "records": [record],
+            "datasets": [{"event_id": dataset_event["event_id"], "local_copy": False}]}
+
+
+def test_chain_summary_counts_what_is_published():
+    from rabbitsoft import chain_view
+
+    lines = chain_view.summary(fake_chain())
+    assert lines[0] == "The shared research chain holds 2 entries, copied across 3 nodes; every copy checks out."
+    assert lines[1] == "By kind: 1 research record batches, 1 datasets."
+    assert lines[3] == "Newest entry: datasets, 2026-09-30."
+
+
+def test_finding_on_the_chain_shows_records_corrections_and_other_entries():
+    from rabbitsoft import chain_view
+
+    lines, shown = chain_view.find(fake_chain(), "brca1 carriers")
+    assert lines[1] == ("1. BRCA1 carriers and risk (corrected) (pubmed 111, published 2026-09-29, held by nodes 0, 1, 2)."
+                        " https://example.org/111 Corrected 2026-09-30 (text decoding fault); first published as "
+                        "\"BRCA1 carriers and risk\".")
+    lines, shown = chain_view.find(fake_chain(), "TP53")
+    assert lines[1] == "1. datasets: TP53 reference sequences (published 2026-09-30, held by node 1)."
+    assert chain_view.find(fake_chain(), "nothing-like-this")[0] == [
+        'Nothing on the chain matches "nothing-like-this".']
+
+
+def test_a_chain_entry_is_shown_in_full():
+    from rabbitsoft import chain_view
+
+    data = fake_chain()
+    lines = chain_view.entry(data, data["events"][1])
+    assert lines[1].startswith("Published by node 1 as its block 9") and "Copies on node 1." in lines[1]
+    assert "  accession: NC_000017" in lines
+    assert lines[-1] == "The dataset's file isn't on this PC; the chain holds its fingerprint, not the file."
+    assert "  published_at: (blank)" in chain_view.entry(data, data["events"][0])
+    assert chain_view.find_event(data, "0123456789") is data["events"][1]
+    assert chain_view.find_event(data, "01234") is None                   # too short to be unambiguous
+
+
+def test_the_chain_can_be_searched_and_read_in_conversation(monkeypatch, tmp_path):
+    from rabbitsoft import chain_view
+
+    monkeypatch.setattr(chain_view, "collect", lambda paths: fake_chain())
+    s = Session(make_os(tmp_path, time.time()), ai=FakeAI())
+    assert s.handle("what's on the chain").text.startswith("The shared research chain holds 2 entries")
+    found = s.handle("find brca1 on the blokchain")
+    assert found.text.startswith('I read that as: "find brca1 on the blockchain".\n1 match on the chain:')
+    assert found.choices[0].startswith("BRCA1 carriers and risk (corrected)")
+    assert s.handle("1").text.startswith("Chain entry aa11bb22cc33dd44ee55ff6677889900: research record batches.")
+    assert s.handle("show entry 0123456789").text.startswith("Chain entry 0123456789abcdef")
+    assert s.handle("show entry 1").text.startswith("Chain entry aa11bb22")      # number from the last search
+    assert s.handle("show entry 5").text.startswith("Search first")
+    assert s.handle("open entry zzz").text.startswith('Say "show entry" and a number')
+    assert s.handle("is the chain ok").text.startswith("Every node's own chain checks out.")
+
+
 # -- actions --------------------------------------------------------------------------------------
 
 def wait_for(condition, timeout=30):

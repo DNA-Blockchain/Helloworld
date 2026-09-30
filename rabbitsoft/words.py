@@ -43,6 +43,12 @@ LABELS = {
     "selftest": "Run the self-tests",
     "jobs": "What's running in the background",
 }
+# Reading the shared chain: "what's on the chain", "find BRCA1 on the chain", "show entry 3".
+CHAIN_CONTENTS = re.compile(r"\bwhat('s|s| is| does)?\b.*\b(on|in)\b.*\bchain\b|\bchain (contents|holds)\b|"
+                            r"\bwhat does the (block)?chain (have|hold|contain)\b", re.I)
+CHAIN_FIND = re.compile(r"\b(find|search( for)?|look (for|up)|anything (about|on))\b(?P<terms>.*?)\b(on|in) (the )?"
+                        r"(block)?chain\b", re.I)
+SHOW_ENTRY = re.compile(r"\b(show|open|read|see)\b.*?\bentry\s+#?(?P<ref>[0-9a-f]{6,32}|\d{1,2})\b", re.I)
 START = re.compile(r"\b(start|begin|launch|resume|turn on|switch on)\b", re.I)
 STOP = re.compile(r"\b(stop|halt|end|pause|kill|turn off|switch off|shut down)\b", re.I)
 # Names and terms people often misspell when asking about this project's research.
@@ -59,9 +65,15 @@ YES = {"y", "yes", "yeah", "yep", "ok", "okay", "sure", "go", "go ahead", "do it
 NO = {"n", "no", "nope", "stop", "cancel", "don't", "dont", "not now", "2"}
 
 
+# Everyday command words: known, so they're never "corrected" into something else ("show" into "how").
+COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list", "tell", "give", "explain",
+                 "entry", "entries", "start", "stop", "run", "what", "which", "where", "when", "why", "who",
+                 "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and")
+
+
 def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:
     words = {w for phrases in INTENTS.values() for p in phrases for w in p.split()}
-    return words | set(DOMAIN_TERMS) | {w.lower() for w in extra}
+    return words | set(DOMAIN_TERMS) | set(COMMAND_WORDS) | {w.lower() for w in extra}
 
 
 def fix_spelling(text: str, vocab: set[str]) -> str:
