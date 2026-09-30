@@ -1,0 +1,106 @@
+import pytest
+
+import local_ai_tuning as lt
+
+
+class FakeModel:
+    def __init__(self, reply):
+        self.reply, self.prompts = reply, []
+
+    def generate(self, prompt, num_predict=120):
+        self.prompts.append(prompt)
+        return self.reply
+
+
+def test_the_worked_explain_example_passes_its_own_checks():
+    result = lt.score_explain(lt.EXPLAIN_EXAMPLE_FACTS, FakeModel(lt.EXPLAIN_EXAMPLE_ANSWER), lt.se.PROMPT)
+    assert result["ok"], result
+
+
+@pytest.mark.parametrize("title, sentence", lt.SUMMARY_EXAMPLES)
+def test_the_worked_summary_examples_pass_their_own_checks(title, sentence):
+    result = lt.score_summary(title, FakeModel(sentence), lt.rs.PROMPT)
+    assert result["ok"], result
+
+
+def test_example_prompts_still_carry_the_case_and_the_rules():
+    model = FakeModel(lt.EXPLAIN_EXAMPLE_ANSWER)
+    lt.score_explain(["Fact one."], model, lt.EXPLAIN_WITH_EXAMPLE)
+    assert model.prompts[0].endswith("Facts:\n- Fact one.")
+    assert "Example explanation:" in model.prompts[0] and "never mention patients" in model.prompts[0]
+    assert lt.SUMMARY_WITH_EXAMPLES.format(title="T").endswith("Title: T")
+
+
+@pytest.mark.parametrize("reply, flag", [
+    ("Here is the explanation: it differs. At 1 position. That is all.", "introduction line"),
+    ("Researchers designed a synthetic DNA sequence. It differs at 1 position. Nothing else.", "invented framing"),
+    ("One sentence only.", "1 sentences"),
+])
+def test_explain_flags(reply, flag):
+    result = lt.score_explain(["The sample differs from its reference at 1 position(s)."], FakeModel(reply),
+                              lt.se.PROMPT)
+    assert not result["ok"] and any(f.startswith(flag) for f in result["flags"]), result
+
+
+def test_the_prompts_own_background_is_not_invented_framing():
+    reply = "Lab researchers design siRNAs to switch off a gene's message. It differs at 1 position. That is all."
+    assert lt.score_explain(["It differs at 1 position(s)."], FakeModel(reply), lt.se.PROMPT)["ok"]
+
+
+def test_withheld_explanations_fail():
+    result = lt.score_explain(["Fact."], FakeModel("This could cure a disease. Two. Three."), lt.se.PROMPT)
+    assert not result["ok"] and result["flags"] == ["withheld"]
+
+
+TITLE = "Olaparib versus placebo in BRCA1/2-mutated pancreatic cancer (POLO): a phase 3 trial"
+
+
+@pytest.mark.parametrize("reply, flag", [
+    ("A phase 3 trial compares Olaparib with a placebo in pancreatic cancer.", "dropped names: BRCA1, POLO"),
+    ("The POLO phase 3 trial of 154 people compares Olaparib in BRCA1/2 pancreatic cancer.", "added numbers: 154"),
+    ("The POLO phase 3 trial proves Olaparib is effective in BRCA1/2 pancreatic cancer.",
+     "added claims: effective, proves"),
+    ("Olaparib versus placebo in BRCA1/2 mutated pancreatic cancer (POLO): a phase 3 trial.", "copied the title"),
+    ("The POLO phase 3 trial tests Olaparib. It covers BRCA1/2 pancreatic cancer.", "2 sentences"),
+])
+def test_summary_flags(reply, flag):
+    result = lt.score_summary(TITLE, FakeModel(reply), lt.rs.PROMPT)
+    assert not result["ok"] and flag in result["flags"][0], result
+
+
+def test_et_al_does_not_end_a_sentence():
+    assert len(lt.sentences("Scores follow Reynolds et al. 2004 heuristics. They are untested.")) == 2
+
+
+def test_names_in_a_title():
+    assert lt.names_in("CRISPR-Cas9 screening finds PARP1 and TP53 hits in 2,000 UK cell lines") == \
+        ["CRISPR", "Cas9", "PARP1", "TP53", "UK"]
+    assert lt.names_in("Rucaparib(CO-338;Formally AG-014699 or PF-01367338) in BRCA1/BRCA2 carriers") == \
+        ["CO", "AG", "PF", "BRCA1", "BRCA2"]
+
+
+def test_improve_is_not_an_added_claim():
+    title = "Exercise to improve fatigue after BRCA1 surgery"
+    assert lt.score_summary(title, FakeModel("A study of whether exercise helps improve tiredness after BRCA1 "
+                                             "surgery."), lt.rs.PROMPT)["ok"]
+
+
+def test_rescore_uses_saved_text_and_keeps_withheld_rows():
+    report = {"results": [
+        {"task": "summary", "rows": [{"input": TITLE, "text": "The POLO phase 3 trial proves Olaparib works in "
+                                      "BRCA1/2 pancreatic cancer.", "ok": True, "flags": []}]},
+        {"task": "explain", "rows": [{"input": ["Fact."], "ok": False, "flags": ["withheld"]}]}]}
+    rescored = lt.rescore(report)
+    assert rescored["results"][0]["rows"][0]["flags"] == ["added claims: proves"]
+    assert rescored["results"][0]["passed"] == 0 and rescored["results"][1]["rows"][0]["flags"] == ["withheld"]
+
+
+def test_run_scores_every_case_for_every_variant(monkeypatch):
+    monkeypatch.setattr(lt.rs, "OllamaSummarizer", lambda model, endpoint, timeout: FakeModel(
+        "A plain sentence about the POLO trial of Olaparib in BRCA1/2 pancreatic cancer."))
+    monkeypatch.setattr(lt, "summary_cases", lambda limit: [("k", TITLE)])
+    report = lt.run([lt.VARIANTS["baseline"], lt.VARIANTS["examples"]], ["explain", "summary"], 1, "", log=lambda _: 0)
+    assert [(r["variant"], r["task"], r["cases"]) for r in report["results"]] == [
+        ("baseline", "explain", 8), ("baseline", "summary", 1), ("examples", "explain", 8), ("examples", "summary", 1)]
+    assert report["results"][1]["passed"] == 1
+    assert "passed" in lt.table(report)
