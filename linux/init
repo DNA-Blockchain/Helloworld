@@ -1,6 +1,6 @@
 #!/bin/sh
 # First process in the Alpine image (PID 1). Brings up the VM and starts the
-# network node. Settings come from the kernel command line, which run.sh fills:
+# network node. Settings come from the kernel command line, which run.py fills:
 #   nos.id=N  nos.port=P  nos.peers=host:port,...  nos.tofu=1
 #   nos.duration=S   run the node for S seconds, then power off (for tests)
 #   nos.swarm=1  nos.round=S   work sharing with swarm-verified twin analyses
@@ -37,7 +37,7 @@ if ! udhcpc -i eth0 -q -n -t 5 >/dev/null 2>&1; then
     ip route add default via 10.0.2.2
 fi
 
-# Node data: the host folder run.sh shares, so keys and chain survive reboots.
+# Node data: the host folder run.py shares, so keys and chain survive reboots.
 # Without it the node runs from RAM and gets new keys every boot.
 DATA=/var/lib/network-os
 mkdir -p $DATA
@@ -64,5 +64,7 @@ fi
 
 "$@" &
 echo "node running (pid $!). Type 'poweroff -f' to stop the VM."
-setsid cttyhack /bin/sh -l
+# A shell on the serial console. Opening the tty in a new session makes it the
+# shell's controlling terminal (Alpine's busybox has no cttyhack).
+setsid sh -c 'exec /bin/sh -l <>/dev/ttyS0 >&0 2>&1'
 poweroff -f
