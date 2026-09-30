@@ -3,8 +3,8 @@ Teacher answers -> the project's checks -> a LoRA for the local model.
 Used by colab/local_ai_lora_colab.ipynb on a Colab GPU.
 
 1. A larger model (the teacher, default Qwen2.5-7B-Instruct) answers each
-   training prompt from `local_ai_tuning.py export`, with the same system
-   text the Ollama models use.
+   training prompt from `local_ai_tuning.py export`, with the system text
+   the Ollama models use plus TEACHER_NOTES aimed at known mistakes.
 2. Every answer goes through the checks local_ai_tuning.py scores with.
    Only answers that pass are kept; a failed prompt gets retried with
    sampling. What was kept and what was rejected are both saved.
@@ -42,8 +42,22 @@ def save_rows(path: str | Path, rows: list[dict]) -> None:
     Path(path).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
 
 
-def messages(row: dict, answer: str | None = None) -> list[dict]:
-    chat = [{"role": "system", "content": row["system"]}, {"role": "user", "content": row["prompt"]}]
+# Extra instructions for the teacher only, aimed at what the first round's teacher got wrong (it copied
+# titles, and described changes as "in the middle" or as altering protein shape). The student trains on
+# the plain system text, so it learns the behaviour without needing these words.
+TEACHER_NOTES = {
+    "explain": "State the position number of every change. Keep each number with the fact it belongs to: "
+               "the highest design score is not the score of the windows that cover the difference. Do not "
+               "say where in the sequence a change is beyond its position number, and do not describe "
+               "molecules binding or the protein's shape, structure or folding.",
+    "summary": "Rewrite the title in your own everyday words; do not reuse its phrasing or word order. Keep "
+               "gene, drug and trial names exactly as written.",
+}
+
+
+def messages(row: dict, answer: str | None = None, *, teacher: bool = False) -> list[dict]:
+    system = row["system"] + ("\n" + TEACHER_NOTES[row["task"]] if teacher else "")
+    chat = [{"role": "system", "content": system}, {"role": "user", "content": row["prompt"]}]
     if answer is not None:
         chat.append({"role": "assistant", "content": answer})
     return chat
@@ -85,7 +99,7 @@ def test_rows() -> list[dict]:
 
 
 def generate(rows: list[dict], model, tokenizer, *, sample: bool = False, batch_size: int = 8,
-             log=print) -> list[tuple[str, bool]]:
+             teacher: bool = False, log=print) -> list[tuple[str, bool]]:
     """(answer, finished) per row, in row order. finished is False when the answer used up the task's
     token limit, since Ollama would cut it off there too. Each batch holds one task."""
     import torch
@@ -100,7 +114,8 @@ def generate(rows: list[dict], model, tokenizer, *, sample: bool = False, batch_
         indexes = [i for i, r in enumerate(rows) if r["task"] == task]
         for start in range(0, len(indexes), batch_size):
             batch = indexes[start:start + batch_size]
-            texts = [tokenizer.apply_chat_template(messages(rows[i]), tokenize=False, add_generation_prompt=True)
+            texts = [tokenizer.apply_chat_template(messages(rows[i], teacher=teacher), tokenize=False,
+                                                   add_generation_prompt=True)
                      for i in batch]
             encoded = tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False).to(model.device)
             with torch.no_grad():
@@ -131,7 +146,7 @@ def build_dataset(rows: list[dict], model, tokenizer, *, retries: int = 2, batch
             break
         log(f"attempt {attempt + 1}: {len(pending)} prompts{' (sampled)' if attempt else ''}")
         failed = []
-        for row, (answer, finished) in zip(pending, generate(pending, model, tokenizer, sample=attempt > 0,
+        for row, (answer, finished) in zip(pending, generate(pending, model, tokenizer, sample=attempt > 0, teacher=True,
                                                              batch_size=batch_size, log=log)):
             result = check(row, answer) if finished else {"ok": False, "flags": ["hit the token limit"]}
             if result["ok"]:

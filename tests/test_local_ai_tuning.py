@@ -1,3 +1,5 @@
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +86,36 @@ TITLE = "Olaparib versus placebo in BRCA1/2-mutated pancreatic cancer (POLO): a 
 def test_summary_flags(reply, flag):
     result = lt.score_summary(TITLE, FakeModel(reply), lt.rs.PROMPT)
     assert not result["ok"] and flag in result["flags"][0], result
+
+
+CHANGE_FACTS = KEY_FACTS + ["At position 51 the codon changes from CTG to CTT (the protein is unchanged); "
+                            "the tRNA anticodons are CAG and AAG."]
+GOOD = "The sequence differs at one position, position 51. The protein is unchanged. Its best design scores 8."
+
+
+@pytest.mark.parametrize("reply, flag", [
+    ("The sequence differs at one base in the middle. The protein is unchanged. Its best design scores 8.",
+     "missing key facts: change at position 51"),
+    (GOOD.replace("The protein is unchanged.", "It changes the protein's shape."), "invented detail: 'shape'"),
+    (GOOD.replace("The protein is unchanged.", "Molecules bind less well."), "invented detail: 'bind'"),
+    (GOOD.replace("scores 8", "scores 8, a perfect score"), "invented detail: 'perfect'"),
+])
+def test_stricter_explanation_checks(reply, flag):
+    result = lt.score_explain(CHANGE_FACTS, FakeModel(reply), lt.se.PROMPT)
+    assert not result["ok"] and flag in result["flags"], result
+
+
+def test_an_explanation_with_every_key_fact_and_no_invented_detail_passes():
+    assert lt.score_explain(CHANGE_FACTS, FakeModel(GOOD), lt.se.PROMPT)["ok"]
+
+
+def test_teacher_notes_reach_the_teacher_but_not_the_training_data():
+    sys.path.insert(0, str(Path(lt.__file__).parent / "colab"))
+    import local_ai_lora as ll
+
+    row = {"task": "summary", "system": "Rewrite titles.", "prompt": "Title: T"}
+    assert ll.messages(row, teacher=True)[0]["content"] == "Rewrite titles.\n" + ll.TEACHER_NOTES["summary"]
+    assert ll.messages(row)[0]["content"] == ll.messages(row, "A.")[0]["content"] == "Rewrite titles."
 
 
 def test_et_al_does_not_end_a_sentence():

@@ -128,7 +128,13 @@ INVENTED_FRAMING = re.compile(
     r"\b(scientists?|a study|this study|experiment|new approach|to test|"
     r"(researchers?|they|someone) (designed|created|made|built|developed) (a|an|the|this) "
     r"(synthetic |short |new )?(dna|sequence))\b", re.I)
+# Detail no fact states, seen in the first LoRA's and its teacher's answers: where in the sequence a
+# change is ("in the middle"), molecules binding, protein shape.
+INVENTED_DETAIL = re.compile(r"\b(middle|bind(s|ing)?|shape|structures?|fold(s|ing)?)\b", re.I)
 PREAMBLE = re.compile(r"^(here('s| is)|sure|certainly|explanation|summary)\b", re.I)
+# Above this similarity a summary is the title reworded at most. Tuned models' rewrites measured 0.16-0.76;
+# the first LoRA's copies mostly 0.78-1.0.
+COPY_RATIO = 0.8
 
 
 def sentences(text: str) -> list[str]:
@@ -144,11 +150,14 @@ def names_in(title: str) -> list[str]:
 
 
 def key_facts(facts: list[str]) -> dict[str, float]:
-    """The two numbers an explanation must state: how many positions differ, and the best design score."""
+    """The numbers an explanation must state: how many positions differ, where each change is, and the
+    best design score."""
     found = {}
     for fact in facts:
         if m := re.search(r"differs from its reference at (\d+) position", fact):
             found["positions that differ"] = float(m.group(1))
+        if m := re.search(r"^At position (\d+) the codon", fact):
+            found[f"change at position {m.group(1)}"] = float(m.group(1))
         if m := re.search(r"highest siRNA design score is (\d+(?:\.\d+)?)", fact):
             found["highest design score"] = float(m.group(1))
     return found
@@ -176,6 +185,10 @@ def score_explain(facts: list[str], model, prompt: str) -> dict:
         flags.append("introduction line")
     if INVENTED_FRAMING.search(text):
         flags.append(f"invented framing: '{INVENTED_FRAMING.search(text).group(0)}'")
+    if INVENTED_DETAIL.search(text):
+        flags.append(f"invented detail: '{INVENTED_DETAIL.search(text).group(0)}'")
+    if re.search(r"\bperfect\b", text, re.I) and key_facts(facts).get("highest design score") != 10:
+        flags.append("invented detail: 'perfect'")      # e.g. "a perfect score of 7"
     return {"ok": not flags, "text": text, "flags": flags}
 
 
@@ -199,7 +212,7 @@ def score_summary(title: str, model, prompt: str) -> dict:
     added_claims = sorted(claims(text) - claims(title))
     if added_claims:
         flags.append(f"added claims: {', '.join(added_claims)}")
-    if difflib.SequenceMatcher(None, text.lower().rstrip("."), title.lower().rstrip(".")).ratio() > 0.9:
+    if difflib.SequenceMatcher(None, text.lower().rstrip("."), title.lower().rstrip(".")).ratio() > COPY_RATIO:
         flags.append("copied the title")
     return {"ok": not flags, "text": text, "flags": flags}
 
