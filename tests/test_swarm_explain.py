@@ -58,6 +58,38 @@ def test_drifting_ai_output_is_withheld(reply):
         se.explain(["Fact."], FakeModel(reply))
 
 
+NUMBER_FACTS = ["The sample differs from its reference at 1 position(s).",
+                "At position 12 hydropathy changes by -3.5.",
+                "2 scored window(s) cover the difference; the best scores 7.5."]
+
+
+@pytest.mark.parametrize("reply", ["Three windows cover the change.", "The best window scores 8 out of 10.",
+                                   "The difference is at position 13."])
+def test_a_misstated_number_is_withheld(reply):
+    with pytest.raises(ValueError, match="withheld: .* states"):
+        se.explain(NUMBER_FACTS, FakeModel(reply))
+
+
+@pytest.mark.parametrize("reply", ["Two windows cover the difference at position 12; the best scores 7.5.",
+                                   "Hydropathy rises by 3.5, and one of the windows scores 7.5.",
+                                   "No numbers here at all."])
+def test_numbers_from_the_facts_are_allowed(reply):
+    assert se.explain(NUMBER_FACTS, FakeModel(reply)) == reply
+
+
+def test_a_preamble_line_is_dropped_before_checking():
+    reply = "Here's an explanation of the facts in 3-5 short sentences:\n\nTwo windows cover the difference."
+    assert se.explain(NUMBER_FACTS, FakeModel(reply)) == "Two windows cover the difference."
+
+
+def test_real_facts_pass_their_own_number_check():
+    subject_id, sha = _accepted()
+    subject, analysis = se.verify(subject_id, sha, None)
+    facts = se.facts_for(analysis, subject)
+    echo = " ".join(facts[:3])                                # facts restated verbatim, under the length cap
+    assert se.explain(facts, FakeModel(echo)) == echo
+
+
 def test_accepted_rounds_are_read_from_a_status_file(tmp_path):
     status = {"work": {"swarm": {"recent": [
         {"round": 1, "status": "ACCEPTED", "subject": "synthetic:1", "analysis_sha256": "aa"},
