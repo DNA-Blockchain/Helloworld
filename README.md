@@ -648,6 +648,13 @@ python rabbit.py web                         # web page at http://127.0.0.1:8792
 python rabbit.py ask "how are the nodes"     # one question
 ```
 
+Everything on the shared research chain is public, and it can all be read:
+"what's on the chain" (entries by kind, with every node's copy checked),
+"find BRCA1 on the chain" (published records with their source, link, date,
+which nodes hold a copy, and any correction), and "show entry 2" or "show
+entry 9e8733ee" (every field of an entry). For files, the chain holds a
+fingerprint, not the file, and it says whether this PC has the file.
+
 It can also act, always after a plain yes/no question and with an entry in
 the activity log:
 
