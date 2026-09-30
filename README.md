@@ -550,6 +550,19 @@ python run_node_cli.py --id 1 --port 9601 --peers 127.0.0.1:9602,127.0.0.1:9603 
 sh linux/swarm.sh          # the same across three Alpine VMs (linux/README.md)
 ```
 
+`swarm_explain.py` explains accepted results in plain language with local
+Ollama. It first recomputes the subject's analysis and refuses unless the
+SHA-256 matches the one the swarm accepted. It then prints the facts, written
+by code, followed by the model's explanation of only those facts. Output that
+drifts into treatment or medical language is withheld. Explanations are
+labelled "may be wrong" and are never published.
+
+```sh
+python run_node_cli.py ... --work-sharing --swarm --status-file node1_status.json
+python swarm_explain.py --status-file node1_status.json      # AI explanations of ACCEPTED rounds
+python swarm_explain.py --subject synthetic:3 --no-ai        # the verified facts only
+```
+
 ### Signal lab: EEG, radio and network signals
 
 `signal_lab.py` moves real or simulated signals between any source and any

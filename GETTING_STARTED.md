@@ -169,6 +169,15 @@ Everything here runs on your PC; nothing is sent to an AI service.
       ```
       AI answers can be wrong. The project labels them "may be wrong, not
       evidence" and never treats them as findings.
+- [ ] **Explain the swarm's accepted results** (after part 5; add
+      `--status-file node1_status.json` to node 1's command so it saves its
+      verdicts):
+      ```powershell
+      python swarm_explain.py --status-file node1_status.json
+      ```
+      Each result is re-verified on your PC first. The facts print, then the
+      AI's plain-language explanation. A larger model is more accurate if your
+      PC can run it: `ollama pull llama3.1:8b`, then add `--model llama3.1:8b`.
 
 ## 7. The OS builds: Alpine Linux image and the Rust kernel
 
