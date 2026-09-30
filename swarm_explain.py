@@ -70,8 +70,8 @@ given directly):
   4. Ask local Ollama (loopback only, as research_summaries.py does) to
      explain those facts for a general reader. The prompt allows no facts
      beyond the ones given and no medical claims. Code then withholds any
-     explanation that uses health words or states a number the facts don't
-     contain. The output is labelled machine-generated and may be wrong, and
+     explanation that uses health words, states a number the facts don't
+     contain, or gets the direction of a hydropathy change wrong. The output is labelled machine-generated and may be wrong, and
      it's never published.
 
   python swarm_explain.py --status-file node1_status.json
@@ -110,11 +110,31 @@ NUMBER_WORDS = {w: n for n, w in enumerate(
     "zero _ two three four five six seven eight nine ten eleven twelve".split()) if w != "_"}
 
 
+# Hydropathy is the only signed fact, so its direction is checked separately from its magnitude.
+DIRECTION_WORDS = {
+    "up": r"\b(increas|ris|rose|higher|up\b|gain|more hydrophobic|less hydrophilic|positive)",
+    "down": r"\b(decreas|drop|fall|fell|lower|down\b|reduc|declin|less hydrophobic|more hydrophilic|negative)",
+}
+
+
 def _numbers(text: str) -> set[float]:
     """Magnitudes stated in text, as digits or number words. Signs are dropped, so '-3.5' and '3.5' agree."""
     found = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", text)}
     found |= {float(NUMBER_WORDS[w]) for w in re.findall(r"[a-z]+", text.lower()) if w in NUMBER_WORDS}
     return found
+
+
+def _wrong_hydropathy_direction(text: str, facts: list[str]) -> Optional[str]:
+    """A direction ('up' or 'down') the text gives hydropathy that no hydropathy change in the facts has."""
+    changes = [float(v) for v in re.findall(r"hydropathy changes by (-?\d+(?:\.\d+)?)", " ".join(facts))]
+    actual = {"up" if v > 0 else "down" for v in changes if v != 0}
+    for sentence in re.split(r"(?<=[.!?;])\s+", text.lower()):
+        if not re.search(r"hydropath|hydrophobic|hydrophilic", sentence):
+            continue
+        for direction, pattern in DIRECTION_WORDS.items():
+            if re.search(pattern, sentence) and direction not in actual:
+                return direction
+    return None
 
 
 def accepted_from_status(path: Path) -> list[dict]:
@@ -178,6 +198,10 @@ def explain(facts: list[str], model) -> str:
     if unsupported:
         stated = ", ".join(f"{n:g}" for n in sorted(unsupported))
         raise ValueError(f"withheld: the model's explanation states {stated}, which the facts don't contain")
+    direction = _wrong_hydropathy_direction(cleaned, facts)
+    if direction:
+        raise ValueError(f"withheld: the model's explanation says hydropathy goes {direction}, "
+                         "which the facts don't support")
     return cleaned
 
 
