@@ -648,11 +648,21 @@ python rabbit.py web                         # web page at http://127.0.0.1:8792
 python rabbit.py ask "how are the nodes"     # one question
 ```
 
-It runs on this PC's own AI through Ollama and reaches no other service,
-except a public research search, which asks first ("This sends the words …
-Send it?") and is written to the activity log as a hash of the query, not
-its text. The web page answers only on 127.0.0.1 and refuses requests from
-other websites open in the same browser.
+It can also act, always after a plain yes/no question and with an entry in
+the activity log:
+
+- **Run the self-tests** ("run the self tests"): every component's own
+  self-test, in the background, with outside-website components skipped so
+  nothing leaves this PC. You're told the result when it finishes.
+- **Start or stop the research agent** ("start the research agent"): it runs
+  in the background with its node listening only on this PC
+  (127.0.0.1:8765), and keeps running after the assistant closes. The question
+  says which public sites it will send search words to.
+- **Search public research sources** for a question with no saved records:
+  logged as a hash of the query, not its text.
+
+It runs on this PC's own AI through Ollama. The web page answers only on
+127.0.0.1 and refuses requests from other websites open in the same browser.
 
 ### Plain-language summaries (local AI)
 

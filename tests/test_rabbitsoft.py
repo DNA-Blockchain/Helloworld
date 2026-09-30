@@ -159,7 +159,7 @@ def test_a_tool_question_is_answered_directly(session):
 def test_a_greeting_gets_the_menu_and_a_number_picks_from_it(session):
     reply = session.handle("hi!")
     assert reply.text.startswith("Hello! I'm RabbitSoftware.inc, the assistant from RabbitSoftware, Inc.")
-    assert len(reply.choices) == 8
+    assert len(reply.choices) == 10
     assert session.handle("4").text.startswith("node-2: 6 credits")
 
 
@@ -212,6 +212,81 @@ def test_a_synthetic_subject_is_explained_from_verified_facts(tmp_path):
     assert "may be wrong" in reply.text
 
 
+# -- actions --------------------------------------------------------------------------------------
+
+def wait_for(condition, timeout=30):
+    end = time.time() + timeout
+    while time.time() < end:
+        if condition():
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def test_self_tests_run_in_the_background_and_report_when_done(tmp_path):
+    import sys
+
+    paths = make_os(tmp_path, time.time())
+    results = paths.rabbit / "self-tests.json"
+    fake_run = [sys.executable, "-c",
+                "import json, sys; json.dump({'counts': {'PASS': 3, 'FAIL': 1, 'SKIP': 2}, 'results': "
+                "[{'file': 'broken.py', 'status': 'FAIL'}]}, open(sys.argv[1], 'w'))", str(results)]
+    s = Session(paths, ai=FakeAI(), self_test_command=fake_run)
+    ask = s.handle("run the self tests")
+    assert ask.confirm and "nothing leaves this PC" in ask.text
+    assert s.handle("yes").text.startswith("Started the self-tests.")
+    assert wait_for(lambda: s.jobs.items[0].finished is not None)
+    reply = s.handle("tokens")
+    assert reply.text.startswith("Done: The self-tests: finished. 3 passed, 1 failed, 2 skipped (sites outside this PC). Failed: broken.py.")
+    assert "Done:" not in s.handle("tokens").text                       # mentioned once
+    assert "self_tests_started" in paths.audit.read_text()
+
+
+def test_the_research_agent_starts_and_stops_only_after_a_yes(tmp_path):
+    import sys
+
+    from rabbitsoft.jobs import Service
+
+    paths = make_os(tmp_path, time.time())
+    agent = Service("research-agent", paths.rabbit, [sys.executable, "-c", "import time; time.sleep(120)"],
+                    tmp_path, marker="time.sleep(120)")
+    s = Session(paths, ai=FakeAI(), agent=agent)
+    assert "isn't running now" in s.handle("what is the research agent doing").text
+    assert s.handle("stop the research agent").text.startswith("The research agent isn't running")
+
+    ask = s.handle("please start the reserch agent")
+    assert ask.confirm and "127.0.0.1:8765" in ask.text and "PubMed" in ask.text and '"breast cancer"' in ask.text
+    assert agent.pid() is None                                           # nothing started before the yes
+    assert s.handle("yes").text.startswith("Started the research agent (process ")
+    try:
+        assert wait_for(lambda: agent.pid() is not None)
+        assert "The agent is running (process" in s.handle("what is the research agent doing").text
+        assert "already running" in s.handle("start the research agent").text
+        assert s.handle("stop the research agent").confirm
+        assert s.handle("yes").text.startswith("Stopped the research agent.")
+        assert wait_for(lambda: agent.pid() is None)
+    finally:
+        agent.stop()
+    log = paths.audit.read_text()
+    assert "agent_started" in log and "agent_stopped" in log
+
+
+def test_a_reused_process_id_is_never_stopped(tmp_path):
+    import os
+
+    from rabbitsoft.jobs import Service
+
+    agent = Service("research-agent", tmp_path, ["unused"], tmp_path, marker="run_agent.py")
+    tmp_path.mkdir(exist_ok=True)
+    agent.pid_file.write_text(json.dumps({"pid": os.getpid()}))           # alive, but it's pytest, not the agent
+    assert agent.pid() is None and agent.stop() is False
+
+
+def test_whats_running(tmp_path):
+    s = Session(make_os(tmp_path, time.time()), ai=FakeAI())
+    assert s.handle("what's running").text == "Nothing else is running. The research agent isn't running."
+
+
 def test_tidy_answer_removes_headings_repeats_and_missing_citations():
     raw = "**Facts:**\n* Claim one [1].\n* Claim one [1].\nClaim two [9]."
     assert tidy_answer(raw, 3) == "Claim one [1]. Claim two ."
@@ -259,7 +334,7 @@ def test_the_page_uses_the_same_names_as_the_code():
 def test_messages_keep_their_conversation(server):
     key, headers = str(uuid.uuid4()), {"X-Rabbit": "1", "Content-Type": "application/json"}
     status, body = call(server, "POST", "/api/message", {"session": key, "text": "hello"}, headers)
-    assert status == 200 and len(json.loads(body)["choices"]) == 8
+    assert status == 200 and len(json.loads(body)["choices"]) == 10
     status, body = call(server, "POST", "/api/message", {"session": key, "text": "4"}, headers)
     assert json.loads(body)["text"].startswith("node-2: 6 credits")
 
@@ -268,6 +343,11 @@ def test_messages_keep_their_conversation(server):
 def test_other_websites_cannot_send_messages(server, headers):
     status, _ = call(server, "POST", "/api/message", {"session": str(uuid.uuid4()), "text": "hi"}, headers)
     assert status == 403
+
+
+def test_polling_is_quiet_when_nothing_finished(server):
+    status, body = call(server, "POST", "/api/poll", {"session": str(uuid.uuid4()), "text": ""}, {"X-Rabbit": "1"})
+    assert status == 200 and json.loads(body) == {"text": ""}
 
 
 def test_a_bad_session_id_is_refused(server):

@@ -17,6 +17,7 @@ from typing import Callable
 
 from . import NAME, tools
 from .assistant import Session
+from .jobs import Jobs
 
 PAGE = Path(__file__).with_name("page.html")
 DEFAULT_PORT = 8792
@@ -88,7 +89,7 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
                 raw = b""
             if not self._trusted() or self.headers.get("X-Rabbit") != "1":
                 return self._json(403, {"error": "not allowed"})
-            if self.path != "/api/message":
+            if self.path not in ("/api/message", "/api/poll"):
                 return self._json(404, {"error": "not found"})
             try:
                 body = json.loads(raw or b"{}")
@@ -98,6 +99,9 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
                 return self._json(400, {"error": "send {\"session\": <uuid>, \"text\": <message>}"})
             session, lock = sessions.get(key)
             with lock:
+                if self.path == "/api/poll":                  # background jobs that finished meanwhile
+                    notice = session.poll()
+                    return self._json(200, {"text": notice.text if notice else ""})
                 reply = session.handle(text)
             self._json(200, {"text": reply.text, "choices": reply.choices, "confirm": reply.confirm})
 
@@ -107,5 +111,6 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
 def serve(port: int = DEFAULT_PORT, paths: tools.Paths | None = None,
           factory: Callable[[], Session] | None = None) -> ThreadingHTTPServer:
     paths = paths or tools.Paths()
-    sessions = Sessions(factory or (lambda: Session(paths)))
+    shared_jobs = Jobs(paths.rabbit / "jobs")         # one set of background jobs for every tab
+    sessions = Sessions(factory or (lambda: Session(paths, jobs=shared_jobs)))
     return ThreadingHTTPServer(("127.0.0.1", port), make_handler(sessions, paths, port))

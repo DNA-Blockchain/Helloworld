@@ -1,18 +1,25 @@
 """The RabbitSoftware.inc conversation, shared by the terminal and the web page.
 
 A Session turns what someone typed into a Reply: short sentences, plus numbered choices or
-a yes/no question when there's something to decide. Looking things up never changes anything;
-anything that sends data off this PC (a public research search) waits for a yes and is written
-to the activity log, with a hash of the query rather than its text.
+a yes/no question when there's something to decide. Looking things up never changes anything.
+Anything that changes something or sends data off this PC waits for a yes and is written to the
+activity log: a public research search (logged as a hash of the query, not its text), running the
+self-tests, and starting or stopping the research agent.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
 from . import GREETING, NAME, tools, words
+from .jobs import Job, Jobs, Service
+
+AGENT_HOST, AGENT_PORT = "127.0.0.1", 8765
+SELF_TEST_NAME = "The self-tests"
 
 PUBLIC_SOURCES = ("pubmed", "clinicaltrials.gov", "nih_reporter", "europe_pmc")
 SOURCE_NAMES = "PubMed, ClinicalTrials.gov, NIH RePORTER and Europe PMC"
@@ -70,11 +77,19 @@ def _search_public(query: str) -> list[dict]:
 
 class Session:
     def __init__(self, paths: tools.Paths | None = None, ai=None, search: Callable[[str], list[dict]] = _search_public,
-                 explain_ai=None):
+                 explain_ai=None, jobs: Jobs | None = None, agent: Service | None = None,
+                 self_test_command: list[str] | None = None):
         self.paths = paths or tools.Paths()
         self._ai = ai
         self._explain_ai = explain_ai
         self.search = search
+        self.jobs = jobs or Jobs(self.paths.rabbit / "jobs")
+        self.agent = agent or Service("research-agent", self.paths.rabbit,
+                                      [sys.executable, "run_agent.py", "--host", AGENT_HOST, "--port", str(AGENT_PORT)],
+                                      self.paths.root, marker="run_agent.py")
+        self.self_test_json = self.paths.rabbit / "self-tests.json"
+        self.self_test_command = self_test_command or [
+            sys.executable, "run_self_tests.py", "--skip-live-data", "--json-out", str(self.self_test_json)]
         self.vocab = words.vocabulary(self._catalog_words())
         self.choices: list[tuple[str, Callable[[], Reply]]] = []
         self.pending: Callable[[], Reply] | None = None
@@ -105,6 +120,20 @@ class Session:
 
     # -- the conversation --------------------------------------------------------------------------
     def handle(self, text: str) -> Reply:
+        reply = self._handle(text)
+        notices = self.poll()
+        if notices:
+            reply.text = f"{notices.text}\n\n{reply.text}"
+        return reply
+
+    def poll(self) -> Reply | None:
+        """Background jobs that finished since the last reply, each mentioned once."""
+        done = self.jobs.newly_finished()
+        if not done:
+            return None
+        return Reply("\n".join(f"Done: {job.describe()}" for job in done))
+
+    def _handle(self, text: str) -> Reply:
         text = (text or "").strip()
         if not text:
             return self.menu("Type what you'd like to know, in your own words, or pick a number:")
@@ -140,6 +169,16 @@ class Session:
         intent, ranked = words.best_intent(fixed)
         if intent == "help":
             return self.menu(heard + "Here's what I can do. Pick a number, or just type in your own words:")
+        if intent == "agents" and words.START.search(fixed):
+            return self._prefix(heard, self.confirm_agent_start())
+        if intent == "agents" and words.STOP.search(fixed):
+            return self._prefix(heard, self.confirm_agent_stop())
+        if intent == "agents":
+            return Reply(heard + self.agent_status())
+        if intent == "selftest":
+            return self._prefix(heard, self.confirm_self_tests())
+        if intent == "jobs":
+            return Reply(heard + self.whats_running())
         if intent in tools.TOOLS:
             return Reply(heard + "\n".join(tools.TOOLS[intent](self.paths)))
         if intent == "research":
@@ -157,6 +196,10 @@ class Session:
         return self._tool_or_ask(intent)
 
     def _tool_or_ask(self, intent: str) -> Callable[[], Reply]:
+        actions = {"agents": lambda: Reply(self.agent_status()), "selftest": self.confirm_self_tests,
+                   "jobs": lambda: Reply(self.whats_running())}
+        if intent in actions:
+            return actions[intent]
         if intent in tools.TOOLS:
             return lambda: Reply("\n".join(tools.TOOLS[intent](self.paths)))
         if intent == "research":
@@ -211,9 +254,8 @@ class Session:
         return found[:3]
 
     def _confirm_search(self, query: str) -> Reply:
-        self.pending = lambda: self._run_search(query)
-        return Reply(f"This sends the words \"{query}\" to {SOURCE_NAMES} to look for research records. "
-                     "Nothing else leaves this PC. Send it?", choices=["Yes", "No"], confirm=True)
+        return self._ask(f"This sends the words \"{query}\" to {SOURCE_NAMES} to look for research records. "
+                         "Nothing else leaves this PC. Send it?", lambda: self._run_search(query))
 
     def _run_search(self, query: str) -> Reply:
         try:
@@ -255,6 +297,89 @@ class Session:
                          + f"\n\n{AI_NOTE}")
         except (OSError, RuntimeError, ValueError) as error:
             return Reply(f"The local AI didn't answer ({error}). Is Ollama running?")
+
+    # -- actions: each asks first and is written to the activity log --------------------------------
+    @staticmethod
+    def _prefix(heard: str, reply: Reply) -> Reply:
+        reply.text = heard + reply.text
+        return reply
+
+    def _ask(self, question: str, action: Callable[[], Reply]) -> Reply:
+        self.pending = action
+        return Reply(question, choices=["Yes", "No"], confirm=True)
+
+    def agent_status(self) -> str:
+        lines = tools.agents(self.paths)
+        pid = self.agent.pid()
+        lines.append(f"The agent is running (process {pid}). Say \"stop the research agent\" to stop it."
+                     if pid else "The agent isn't running now. Say \"start the research agent\" to start it.")
+        return "\n".join(lines)
+
+    def confirm_agent_start(self) -> Reply:
+        pid = self.agent.pid()
+        if pid:
+            return Reply(f"The research agent is already running (process {pid}).")
+        store = tools._load(self.paths.research_store) or {}
+        topic = next(iter((store.get("topics") or {}).values()), {})
+        example = (f" (for example \"{topic.get('condition')}\" and \"{topic.get('biomarker')}\")"
+                   if topic.get("condition") else "")
+        return self._ask(
+            "This starts the research agent in the background. It keeps running after you close me, and about "
+            f"once an hour it sends search words for its topics{example} to ClinicalTrials.gov, PubMed, ClinVar "
+            f"and HGNC. Its node listens only on this PC ({AGENT_HOST}:{AGENT_PORT}). Start it?", self._start_agent)
+
+    def _start_agent(self) -> Reply:
+        pid = self.agent.start()
+        self._log("agent_started", {"pid": pid, "host": AGENT_HOST, "port": AGENT_PORT})
+        return Reply(f"Started the research agent (process {pid}). Its log is {self.agent.log}. "
+                     "Ask \"what is the research agent doing\" any time.")
+
+    def confirm_agent_stop(self) -> Reply:
+        pid = self.agent.pid()
+        if not pid:
+            return Reply("The research agent isn't running, so there's nothing to stop.")
+        return self._ask(f"This stops the research agent (process {pid}). It saves its progress after every "
+                         "step, so nothing is lost. Stop it?", self._stop_agent)
+
+    def _stop_agent(self) -> Reply:
+        pid = self.agent.pid()
+        if not self.agent.stop():
+            return Reply("The research agent had already stopped.")
+        self._log("agent_stopped", {"pid": pid})
+        return Reply("Stopped the research agent. Say \"start the research agent\" to start it again.")
+
+    def confirm_self_tests(self) -> Reply:
+        running = self.jobs.running(SELF_TEST_NAME)
+        if running:
+            return Reply(f"{running.describe()} I'll tell you when they finish.")
+        return self._ask("This runs every component's own self-test on this PC, one after another. It usually "
+                         "takes under a minute, and you can keep talking to me meanwhile. Components that call "
+                         "outside websites are skipped, so nothing leaves this PC. Run them?", self._run_self_tests)
+
+    def _run_self_tests(self) -> Reply:
+        self.self_test_json.unlink(missing_ok=True)
+        job = self.jobs.start(SELF_TEST_NAME, self.self_test_command, self.paths.root, self._summarize_self_tests)
+        self._log("self_tests_started", {"skip_live_data": True, "log": job.log.name})
+        return Reply("Started the self-tests. I'll tell you when they finish; ask \"what's running\" any time.")
+
+    def _summarize_self_tests(self, job: Job) -> str:
+        try:
+            results = json.loads(self.self_test_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return f"They stopped early (exit code {job.exit_code}). The log is {job.log}."
+        counts = results.get("counts", {})
+        failed = [r.get("file") for r in results.get("results", []) if r.get("status") == "FAIL"]
+        missing = f", {counts['MISSING']} missing" if counts.get("MISSING") else ""
+        text = (f"{counts.get('PASS', 0)} passed, {counts.get('FAIL', 0)} failed{missing}, "
+                f"{counts.get('SKIP', 0)} skipped (sites outside this PC).")
+        return text + (f" Failed: {', '.join(failed)}. The log is {job.log}." if failed else "")
+
+    def whats_running(self) -> str:
+        lines = [job.describe() for job in self.jobs.items[-5:]]
+        pid = self.agent.pid()
+        lines.append(f"The research agent is running (process {pid})." if pid else
+                     "The research agent isn't running.")
+        return "\n".join(lines) if len(lines) > 1 else f"Nothing else is running. {lines[0]}"
 
     # -- swarm subjects ----------------------------------------------------------------------------
     def explain_subject(self, number: int, heard: str = "") -> Reply:
