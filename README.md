@@ -24,6 +24,9 @@ run — see [Owning your copy](#owning-your-copy).
 | Identity + chain | `digital_dna.py`, `crypto_layer.py` | Real cryptographic signing; a per-node DNA-encoded strand |
 | P2P networking | `network_os.py` | Real sockets; only connects to peers you name explicitly |
 | Research agent | `growing_research_agent.py`, `integrated_research_agent.py` | Live queries to ClinicalTrials.gov, PubMed, ClinVar, HGNC |
+| Assistant definition | `.claude/agents/Blockchain-DNA.agent.md` | Browser-assisted research instructions for hosts that provide browser/MCP tools; not a standalone daemon |
+| JSON research tool | `blockchain_dna_tool.py`, `.claude/skills/blockchain-dna-research/SKILL.md` | Structured source-ID research, provenance/count checks, and explicitly opt-in Python execution |
+| Coding research agent | `.claude/agents/Blockchain-DNA-Coding.agent.md` | Cross-language/platform coding and technical research guidance, including schema/environment practices and local/remote command approval boundaries |
 | Extra sources | `multi_source_research.py`, `extended_research_sources.py`, `maxwell_research.py` | arXiv, NIH RePORTER, Europe PMC, PubMed metadata |
 | CRISPR suite | `crispr_research_suite.py`, `crispr_guide_design.py` | Literature tracking + a published GC-content guide heuristic |
 | Ledger + audit | `token_ledger.py`, `audit_trail.py` | Local per-node score (not a cryptocurrency); append-only audit log |
@@ -408,6 +411,95 @@ python node_supervisor.py --uninstall   # stop and remove the logon task
   and shows a Windows notification saying OK or what needs attention.
 - Everything lives under `autonomous/` (gitignored). Signing keys are in
   `autonomous/node-N/keys/` and are never archived or deleted.
+
+## Agent collaboration and daily autonomy
+
+The Blockchain-DNA research and coding agents can complete bounded tasks
+when invoked and pass each other source-backed handoffs. If the host cannot
+delegate between agents, they follow the companion agent's instructions
+sequentially and state that directly.
+
+The host also schedules a daily check at 09:00 local time in the current
+project workspace: refresh at most one oldest tracked research topic using
+read-only configured public APIs, update its local research store, inspect
+repository status, and run the local test suite. It does not edit source
+code, install packages, execute remote/cloud terminal commands, or write to
+cloud/public chains. These agent processes do not stay alive continuously;
+the host starts a new scheduled run.
+
+### Continuous operation across hosts
+
+The daily schedule is not a 24/7 deployment. This repository's local
+supervisor uses local files and loopback-bound nodes, so it cannot continue
+on a powered-off PC or coordinate with an independent cloud VM. Running
+cloud and home-server workers together requires explicit deployment,
+secure connectivity, durable shared/reconciled state, leases, idempotent
+tasks, retries, duplicate handling, and backups. No such deployment is
+configured here. AWS is the selected cloud provider; the home-server
+device is not yet identified. The AWS account ID is not stored here, and
+the CLI is not installed or authenticated. Provider/model alternatives must be explicitly configured;
+the code should have deterministic fallback behavior and must not silently
+send data to another AI service.
+
+### Local-first alternative to Supabase
+
+Supabase is optional and is not part of the project's runtime. Its CLI and
+`supabase/config.toml` are present only for optional future local Supabase
+development; this project does not require Supabase, Docker, or a hosted
+database to store its current state. Research topics, chains, audit records,
+and node state already persist in local files.
+
+To avoid a hosted database, run the existing Python supervisor on one
+always-on computer you control, such as a home server, and use signed TCP
+peer nodes for explicitly trusted devices. Start with a single host and
+local-only binding. The current supervisor uses local files and loopback;
+moving it to another computer does not automatically create a multi-host
+supervisor.
+
+For remote access, prefer a private VPN between devices over forwarding
+node ports directly from your router. A VPN still requires a powered-on,
+reachable home host and secure key exchange; it cannot provide cloud
+uptime if home power or internet is down. If multiple hosts perform
+research, add shared task IDs and coordination before enabling overlapping
+schedules. Provider-specific setup needs the home server OS/network and
+approved access method.
+
+---
+
+## Blockchain-DNA JSON research tool
+
+The project's JSON interface offers source-backed research and
+deterministic provenance checks:
+
+```powershell
+'{"action":"research","condition":"breast cancer","biomarker":"BRCA1"}' |
+  python blockchain_dna_tool.py
+```
+
+`research` reuses `GrowingResearchAgent` and its existing public API
+connectors, and updates the existing `research_store.json` in the current
+working directory. It returns source IDs and related-topic IDs rather than
+full text, and it does not write to a network node or chain. This action
+contacts the APIs; run it only when a live lookup is intended. The existing
+runtime's actual connectors are ClinicalTrials.gov, PubMed, ClinVar and a
+St. Jude no-op (not configured). HGNC is used when validating candidate
+genes for related-topic queuing. This worktree's runtime does not report
+per-source status; St. Jude is identified as `skipped` because it is an
+explicit no-op, while other sources are marked `not_reported_by_runtime`
+rather than guessing success or failure.
+
+`interpret` reports record counts by source, duplicate source/ID pairs and
+missing source URLs. It only checks counts and provenance; it does not
+assess study quality, scientific validity or causation. Request and response
+shapes are documented in [`schemas/`](schemas/).
+
+`execute_python` requires both the CLI `--allow-code-execution` option and
+`"user_confirmed": true` in the request, with a maximum five-second timeout
+and 64,000-byte captured output. **This is not a security sandbox**: code
+runs with the current user's filesystem and network permissions, and those
+limits do not prevent side effects. Never execute untrusted code. See the
+[Blockchain-DNA research skill](.claude/skills/blockchain-dna-research/SKILL.md)
+for the full interface and approval procedure.
 
 ---
 
