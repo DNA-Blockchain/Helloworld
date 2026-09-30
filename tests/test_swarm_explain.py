@@ -115,6 +115,18 @@ def test_real_facts_pass_their_own_number_check():
     assert se.explain(facts, FakeModel(echo)) == echo
 
 
+def test_explanations_use_nos_explain_when_it_is_built(monkeypatch, capsys):
+    import research_summaries as rs
+
+    used = []
+    monkeypatch.setattr(rs, "installed_models", lambda endpoint: {"nos-explain", "llama3.2:3b"})
+    monkeypatch.setattr(rs, "OllamaSummarizer", lambda model, endpoint, timeout: used.append(model) or
+                        FakeModel("The sample differs at one position. Its siRNA designs were scored. None were tested."))
+    subject_id, sha = _accepted()
+    se.main(["--subject", subject_id, "--sha256", sha])
+    assert used == ["nos-explain"] and "Model nos-explain" in capsys.readouterr().out
+
+
 def test_accepted_rounds_are_read_from_a_status_file(tmp_path):
     status = {"work": {"swarm": {"recent": [
         {"round": 1, "status": "ACCEPTED", "subject": "synthetic:1", "analysis_sha256": "aa"},

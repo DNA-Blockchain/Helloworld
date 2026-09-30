@@ -56,7 +56,7 @@ CUSTOM_MODELS = {"nos-explain": ROOT / "ollama" / "nos-explain.Modelfile",
 # The LoRA from colab/local_ai_lora_colab.ipynb, merged into llama3.2:3b's weights and saved as one GGUF
 # file (Ollama 0.34+ no longer loads separate adapters). Gitignored: ~2 GB.
 LORA_GGUF = ROOT / "ollama" / "nos-lora" / "nos-lora.Q4_K_M.gguf"
-LORA_BASE = rs.DEFAULT_MODEL          # its chat template and stop tokens go with the merged weights
+LORA_BASE = rs.BASE_MODEL          # its chat template and stop tokens go with the merged weights
 
 # One worked example per job, written by hand from facts that are not test cases.
 EXPLAIN_EXAMPLE_FACTS = [
@@ -108,9 +108,9 @@ class Variant:
 
 
 VARIANTS = {v.name: v for v in (
-    Variant("baseline", {"explain": rs.DEFAULT_MODEL, "summary": rs.DEFAULT_MODEL}, "current"),
+    Variant("baseline", {"explain": rs.BASE_MODEL, "summary": rs.BASE_MODEL}, "current"),
     Variant("system", {"explain": "nos-explain", "summary": "nos-summary"}, "current"),
-    Variant("examples", {"explain": rs.DEFAULT_MODEL, "summary": rs.DEFAULT_MODEL}, "example"),
+    Variant("examples", {"explain": rs.BASE_MODEL, "summary": rs.BASE_MODEL}, "example"),
     Variant("system+examples", {"explain": "nos-explain", "summary": "nos-summary"}, "example"),
     Variant("lora", {"explain": "nos-explain-lora", "summary": "nos-summary-lora"}, "current"),
 )}

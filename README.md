@@ -554,8 +554,12 @@ python3 linux/swarm.py     # the same across three Alpine VMs (linux/README.md)
 Ollama. It first recomputes the subject's analysis and refuses unless the
 SHA-256 matches the one the swarm accepted. It then prints the facts, written
 by code, followed by the model's explanation of only those facts. Output that
-drifts into treatment or medical language is withheld. Explanations are
-labelled "may be wrong" and are never published.
+drifts into treatment or medical language, states a number the facts don't
+contain, or gets a hydropathy direction wrong is withheld. It uses
+`nos-explain` (built by `python local_ai_tuning.py create`), which passed 8
+of 8 test cases where plain `llama3.2:3b` passed 0, or `llama3.2:3b` if
+`nos-explain` isn't built. Explanations are labelled "may be wrong" and are
+never published.
 
 ```sh
 python run_node_cli.py ... --work-sharing --swarm --status-file node1_status.json
@@ -626,13 +630,16 @@ viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
 ### Plain-language summaries (local AI)
 
 `research_summaries.py` rewrites each published record's title as one
-plain-language sentence with a local Ollama model (default `llama3.2:3b`,
-free, about 2 GB). It only ever talks to Ollama on this machine. Summaries
-are machine-generated and can be wrong; the viewer shows them under the real
-title, labelled "may be wrong, not evidence".
+plain-language sentence with a local Ollama model: `nos-summary`, which is
+`llama3.2:3b` (free, about 2 GB) with instructions for this job, or
+`llama3.2:3b` itself if `nos-summary` isn't built. It only ever talks to
+Ollama on this machine. Summaries are machine-generated and can be wrong;
+the viewer shows them under the real title, labelled "may be wrong, not
+evidence". `local_ai_tuning.py` measures the models against each other.
 
 ```powershell
 ollama pull llama3.2:3b
+python local_ai_tuning.py create                                    # builds nos-summary and nos-explain
 python research_summaries.py run --limit 5                          # local only
 python research_summaries.py run --limit 10 --confirm-publication   # also hash-only events on the chain
 python research_summaries.py status

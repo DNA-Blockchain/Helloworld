@@ -158,6 +158,14 @@ Everything here runs on your PC; nothing is sent to an AI service.
       ollama pull llama3.2:3b
       ```
       Check: `ollama list` shows it.
+- [ ] **Build the project's tuned versions** (a few seconds; they reuse
+      the same 2 GB):
+      ```powershell
+      python local_ai_tuning.py create
+      ```
+      Check: `ollama list` shows `nos-explain` and `nos-summary`. The scripts
+      below use them, and fall back to `llama3.2:3b` with a note if they're
+      missing.
 - [ ] **Plain-language summaries of published research:**
       ```powershell
       python research_summaries.py run --limit 5

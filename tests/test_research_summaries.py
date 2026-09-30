@@ -172,3 +172,49 @@ def test_supervisor_summarizes_only_while_confirmed(tmp_path, monkeypatch):
     s.maybe_summarize(10_000.0)
     s.maybe_summarize(10_001.0)                           # still running: no overlap
     assert len(started) == 1 and "--confirm-publication" in started[0]
+
+
+class FakeTags:
+    """Stands in for http.client.HTTPConnection answering GET /api/tags."""
+    models = ["nos-summary:latest", "llama3.2:3b"]
+
+    def __init__(self, host, port, timeout):
+        assert host == "127.0.0.1"
+
+    def request(self, method, path):
+        assert (method, path) == ("GET", "/api/tags")
+
+    def getresponse(self):
+        body = json.dumps({"models": [{"name": n} for n in self.models]}).encode()
+        return type("Response", (), {"status": 200, "read": lambda _: body})()
+
+    def close(self):
+        pass
+
+
+def test_installed_models_are_listed_with_and_without_latest(monkeypatch):
+    monkeypatch.setattr(rs.http.client, "HTTPConnection", FakeTags)
+    assert rs.installed_models() == {"nos-summary:latest", "nos-summary", "llama3.2:3b"}
+
+
+@pytest.mark.parametrize("installed, chosen, noted", [
+    ({"nos-summary", "llama3.2:3b"}, "nos-summary", False),
+    ({"llama3.2:3b"}, "llama3.2:3b", True),        # tuned model not built: fall back, say how to build it
+    ({"something-else"}, "nos-summary", False),    # no fallback either: let the request report it
+    (None, "nos-summary", False),                  # Ollama unreachable: same
+])
+def test_the_tuned_model_is_used_when_built(monkeypatch, installed, chosen, noted):
+    monkeypatch.setattr(rs, "installed_models", lambda endpoint: installed)
+    notes = []
+    assert rs.choose_model(rs.DEFAULT_MODEL, log=notes.append) == chosen
+    assert bool(notes) is noted and all("local_ai_tuning.py create" in n for n in notes)
+
+
+def test_run_uses_the_chosen_model_unless_one_is_given(monkeypatch, tmp_path):
+    used = []
+    monkeypatch.setattr(rs, "installed_models", lambda endpoint: {"llama3.2:3b"})
+    monkeypatch.setattr(rs, "OllamaSummarizer", lambda model, endpoint: used.append(model))
+    monkeypatch.setattr(rs, "summarize_pending", lambda *a, **k: 0)
+    rs.main(["run", "--base-dir", str(tmp_path)])
+    rs.main(["run", "--base-dir", str(tmp_path), "--model", "my-model"])
+    assert used == ["llama3.2:3b", "my-model"]
