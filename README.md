@@ -556,11 +556,13 @@ Ollama. It first recomputes the subject's analysis and refuses unless the
 SHA-256 matches the one the swarm accepted. It then prints the facts, written
 by code, followed by the model's explanation of only those facts. Output that
 drifts into treatment or medical language, states a number the facts don't
-contain, or gets a hydropathy direction wrong is withheld. It uses
-`nos-explain` (built by `python local_ai_tuning.py create`), which passed 8
-of 8 test cases where plain `llama3.2:3b` passed 0, or `llama3.2:3b` if
-`nos-explain` isn't built. Explanations are labelled "may be wrong" and are
-never published.
+contain, or gets a hydropathy direction wrong is withheld. It uses the best
+explanation model Ollama has: `nos-explain-lora` (llama3.2:3b with a LoRA
+trained by `colab/local_ai_lora_colab.ipynb`, which restated every number
+correctly on the test subjects), else `nos-explain` (6 of 8 test cases,
+against 0 for plain `llama3.2:3b`), else `llama3.2:3b`. `python
+local_ai_tuning.py create` builds the first two. Explanations are labelled
+"may be wrong" and are never published.
 
 ```sh
 python run_node_cli.py ... --work-sharing --swarm --status-file node1_status.json

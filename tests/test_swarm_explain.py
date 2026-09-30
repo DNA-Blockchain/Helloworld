@@ -115,6 +115,21 @@ def test_real_facts_pass_their_own_number_check():
     assert se.explain(facts, FakeModel(echo)) == echo
 
 
+@pytest.mark.parametrize("installed, chosen", [
+    ({"nos-explain-lora", "nos-explain", "llama3.2:3b"}, "nos-explain-lora"),
+    ({"nos-explain", "llama3.2:3b"}, "nos-explain"),
+    ({"llama3.2:3b"}, "llama3.2:3b"),
+    (None, "nos-explain-lora"),                      # Ollama unreachable: the request reports it
+])
+def test_the_best_installed_explanation_model_is_picked(monkeypatch, installed, chosen):
+    import research_summaries as rs
+
+    monkeypatch.setattr(rs, "installed_models", lambda endpoint: installed)
+    notes = []
+    assert se.pick_model(log=notes.append) == chosen
+    assert bool(notes) is (installed is not None and chosen != "nos-explain-lora")
+
+
 def test_explanations_use_nos_explain_when_it_is_built(monkeypatch, capsys):
     import research_summaries as rs
 
