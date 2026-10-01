@@ -12,7 +12,8 @@ from pathlib import Path
 
 SCHEMAS = Path(__file__).resolve().parent.parent / "schemas"
 BASE = "https://schemas.rabbitsoftware.local/"
-APIS = ("app-api-v1", "shell-api-v1", "node-api-v1", "model-api-v1", "sync-api-v1", "integrity-v1")
+APIS = ("app-api-v1", "shell-api-v1", "node-api-v1", "model-api-v1", "sync-api-v1", "integrity-v1",
+        "pipeline-report-v1")
 
 
 def _uri(api: str) -> str:

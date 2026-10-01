@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-pipeline-report-v1.schema.json",
+  "title": "RabbitSoftware research data pipeline report v1",
+  "description": "The research data pipeline report (rabbitsoft/pipeline_report.py): public sources -> catalog -> corpus -> model -> chain, with node and integrity state. Read-only; 'new' figures and activity cover the period, everything else is a total. A stage is null when its store doesn't exist yet.",
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "counts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/count"}},
+    "report": {
+      "type": "object",
+      "required": ["schema", "created_at", "period", "ingestion", "corpus", "model", "chain", "nodes", "integrity"],
+      "properties": {
+        "schema": {"const": "rabbitsoft-pipeline-report.v1"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "period": {
+          "type": "object", "required": ["start", "end"],
+          "properties": {"start": {"type": "string", "format": "date-time"}, "end": {"type": "string", "format": "date-time"}}
+        },
+        "ingestion": {
+          "type": "object",
+          "required": ["catalog", "agent", "public_searches", "records_returned", "abstracts_requested", "abstracts_filled"],
+          "properties": {
+            "catalog": {
+              "type": ["object", "null"],
+              "required": ["records", "with_abstract", "new_in_period", "last_retrieved", "classifications", "sources"],
+              "properties": {
+                "records": {"$ref": "#/$defs/count"},
+                "with_abstract": {"$ref": "#/$defs/count"},
+                "new_in_period": {"$ref": "#/$defs/count"},
+                "last_retrieved": {"type": ["string", "null"]},
+                "classifications": {"$ref": "#/$defs/counts"},
+                "sources": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object", "required": ["records", "with_abstract", "new_in_period", "published"],
+                    "properties": {
+                      "records": {"$ref": "#/$defs/count"}, "with_abstract": {"$ref": "#/$defs/count"},
+                      "new_in_period": {"$ref": "#/$defs/count"},
+                      "published": {"type": "string", "description": "publication year range, e.g. 2019-2026"}
+                    }
+                  }
+                }
+              }
+            },
+            "agent": {
+              "type": ["object", "null"],
+              "required": ["topics", "queued", "ids_by_source", "new_ids_last_run", "source_status", "last_checked"],
+              "properties": {
+                "topics": {"$ref": "#/$defs/count"}, "queued": {"$ref": "#/$defs/count"},
+                "ids_by_source": {"$ref": "#/$defs/counts"}, "new_ids_last_run": {"$ref": "#/$defs/count"},
+                "source_status": {"type": "object", "additionalProperties": {"$ref": "#/$defs/counts"}},
+                "last_checked": {"type": ["string", "null"]}
+              }
+            },
+            "public_searches": {"$ref": "#/$defs/count"},
+            "records_returned": {"$ref": "#/$defs/count"},
+            "abstracts_requested": {"$ref": "#/$defs/count"},
+            "abstracts_filled": {"$ref": "#/$defs/count"}
+          }
+        },
+        "corpus": {
+          "type": ["object", "null"],
+          "required": ["documents", "with_abstract", "mean_characters", "current_vectors", "method", "catalog_records_missing", "cutoffs"],
+          "properties": {
+            "documents": {"$ref": "#/$defs/count"}, "with_abstract": {"$ref": "#/$defs/count"},
+            "mean_characters": {"$ref": "#/$defs/count"},
+            "current_vectors": {"$ref": "#/$defs/counts", "description": "documents with an up-to-date vector, per embedding model"},
+            "method": {"type": "string", "description": "the embedding model used for search, or tfidf"},
+            "catalog_records_missing": {"type": ["integer", "null"]},
+            "cutoffs": {"type": "object", "additionalProperties": {"type": "number"}}
+          }
+        },
+        "model": {
+          "type": "object",
+          "required": ["training", "evaluation", "model_file", "research_summaries", "hosted_questions", "hosted_fallbacks", "training_answers_shared"],
+          "properties": {
+            "training": {
+              "type": "object",
+              "additionalProperties": {"type": "object", "required": ["kept", "rejected"],
+                                       "properties": {"kept": {"$ref": "#/$defs/count"}, "rejected": {"$ref": "#/$defs/count"}}}
+            },
+            "evaluation": {"type": ["object", "null"], "required": ["created_at", "results"]},
+            "model_file": {"type": ["object", "null"], "required": ["name", "bytes"]},
+            "research_summaries": {"$ref": "#/$defs/count"},
+            "hosted_questions": {"$ref": "#/$defs/count"},
+            "hosted_fallbacks": {"$ref": "#/$defs/count"},
+            "training_answers_shared": {"$ref": "#/$defs/count"}
+          }
+        },
+        "chain": {
+          "type": ["object", "null"],
+          "required": ["entries", "new_in_period", "by_kind", "copies", "records", "records_by_source", "timestamp_proofs", "outbox_pending"],
+          "properties": {
+            "entries": {"$ref": "#/$defs/count"}, "new_in_period": {"$ref": "#/$defs/count"},
+            "by_kind": {"$ref": "#/$defs/counts"},
+            "copies": {"type": "object", "additionalProperties": {"type": "object", "required": ["entries", "ok"]}},
+            "records": {"$ref": "#/$defs/count"}, "records_by_source": {"$ref": "#/$defs/counts"},
+            "timestamp_proofs": {"$ref": "#/$defs/counts", "description": "entries by Bitcoin timestamp proof state: none, pending, complete"},
+            "outbox_pending": {"$ref": "#/$defs/count"}
+          }
+        },
+        "nodes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "required": ["blocks", "chain_ok", "peers", "running", "research_ledger", "audits", "audit_problems"]
+          }
+        },
+        "integrity": {
+          "type": ["object", "null"],
+          "required": ["created_at", "ok", "checks", "problems", "fingerprint", "file"],
+          "properties": {"fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+        }
+      }
+    }
+  }
+}

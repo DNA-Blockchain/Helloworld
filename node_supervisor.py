@@ -176,6 +176,18 @@ def integrity_section(result: dict) -> tuple[str, list[str]]:
     return text, [f"integrity: {c['name']}" for c in problems]
 
 
+def pipeline_section(period_start: float, period_end: float, paths=None) -> str:
+    """The daily report's research data pipeline section (rabbitsoft/pipeline_report.py) for the period.
+    Informational: a failure to build it is noted, never a reason for "needs attention"."""
+    try:
+        from rabbitsoft import pipeline_report
+
+        lines = pipeline_report.render(pipeline_report.build(paths, now=period_end, since=period_start))
+    except Exception as e:                    # the report must still be written
+        return f"\n## Research data pipeline\n\n- Not available ({type(e).__name__}: {e}).\n"
+    return "\n## Research data pipeline\n\n" + "\n".join(lines) + "\n"
+
+
 def build_report(date: dt.date, period_start: float, period_end: float, totals: dict,
                  crashes: list[dict], tests: Optional[dict], log_problems: dict[int, list[str]],
                  node_count: int, self_tests: Optional[dict] = None) -> tuple[str, bool, list[str]]:
@@ -644,6 +656,7 @@ class Supervisor:
             report += section
             if problems:
                 ok, reasons = False, reasons + problems
+        report += pipeline_section(self.state["period_start"], now.timestamp())
         backup_alerts = self.backup_alerts()
         if backup_alerts:
             report += "\n## Backups\n\n" + "".join(f"- [ALERT] {a}\n" for a in backup_alerts)

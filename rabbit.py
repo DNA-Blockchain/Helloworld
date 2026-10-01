@@ -208,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
     fp = sub.add_parser("publish-code-fingerprint",
                         help="record a release's code fingerprint (its authorship) on the chain (asks first)")
     fp.add_argument("tag", help="the release tag, e.g. v0.9.0")
+    pr = sub.add_parser("pipeline-report", help="the research data pipeline report: sources, corpus, model, "
+                                                "chain, nodes, integrity (read-only)")
+    pr.add_argument("--hours", type=float, default=24, help="the period for the \"new\" figures (default 24)")
+    pr.add_argument("--json", action="store_true", help="the report as JSON")
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
@@ -228,6 +232,10 @@ def main(argv: list[str] | None = None) -> int:
         return update()
     if args.command == "publish-code-fingerprint":
         return publish_code_fingerprint(args.tag)
+    if args.command == "pipeline-report":
+        from rabbitsoft import pipeline_report
+
+        return pipeline_report.main(["--hours", str(args.hours)] + (["--json"] if args.json else []))
     show(Session().handle(" ".join(args.question)))
     return 0
 
