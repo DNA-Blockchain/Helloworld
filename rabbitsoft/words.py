@@ -1,8 +1,8 @@
-"""Understanding what someone typed, without needing correct spelling or the right words.
+"""Request parsing: spelling correction, intent matching and choice handling.
 
-Nothing here calls an AI: spelling is fixed against a word list, requests are matched by
-keywords, and choices are numbers or yes/no. That keeps it fast and predictable; the AI
-is only asked when these rules can't tell what someone means.
+Nothing here calls an AI: spelling is corrected against a word list (project terms included), requests
+are routed by keyword intent, and choices are numbers or yes/no. That keeps routing deterministic and
+fast (no model round-trip); the AI is only asked when these rules can't resolve a request.
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ NO = {"n", "no", "nope", "stop", "cancel", "don't", "dont", "not now", "2"}
 # Everyday command words: known, so they're never "corrected" into something else ("show" into "how").
 COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list", "tell", "give", "explain",
                  "entry", "entries", "start", "stop", "run", "what", "which", "where", "when", "why", "who",
-                 "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and",
+                 "about", "more", "simpler", "simply", "brief", "briefly", "shorter", "summary", "yes", "no", "please", "thanks", "the", "and",
                  "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable",
                  "latest", "last", "newest", "recent", "still", "true", "everything", "whole", "system", "check",
                  "fill", "fetch", "download", "install", "model", "publish", "publishing", "published", "fingerprint", "fingerprints",

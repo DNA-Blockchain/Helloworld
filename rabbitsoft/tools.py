@@ -1,4 +1,5 @@
-"""Read-only tools: each reads what the OS already records and returns short, plain sentences.
+"""Read-only tools: each reads what the OS already records (node status, chains, audits, the ledger,
+agents, reports) and returns a concise status summary with the underlying figures.
 
 None of these change anything or send anything off this PC.
 """

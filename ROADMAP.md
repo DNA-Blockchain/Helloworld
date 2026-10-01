@@ -41,7 +41,7 @@ Each API gets a versioned JSON Schema in `schemas/` and a page in `docs/api/`. C
 ### 0.3 UI kit: Web Components, no build [me]
 - [ ] `ui/` folder: design tokens (colors, type sizes, spacing) with **big-text** and **high-contrast** modes, and light/dark.
 - [ ] Base components: `<rabbit-button>`, `<rabbit-card>`, `<rabbit-choices>`, `<rabbit-chat>`, `<rabbit-status>`, `<rabbit-dialog>` (the yes/no questions).
-- [ ] Accessibility rules every component follows: keyboard use, screen-reader labels, no colour-only meaning, and text that never depends on the AI to be readable.
+- [ ] Interface standards every component meets (WCAG 2.2 AA): full keyboard control, screen-reader labels, no colour-only meaning, and a display-size setting.
 - [ ] A component gallery page, used for checking and for screenshots.
 
 ## Phase 1: RabbitSoftware.inc app (replaces `rabbitsoft/page.html`) [me]
@@ -67,7 +67,7 @@ Each API gets a versioned JSON Schema in `schemas/` and a page in `docs/api/`. C
 - [ ] Later: graphics in the from-scratch Rust kernel (`os/`), which is needed before any UI can run there.
 
 ## Phase 4: integrity engineer role [me]
-- [ ] When a check or test fails, the AI explains it in plain words, and a proposed fix goes on a separate review branch with its test results. It's never merged without the owner.
+- [ ] When a check or test fails, the AI reports the failing check, the probable cause and the evidence for it, and a proposed fix goes on a separate review branch with its test results. It's never merged without the owner.
 
 ## Phase 5: launch
 - [ ] **[me]** Launch website (static, Cloudflare Pages): what it is, the install lines, model card, privacy policy, terms.

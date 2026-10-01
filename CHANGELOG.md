@@ -22,6 +22,14 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   - `rabbit publish-code-fingerprint vX.Y.Z` records a release's fingerprint on the chain as the new `code_release` kind.
 
 ### Changed
+- **Research answers are technical reports:**
+  - three sections (Findings, with the reported figures; Methods and evidence, with each record's study type; Limitations), every claim cited;
+  - a retrieval line on each answer: keyword and meaning matches with their scores and cutoff, the sources, publication years and abstract coverage;
+  - answers up to 400 tokens, up from 220 (the gateway's cap);
+  - records reach the model with their source and year;
+  - "Explain that more simply" is replaced by "Summarize in brief", a 2–3 sentence summary that keeps every figure and citation.
+- **Positioning:** RabbitSoftware.inc, the model card and the docs describe the project as advanced research, OS and blockchain software. Spelling correction, numbered choices and the display settings (text size, themes, keyboard and screen-reader support) stay as standard features.
+- **Model cards in the repository:** the Hugging Face model and dataset cards now live in `deploy/huggingface/`, and `deploy/hf_publish.py model` uploads them.
 - **Per-file headers removed:** the 53-line license and contact header is gone from all 190 source files (about 10,300 lines). The author's phone number and town are no longer published in the repository.
 - **README license statement corrected:** it said CC0 1.0, but the license is UPL-1.0.
 
@@ -34,8 +42,8 @@ The first versioned release. It covers RabbitSoftware.inc, the integrity team, t
 across devices; everything earlier is in the git history.
 
 ### Added
-- **RabbitSoftware.inc**, an assistant in the terminal and on a local web page, built for people with grammar or word-finding difficulties:
-  - spelling fixes, numbered choices, and a yes/no question before anything changes or leaves the PC (#20);
+- **RabbitSoftware.inc**, the operator assistant, in the terminal and on a local web page:
+  - deterministic request routing with spelling correction, numbered choices, and a yes/no question before anything changes or leaves the PC (#20);
   - research answers with sources, using a local LoRA model where one is installed (#19);
   - reading everything on the shared research chain (#21), and challenging or improving entries with notes, with personal data refused (#22).
 - **Integrity team:**
