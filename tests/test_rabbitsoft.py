@@ -131,7 +131,7 @@ class FakeAI:
         self.prompts.append(prompt)
         if prompt.startswith("Someone typed"):
             return "1. sickle cell disease gene therapy\n- Sickle cell CRISPR\n"
-        if prompt.startswith("Rewrite this"):
+        if prompt.startswith("Condense this"):
             return "Gene editing fixed blood cells in a study [1]."
         return "**Answer**\nBase editing changed blood cells in a trial [1]. Base editing changed blood cells in a trial [1]. It is new [7]."
 
@@ -193,12 +193,45 @@ def test_typing_something_else_lets_a_question_lapse(session):
     assert session.handle("yes").text != "" and session.searched == []
 
 
-def test_saved_records_are_answered_without_searching_and_can_be_simplified(session):
+def test_saved_records_are_answered_without_searching_and_can_be_summarized(session):
     session._catalog().add_records(RECORDS)
     reply = session.handle("base editing sickle cell")
     assert reply.text.startswith("Base editing changed blood cells") and session.searched == []
-    assert reply.choices == ["Explain that more simply", "Search public sources for newer records"]
+    assert reply.choices == ["Summarize in brief", "Search public sources for newer records"]
     assert session.handle("1").text.startswith("Gene editing fixed blood cells in a study [1].")
+    session.handle("base editing sickle cell")
+    assert session.handle("give me the short version").text.startswith("Gene editing fixed blood cells")
+
+
+def test_research_answers_are_technical_reports_with_their_retrieval_shown(session):
+    session._catalog().add_records(RECORDS)
+    sizes = []
+    session.ai.generate = lambda prompt, num_predict=220: (sizes.append(num_predict), session.ai.prompts.append(prompt),
+                                                           "**Findings:** Two of 3 patients [1].\n"
+                                                           "Methods and evidence: A phase 1 trial [1].\n"
+                                                           "## Limitations: Small sample [4].")[-1]
+    reply = session.handle("base editing sickle cell")
+    assert reply.text.startswith("Findings: Two of 3 patients [1].\n\nMethods and evidence: A phase 1 trial [1]."
+                                 "\n\nLimitations: Small sample .")             # [4] isn't a record
+    assert "Retrieval: 1 records, 1 by keyword (catalog score >= 3); sources pubmed 1; published 2026; " \
+           "abstracts for 1 of 1." in reply.text
+    prompt = session.ai.prompts[-1]
+    assert sizes == [400] and "study type" in prompt and "short, plain" not in prompt
+    assert "[1] Base editing for sickle cell disease (PubMed publication, 2026). A base editing trial" in prompt
+
+
+def test_tidy_sections_keeps_the_report_format_or_falls_back_to_a_paragraph():
+    from rabbitsoft.assistant import retrieval_summary, tidy_sections
+    raw = "Findings: A [1]. A [1].\nLimitations: B [2].\nFindings: ignored repeat."
+    assert tidy_sections(raw, 2) == "Findings: A [1].\n\nLimitations: B [2]."
+    assert tidy_sections("Just one paragraph [1].\nFindings: and a label.", 1) == \
+        "Just one paragraph [1]. and a label."
+    meaning = {"citation": {"source": "europe_pmc", "published_at": "2019-02-01"}, "abstract": "",
+               "method": "nomic-embed-text", "similarity": 0.71}
+    keyword = {"citation": {"source": "pubmed", "published_at": None}, "abstract": "x"}
+    assert retrieval_summary([keyword, meaning]) == (
+        "Retrieval: 2 records, 1 by keyword (catalog score >= 3), 1 by meaning (nomic-embed-text, cosine "
+        "0.71-0.71, cutoff 0.62); sources pubmed 1, europe_pmc 1; published 2019; abstracts for 1 of 2.")
 
 
 def test_a_synthetic_subject_is_explained_from_verified_facts(tmp_path):

@@ -669,15 +669,32 @@ viewer at `/api/timestamps/<event_id>.ots`; the viewer shows both times.
 
 ### RabbitSoftware.inc assistant
 
-RabbitSoftware.inc, the assistant from RabbitSoftware, Inc., answers
-questions about this OS in short, plain sentences:
-how the nodes are doing, blockchain checks and audits, the token ledger,
-the research agents, the activity log, the latest daily report, swarm
-subjects, and research questions answered from saved records with
-citations. It's built for people who find the right words or spelling hard:
-misspellings are fixed and shown back ("I read that as…"), choices are
-numbered, and the web page has large text, full keyboard use, screen-reader
-announcements and works with Windows voice typing (Windows key + H).
+RabbitSoftware.inc, the assistant from RabbitSoftware, Inc., is the
+operator interface to this OS. It reports on the nodes, blockchain checks
+and audits, the token ledger, the research agents, the activity log, the
+daily report and swarm subjects, and it answers research questions from the
+saved corpus.
+
+Research answers are structured technical reports:
+
+- **Findings:** what the records show, with their reported figures (sample
+  sizes, effect sizes, doses, variants), each claim cited as `[n]`.
+- **Methods and evidence:** the study type behind each cited record (trial,
+  cohort, review, in vitro, registration, grant) and the strength of evidence
+  that implies.
+- **Limitations:** what the records don't establish, and where they disagree.
+
+Each answer ends with its sources and a **retrieval line**: how many records
+matched by keyword (catalog score ≥ 3) and how many by meaning (embedding
+model, cosine range and cutoff), the sources and publication years, and
+abstract coverage. "Summarize in brief" condenses an answer to 2–3
+sentences, keeping every figure and citation.
+
+Requests are routed deterministically, without a model round-trip: spelling is
+corrected against the project's vocabulary and shown back ("I read that
+as…"), and choices are numbered. Standard display settings on the web page:
+a larger text size, light and dark themes, full keyboard control,
+screen-reader announcements, and Windows voice typing (Windows key + H).
 
 ```powershell
 python rabbit.py chat                        # terminal

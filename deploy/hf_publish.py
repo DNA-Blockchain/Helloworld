@@ -14,6 +14,8 @@ Three steps, each run on its own and each asking before it does anything:
         Creates the gateway Space (free CPU), gives it the endpoint's address and a token as a secret,
         and prints the address to give RabbitSoftware.inc: rabbit model-server <that address>.
 
+`python deploy/hf_publish.py cards` updates only the model and dataset cards (deploy/huggingface/).
+
 Log in first with `hf auth login` (your token is typed there, on this PC, never into a chat).
 
 The model is a fine-tune of Meta's Llama 3.2 3B Instruct, so it's published under the Llama 3.2
@@ -31,20 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 GGUF = ROOT / "ollama" / "nos-lora" / "nos-lora.Q4_K_M.gguf"
 MODEL_REPO = "Llama-3.2-3B-RabbitSoftware-GGUF"
 SPACE_REPO = "rabbitsoftware-gateway"
-MODEL_CARD = """---
-license: llama3.2
-base_model: meta-llama/Llama-3.2-3B-Instruct
-tags: [gguf, llama.cpp, rabbitsoftware]
----
-
-# Llama-3.2-3B-RabbitSoftware (GGUF, Q4_K_M)
-
-The model behind RabbitSoftware.inc: Llama 3.2 3B Instruct with a LoRA trained to explain this
-project's research and chain results in plain words, merged and quantized for llama.cpp.
-
-Built with Llama. Llama 3.2 is licensed under the Llama 3.2 Community License,
-Copyright © Meta Platforms, Inc. All Rights Reserved.
-"""
+DATASET_REPO = "rabbitsoftware-training"
+CARDS = ROOT / "deploy" / "huggingface"          # the cards are versioned here, with the code they describe
+MODEL_CARD = CARDS / "model-card.md"
+DATASET_CARD = CARDS / "dataset-card.md"
 
 
 def confirm(question: str) -> bool:
@@ -72,9 +64,23 @@ def publish_model() -> int:
     if not confirm(f"Upload {GGUF.name} ({size:.1f} GB) to the PRIVATE model repo {repo}? (free)"):
         return 1
     client.create_repo(repo, repo_type="model", private=True, exist_ok=True)
-    client.upload_file(path_or_fileobj=MODEL_CARD.encode(), path_in_repo="README.md", repo_id=repo)
+    client.upload_file(path_or_fileobj=str(MODEL_CARD), path_in_repo="README.md", repo_id=repo)
     client.upload_file(path_or_fileobj=str(GGUF), path_in_repo=GGUF.name, repo_id=repo)
     print(f"Uploaded: https://huggingface.co/{repo}\nNext: python deploy/hf_publish.py endpoint")
+    return 0
+
+
+def publish_cards(ask=None) -> int:
+    """Update only the model and dataset cards (README.md of each repo) from deploy/huggingface/."""
+    client, user = api()
+    targets = [(f"{user}/{MODEL_REPO}", "model", MODEL_CARD), (f"{user}/{DATASET_REPO}", "dataset", DATASET_CARD)]
+    if not (ask or confirm)("Replace the README of " + " and ".join(repo for repo, _, _ in targets)
+                            + " with the cards in deploy/huggingface/?"):
+        return 1
+    for repo, kind, card in targets:
+        client.upload_file(path_or_fileobj=str(card), path_in_repo="README.md", repo_id=repo, repo_type=kind,
+                           commit_message="Update the card from deploy/huggingface/")
+        print(f"Updated: https://huggingface.co/{'datasets/' if kind == 'dataset' else ''}{repo}")
     return 0
 
 
@@ -120,12 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
     sub = p.add_subparsers(dest="step", required=True)
     sub.add_parser("model", help="upload the model to a private repo (free)")
+    sub.add_parser("cards", help="update the model and dataset cards from deploy/huggingface/ (free)")
     sub.add_parser("endpoint", help="print the settings for creating the paid endpoint")
     g = sub.add_parser("gateway", help="create the public gateway Space (free)")
     g.add_argument("--endpoint-url", required=True)
     args = p.parse_args(argv)
     if args.step == "model":
         return publish_model()
+    if args.step == "cards":
+        return publish_cards()
     if args.step == "endpoint":
         return endpoint_steps()
     return publish_gateway(args.endpoint_url)
