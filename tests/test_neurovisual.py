@@ -163,6 +163,6 @@ def test_personal_data_digests_are_keyed(tmp_path):
 def test_the_demo_session_runs(capsys):
     from neurovisual.__main__ import main
 
-    assert main(["--seconds", "0.3", "--no-ledger"]) == 0
+    assert main(["run", "--seconds", "0.3", "--no-ledger", "--no-record"]) == 0
     out = capsys.readouterr().out
     assert "memory" in out and "imagination" in out and "model 1.0.0 -> 1.1.0" in out
