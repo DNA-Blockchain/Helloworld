@@ -10,7 +10,9 @@ Each check belongs to a role and only reads:
                      component's self-test
 
 The report is saved on this PC (autonomous/integrity/) as JSON and as a page to read; its SHA-256 is its
-fingerprint. RabbitSoftware.inc runs this in the background ("check integrity"), or run it directly:
+fingerprint. Only that fingerprint can go on the shared chain: when asked, or daily if it's turned on for
+this PC (off by default). node_supervisor.py runs this every day with its report. RabbitSoftware.inc runs
+it in the background ("check integrity"), or run it directly:
 
     python -m rabbitsoft.integrity              # everything, about 3-4 minutes
     python -m rabbitsoft.integrity --no-tests   # chains, records, data and code fingerprints only
@@ -291,6 +293,52 @@ def write_report(report: dict, folder: Path) -> tuple[Path, Path, str]:
     return json_path, md_path, fingerprint
 
 
+# -- the report's fingerprint on the chain (only ever the SHA-256; the report stays on this PC) ----------
+def _settings_file(paths: Paths) -> Path:
+    return paths.rabbit / "settings.json"
+
+
+def publishing_daily(paths: Paths) -> bool:
+    try:
+        return bool(json.loads(_settings_file(paths).read_text(encoding="utf-8")).get("integrity_publish_daily"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_publishing_daily(paths: Paths, on: bool) -> None:
+    path = _settings_file(paths)
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        settings = {}
+    settings["integrity_publish_daily"] = on
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=1), encoding="utf-8")
+
+
+def latest_report(paths: Paths) -> Path | None:
+    reports = sorted((paths.autonomous / "integrity").glob("integrity-*.json"))
+    return reports[-1] if reports else None
+
+
+def publish_fingerprint(paths: Paths, report_json: Path) -> str:
+    """Queues the report's SHA-256 for the shared chain (node-0 mines it). Returns the event ID."""
+    from audit_trail import AuditTrail
+    from research_provenance import ResearchProvenanceQueue, create_public_data_hash_event
+
+    fingerprint = hashlib.sha256(report_json.read_bytes()).hexdigest()
+    event = create_public_data_hash_event(data_sha256=fingerprint, data_kind="integrity_report",
+                                          classification="public", confirm_hash_publication=True)
+    ResearchProvenanceQueue(paths.autonomous / "research-outbox").enqueue(event)
+    try:
+        AuditTrail(str(paths.audit)).log("rabbitsoft", "integrity_fingerprint_queued", "local",
+                                         {"event_id": event["event_id"], "report": report_json.name,
+                                          "sha256": fingerprint})
+    except (OSError, ValueError):
+        pass                 # queued either way; a missing log line shouldn't undo that
+    return event["event_id"]
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -298,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
     p.add_argument("--no-tests", action="store_true", help="skip the test suite and self-tests")
     p.add_argument("--json-out", type=Path, help="also copy the report to this file")
+    p.add_argument("--daily", action="store_true",
+                   help="the daily run: also publish the fingerprint if that's turned on for this PC")
     args = p.parse_args(argv)
     paths = Paths()
     started = time.time()
@@ -307,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
         args.json_out.write_bytes(json_path.read_bytes())
     print(summary_line(report))
     print(f"Report: {md_path} (fingerprint {fingerprint[:16]}..., {time.time() - started:.0f} s)")
+    if args.daily and publishing_daily(paths):
+        print(f"Fingerprint queued for the chain (entry {publish_fingerprint(paths, json_path)[:8]}).")
     return 0 if report["ok"] else 1
 
 
