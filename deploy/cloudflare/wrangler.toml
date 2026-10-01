@@ -1,0 +1,26 @@
+# RabbitSoftware.inc model gateway on Cloudflare Workers (free plan).
+#
+#   cd deploy/cloudflare
+#   npx wrangler deploy                 # publish (or update) the gateway
+#   npx wrangler secret put HF_TOKEN    # the Hugging Face token that may call the endpoint (typed, hidden)
+#
+# The token is only ever a Cloudflare secret: it's not in this file or anywhere in the code.
+name = "rabbitsoftware-gateway"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+ENDPOINT_URL = "https://6abda5e90093f0b3703165a8.endpoints.huggingface.cloud"
+PER_CLIENT_PER_HOUR = "20"
+DAILY_LIMIT = "500"
+MAX_TOKENS = "400"
+MAX_PROMPT_CHARS = "12000"
+
+[[durable_objects.bindings]]
+name = "LIMITS"
+class_name = "Limits"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Limits"]
