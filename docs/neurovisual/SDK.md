@@ -13,6 +13,11 @@ you can fill with your own or an existing implementation:
  ratings ──> learning burst (background) ──> model v1.x ──> provenance ledger (fingerprints only)
 ```
 
+> **Research background:** [EEG to image reconstruction (2026)](../research/eeg-to-image-reconstruction.md)
+> reviews what EEG can and can't decode, the datasets, real-time feasibility, hardware and neural-data law,
+> with design guidance for this prototype. Its source notes are in
+> [`docs/research/eeg-to-image-reconstruction/notes/`](../research/eeg-to-image-reconstruction/notes/).
+>
 > **Status:** an engineering prototype. EEG can't reconstruct memories or images today. The system
 > produces latent states from signal features and learns only from the ratings it's given. The
 > datasets it records are what future models need in order to be trained and judged.

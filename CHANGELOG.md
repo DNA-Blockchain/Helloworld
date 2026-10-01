@@ -8,6 +8,7 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **Research report: EEG to image reconstruction (2026)** in `docs/research/`, with its source notes (methods and models, datasets and benchmarks, imagery/memory/real-time, law and ethics). It gives the evidence base and design guidance for `neurovisual/` and is linked from the SDK guide. Deep-research working folders (`/research_notes/`, `/reports/`) are gitignored.
 - **The AI everywhere in RabbitSoftware.inc** (opt-in with `python rabbit.py model-server --always on`):
   - **No yes/no each time:** AI steps go straight to the configured model server. If it doesn't answer, this PC's model does, and the reply says so. `--always off` restores asking; `model-server` shows the mode.
   - **AI summaries on status answers:** nodes, chain, ledger, agents, swarm, activity, reports, the pipeline report, the corpus, tools, jobs and the integrity report each get a 3–6 sentence technical summary from the model, labeled "AI summary". The exact figures computed on this PC stay below it as the reference. Before sending, the text is screened for personal information and your user folder is replaced with `~`. Summaries use only the model server, never the slow local model; with "always" off, status answers are unchanged and instant.
