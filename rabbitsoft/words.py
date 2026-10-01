@@ -29,6 +29,8 @@ INTENTS: dict[str, tuple[str, ...]] = {
                   "full check", "check the whole system", "tampered", "integrity report"),
     "corpus": ("corpus", "vector", "vectors", "embedding", "embeddings", "abstract", "abstracts",
                "search by meaning", "meaning model", "semantic"),
+    "tools": ("tools", "toolchain", "missing tools", "installed", "compiler", "cmake", "qemu", "java", "jq",
+              "rust", "ollama", "python", "git", "nodejs", "winget"),
     "jobs": ("jobs", "job", "what's running", "whats running", "background", "still running"),
     "research": ("research", "study", "studies", "paper", "papers", "trial", "trials", "gene", "genes",
                  "disease", "treatment", "therapy", "cancer", "mutation", "editing", "crispr", "search",
@@ -47,6 +49,7 @@ LABELS = {
     "selftest": "Run the self-tests",
     "integrity": "Check the integrity of the whole OS",
     "corpus": "The research corpus (search by meaning)",
+    "tools": "Tools this OS needs (what's missing)",
     "jobs": "What's running in the background",
 }
 # Reading the shared chain: "what's on the chain", "find BRCA1 on the chain", "show entry 3".
@@ -60,6 +63,7 @@ NOTE = re.compile(r"^\s*(?P<verb>challenge|improve|improvement|reply(\s+to)?)\s+
                   r"(?P<ref>[0-9a-f]{6,32}|\d{1,2})\s*$", re.I)
 NOTE_KINDS = {"challenge": "challenge", "improve": "improvement", "improvement": "improvement", "reply": "reply"}
 NOTES_ON = re.compile(r"\b(turn|switch)\s+on\b.*\bnotes?\b|\b(enable|allow)\b.*\bnotes?\b", re.I)
+INSTALL = re.compile(r"\b(?:install|add|get)\s+(?:the\s+)?(?P<tool>[a-z0-9][\w+.-]*)", re.I)
 NOTES_OFF = re.compile(r"\b(turn|switch)\s+off\b.*\bnotes?\b|\b(disable|block)\b.*\bnotes?\b", re.I)
 
 

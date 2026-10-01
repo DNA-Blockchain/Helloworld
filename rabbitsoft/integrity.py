@@ -6,7 +6,8 @@ Each check belongs to a role and only reads:
                      meets today's rules), the activity log's hash chain, the Maxwell chain, and local
                      dataset files against their fingerprints on the chain
   code enforcement   code files against the saved code fingerprint (project_identifier.py), uncommitted
-                     changes, the test suite and every component's self-test
+                     changes, the tools the OS needs (rabbitsoft/toolchain.py), the test suite and every
+                     component's self-test
 
 The report is saved on this PC (autonomous/integrity/) as JSON and as a page to read; its SHA-256 is its
 fingerprint. RabbitSoftware.inc runs this in the background ("check integrity"), or run it directly:
@@ -233,8 +234,21 @@ def self_tests(paths: Paths) -> Check:
                   "this PC)."] + [f"- {f}" for f in failed])
 
 
+def tools(paths: Paths, survey=None) -> Check:
+    """The tools this OS needs. Informational: a missing tool isn't damage, so this never fails."""
+    from . import toolchain
+
+    rows = (survey or toolchain.survey)()
+    have = sum(r["here"] for r in rows)
+    lines = [f"{have} of {len(rows)} tools on this computer"
+             + (f", {sum(bool(r['wsl']) for r in rows)} of {len(rows)} in WSL." if rows and rows[0]["wsl"] is not None
+                else ".")]
+    lines += [l for l in toolchain.describe(rows) if l.startswith(("To add", "winget"))]
+    return Check("code enforcement", "Tools", OK, lines)
+
+
 def run_all(paths: Paths, run_tests: bool = True) -> dict:
-    checks = [node_chains, research_ledgers, activity_log, maxwell_chains, datasets, code_fingerprints]
+    checks = [node_chains, research_ledgers, activity_log, maxwell_chains, datasets, code_fingerprints, tools]
     if run_tests:
         checks += [self_tests, test_suite]
     results = []

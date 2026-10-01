@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
-from . import GREETING, NAME, chain_view, tools, words
+from . import GREETING, NAME, chain_view, toolchain, tools, words
 from .jobs import Job, Jobs, Service
 
 AGENT_HOST, AGENT_PORT = "127.0.0.1", 8765
@@ -117,8 +117,11 @@ class Session:
                  explain_ai=None, jobs: Jobs | None = None, agent: Service | None = None,
                  self_test_command: list[str] | None = None, integrity_command: list[str] | None = None,
                  embedder=AUTO, abstract_fetchers: dict | None = None,
-                 embed_model_command: list[str] | None = None, hosted=AUTO):
+                 embed_model_command: list[str] | None = None, hosted=AUTO,
+                 tool_survey: Callable[[], list[dict]] | None = None, winget: bool | None = None,
+                 install_command: Callable[[object], list[str]] | None = None):
         self.paths = paths or tools.Paths()
+        self.tool_survey, self.winget, self.install_command = tool_survey, winget, install_command
         self._ai = ai
         self._hosted = hosted
         self._model_choice: bool | None = None      # for the step being answered: True = the model server
@@ -320,6 +323,10 @@ class Session:
             return self._prefix(heard, self.confirm_embed_model())
         if intent == "corpus":
             return Reply(heard + self.corpus_status())
+        if (m := words.INSTALL.search(fixed)) and (tool := toolchain.tool_named(m.group("tool"))):
+            return self._prefix(heard, self.confirm_install(tool))
+        if intent == "tools":
+            return Reply(heard + self.tools_status())
         if intent == "jobs":
             return Reply(heard + self.whats_running())
         if intent in tools.TOOLS:
@@ -341,7 +348,7 @@ class Session:
     def _tool_or_ask(self, intent: str) -> Callable[[], Reply]:
         actions = {"agents": lambda: Reply(self.agent_status()), "selftest": self.confirm_self_tests,
                    "jobs": lambda: Reply(self.whats_running()), "integrity": self.confirm_integrity,
-                   "corpus": lambda: Reply(self.corpus_status())}
+                   "corpus": lambda: Reply(self.corpus_status()), "tools": lambda: Reply(self.tools_status())}
         if intent in actions:
             return actions[intent]
         if intent in tools.TOOLS:
@@ -708,6 +715,46 @@ class Session:
         import swarm_explain
 
         return OllamaSummarizer(swarm_explain.pick_model(log=lambda _: None), timeout=600)
+
+    # -- the tools this OS needs (integrity team) --------------------------------------------------
+    def _survey(self) -> list[dict]:
+        return (self.tool_survey or toolchain.survey)()
+
+    def _winget(self) -> bool:
+        return toolchain.winget_available() if self.winget is None else self.winget
+
+    def tools_status(self) -> str:
+        return "\n".join(toolchain.describe(self._survey(), winget=self._winget()))
+
+    def confirm_install(self, tool) -> Reply:
+        row = next(r for r in self._survey() if r["tool"] is tool)
+        if row["here"]:
+            return Reply(f"{tool.name} is already on this computer.")
+        if sys.platform != "win32" or not tool.winget:
+            return Reply(f"{tool.name} needs your password to install, so run this yourself in a terminal:\n"
+                         f"    {tool.linux}")
+        if not self._winget():
+            return Reply(f"I'd install {tool.name} with winget, but winget is switched off: Settings > Apps > "
+                         "Advanced app settings > App execution aliases > turn on \"Windows Package Manager "
+                         f"Client\". Or run it yourself:\n    winget install -e --id {tool.winget}")
+        name = f"Installing {tool.name}"
+        if self.jobs.running(name):
+            return Reply(f"{tool.name} is already being installed.")
+        return self._ask(f"This installs {tool.name} (for {tool.needed_for}) from its official publisher with "
+                         f"winget (package {tool.winget}). Windows may ask you to allow it. Install it?",
+                         lambda: self._install(tool, name))
+
+    def _install(self, tool, name: str) -> Reply:
+        command = (self.install_command or toolchain.winget_command)(tool)
+        try:
+            job = self.jobs.start(name, command, self.paths.root,
+                                  lambda j: (f"{tool.name} is installed. Open a new terminal to use it."
+                                             if j.exit_code == 0 else
+                                             f"The install didn't finish (exit code {j.exit_code}); see {j.log}."))
+        except OSError as error:
+            return Reply(f"The install couldn't start ({error}).")
+        self._log("tool_install_started", {"tool": tool.key, "package": tool.winget, "log": job.log.name})
+        return Reply(f"Started installing {tool.name}. I'll tell you when it's done.")
 
     # -- the research corpus (search by meaning) ----------------------------------------------------
     def corpus_status(self) -> str:

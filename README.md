@@ -717,6 +717,12 @@ JSON and a readable page, with the report's SHA-256 as its fingerprint):
 - **Code enforcement:** the code against its saved fingerprint
   (`project_identifier.py`), uncommitted changes, the test suite and every
   component's self-test.
+- **Tools:** Python, Git, Node.js, Rust, QEMU, CMake, a C/C++ compiler, Java,
+  jq and Ollama, on Windows and in WSL (`rabbitsoft/toolchain.py`). A missing
+  tool is reported with its official install command, not as a failure. In chat,
+  "what tools are missing" lists them. "Install cmake" installs a Windows tool
+  with winget after a yes. Linux and WSL installs need your password, so for
+  those it gives the command to run yourself.
 
 It only reads, and nothing leaves this PC. "Show the integrity report" reads
 the latest one; `python -m rabbitsoft.integrity` runs it directly.
