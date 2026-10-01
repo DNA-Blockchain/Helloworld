@@ -7,6 +7,15 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 
 ## [Unreleased]
 
+### Added
+- **Stable APIs between the parts:**
+  - versioned JSON Schemas in `schemas/rabbitsoftware-*-v1.schema.json` for the local app API, the OS shell API, the node API, the model API, the sync API, and the integrity report and tool survey;
+  - a page for each in `docs/api/`, with the rules for how an API may change;
+  - contract tests that check real messages from each part against them (`tests/test_api_contracts.py`).
+- **Versioned routes:** `/api/v1/message`, `/api/v1/poll` and `/api/v1/status`, with the old `/api/...` routes kept as aliases. The web page uses v1.
+- **`GET /api/v1/shell`:** a read-only snapshot of nodes, jobs, AI, account and the latest integrity report, for the desktop shell.
+- **`jsonschema`** added to `requirements.txt`, for the contract tests.
+
 ## [0.9.0] - 2026-10-01
 
 The first versioned release. It covers RabbitSoftware.inc, the integrity team, the hosted model and sync

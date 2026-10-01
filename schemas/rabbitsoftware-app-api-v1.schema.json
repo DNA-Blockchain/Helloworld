@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-app-api-v1.schema.json",
+  "title": "RabbitSoftware.inc local app API v1",
+  "description": "Between a user interface on this PC (the web page, the OS shell) and RabbitSoftware.inc (rabbitsoft/web.py), on http://127.0.0.1:8792. Every request needs the header X-Rabbit: 1 and a Host of 127.0.0.1 or localhost. Routes: POST /api/v1/message, POST /api/v1/poll, GET /api/v1/status, GET /api/v1/shell (see rabbitsoftware-shell-api-v1). The older /api/... routes are aliases.",
+  "$defs": {
+    "messageRequest": {
+      "description": "POST /api/v1/message and /api/v1/poll. One session per browser tab; text is what the person typed (ignored by poll).",
+      "type": "object",
+      "required": ["session"],
+      "properties": {
+        "session": {"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F-]{32,36}$"},
+        "text": {"type": "string", "maxLength": 4000}
+      }
+    },
+    "messageReply": {
+      "description": "What RabbitSoftware.inc says. choices are numbered options to show as buttons; confirm means the next answer should be yes or no.",
+      "type": "object",
+      "required": ["text", "choices", "confirm"],
+      "properties": {
+        "text": {"type": "string"},
+        "choices": {"type": "array", "items": {"type": "string"}},
+        "confirm": {"type": "boolean"}
+      }
+    },
+    "pollReply": {
+      "description": "Background jobs that finished since the last reply; empty text means nothing new.",
+      "type": "object",
+      "required": ["text"],
+      "properties": {"text": {"type": "string"}}
+    },
+    "statusReply": {
+      "description": "GET /api/v1/status: one plain sentence each about the nodes and the chain.",
+      "type": "object",
+      "required": ["nodes", "chain"],
+      "properties": {"nodes": {"type": "string"}, "chain": {"type": "string"}}
+    },
+    "error": {
+      "type": "object",
+      "required": ["error"],
+      "properties": {"error": {"type": "string"}}
+    }
+  }
+}

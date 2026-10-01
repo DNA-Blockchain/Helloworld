@@ -11,3 +11,4 @@ scikit-learn>=1.5        # corpus_vector_store.py: TF-IDF search until the local
 # testing
 pytest>=9.1.0
 pytest-asyncio>=1.4.0
+jsonschema>=4.23       # API contract tests (schemas/*.json)

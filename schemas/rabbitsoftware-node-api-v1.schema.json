@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-node-api-v1.schema.json",
+  "title": "RabbitSoftware node API v1",
+  "description": "What each node writes for the rest of the OS to read: its status file (autonomous/node-N/status.json), its chain file (chain_node-N.json), and the research events carried on the shared research chain. Detailed rules for each event type are enforced by research_provenance.validate_public_provenance; this schema fixes the shape every reader can rely on.",
+  "$defs": {
+    "hex64": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {
+      "type": "object",
+      "required": ["node_id", "boot_id", "started_at", "updated_at", "stats", "chain_blocks", "chain_ok", "chain_msg", "connected_peers"],
+      "properties": {
+        "node_id": {"type": "integer", "minimum": 0},
+        "boot_id": {"type": "string"},
+        "started_at": {"type": "number"},
+        "updated_at": {"type": "number"},
+        "stats": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "chain_blocks": {"type": "integer", "minimum": 0},
+        "chain_ok": {"type": "boolean"},
+        "chain_msg": {"type": "string"},
+        "pinned_peers": {"type": "array", "items": {"type": "integer"}},
+        "connected_peers": {"type": "array", "items": {"type": "integer"}},
+        "research_ledger": {
+          "type": "object",
+          "properties": {"entries": {"type": "integer", "minimum": 0}, "ok": {"type": "boolean"}}
+        }
+      }
+    },
+    "chainFile": {
+      "type": "object",
+      "required": ["blocks"],
+      "properties": {"blocks": {"type": "array", "items": {"$ref": "#/$defs/block"}}}
+    },
+    "block": {
+      "type": "object",
+      "required": ["index", "previous_hash", "payload", "timestamp", "block_hash"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "previous_hash": {"type": "string"},
+        "payload": {"type": "object"},
+        "timestamp": {"type": "number"},
+        "block_hash": {"$ref": "#/$defs/hex64"}
+      }
+    },
+    "researchEvent": {
+      "description": "Every research event on the shared chain: always public, versioned, identified and timed.",
+      "type": "object",
+      "required": ["schema_version", "event_id", "created_at", "classification"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "event_type": {"enum": ["public_research_records", "public_research_provenance", "public_research_correction",
+                                "public_variant_classification", "public_crispr_relevance", "public_dataset_record",
+                                "public_sequence_record", "public_model_run_record", "public_data_hash",
+                                "public_record_note"]},
+        "event_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "classification": {"const": "public"}
+      }
+    },
+    "dataHashEvent": {
+      "description": "A fingerprint of public data. integrity_report: a RabbitSoftware.inc integrity report (the report stays on its PC).",
+      "allOf": [{"$ref": "#/$defs/researchEvent"}],
+      "type": "object",
+      "required": ["event_type", "data_kind", "data_sha256"],
+      "properties": {
+        "event_type": {"const": "public_data_hash"},
+        "data_kind": {"enum": ["dataset", "biological_sequence", "research_file", "integrity_report"]},
+        "data_sha256": {"$ref": "#/$defs/hex64"}
+      },
+      "unevaluatedProperties": false
+    },
+    "noteEvent": {
+      "description": "A challenge, improvement or reply about a chain entry. Notes never erase anything; personal information is refused.",
+      "allOf": [{"$ref": "#/$defs/researchEvent"}],
+      "type": "object",
+      "required": ["event_type", "note_kind", "about_event_id", "text"],
+      "properties": {
+        "event_type": {"const": "public_record_note"},
+        "note_kind": {"enum": ["challenge", "improvement", "reply"]},
+        "about_event_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "about_record": {"type": ["object", "null"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000}
+      }
+    }
+  }
+}

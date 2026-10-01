@@ -125,7 +125,7 @@
     waiting = true; busy.hidden = false; log.setAttribute("aria-busy", "true");
     show("You", shown || text);
     try {
-      const r = await fetch("/api/message", { method: "POST",
+      const r = await fetch("/api/v1/message", { method: "POST",
         headers: { "Content-Type": "application/json", "X-Rabbit": "1" },
         body: JSON.stringify({ session, text }) });
       const data = await r.json();
@@ -145,14 +145,14 @@
   setBig(store.get("rabbit-big") === "1");
   document.getElementById("restart").addEventListener("click", () => { session = newId(); log.textContent = ""; greet(); box.focus(); });
   function greet() { show(NAME, `Hello! I'm ${NAME}, the assistant from ${COMPANY} Ask me anything about this OS in your own words, or type help to see what I can do.`); }
-  fetch("/api/status", { headers: { "X-Rabbit": "1" } }).then(r => r.json())
+  fetch("/api/v1/status", { headers: { "X-Rabbit": "1" } }).then(r => r.json())
     .then(s => { document.getElementById("status").textContent = `${s.nodes} ${s.chain}`; })
     .catch(() => { document.getElementById("status").textContent = ""; });
   // Background jobs (such as the self-tests) report here when they finish, even if nothing is typed.
   setInterval(async () => {
     if (waiting) return;
     try {
-      const r = await fetch("/api/poll", { method: "POST",
+      const r = await fetch("/api/v1/poll", { method: "POST",
         headers: { "Content-Type": "application/json", "X-Rabbit": "1" }, body: JSON.stringify({ session, text: "" }) });
       const data = await r.json();
       if (data.text) show(NAME, data.text);
