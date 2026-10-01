@@ -16,7 +16,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .datasets import SessionRecorder, export_jsonl, export_npz, read_session, train_from_sessions
+from .datasets import SessionRecorder, export_jsonl, export_npz, read_session
 from .generators import (AsyncRenderer, Automatic1111Generator, ComfyUIGenerator, DiffusersGenerator,
                          HTTPGenerator, PlaceholderGenerator)
 from .interfaces import load_plugin
@@ -67,10 +67,24 @@ def make_generator(a):
     return None
 
 
+def open_ledger() -> ProvenanceLedger:
+    return ProvenanceLedger(load_or_create_key(STORE / "ledger.key"), STORE / "provenance.jsonl")
+
+
 def run(a) -> int:
     p = profile(a.profile, **({"record": a.record} if a.record is not None else {}))
     ledger = None if a.no_ledger else ProvenanceLedger(load_or_create_key(STORE / "ledger.key"), STORE / "provenance.jsonl")
     predictor = load_plugin(a.predictor, feature_dim=feature_dim()) if a.predictor else None
+    if a.model == "latest":
+        from .model import TemporalPredictor
+        from .training import TrainingPipeline
+
+        cls = type(predictor) if predictor is not None else TemporalPredictor
+        loaded, entry = TrainingPipeline(ledger or open_ledger(), b"", STORE / "models").latest_model(cls)
+        if loaded is None:
+            sys.exit(f"no released {cls.__name__} yet: train one with python -m neurovisual train")
+        predictor = loaded
+        print(f"model: {cls.__name__} v{entry['metrics']['version']} from block {entry['index']} (fingerprint verified)")
     generator = make_generator(a)
     recorder = SessionRecorder(STORE / "datasets", load_or_create_key(STORE / "dataset.key"),
                                feature_names=list(BANDS) + list(SimulatedPhysiology().read().values), profile=p.name,
@@ -151,12 +165,33 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("sessions", nargs="*")
     e.add_argument("--format", choices=["npz", "jsonl"], default="npz")
     e.add_argument("--out", required=True)
-    t = sub.add_parser("train", help="train a model on the ratings in recorded sessions")
+    t = sub.add_parser("train", help="train a model on recorded sessions and release a new version (with provenance)")
     t.add_argument("sessions", nargs="*")
     t.add_argument("--predictor", help="package.module:Class (default: the built-in model)")
+    t.add_argument("--mode", choices=["both", "memory", "imagination", "all"], default="both",
+                   help="both: a memory-model run, then an imagination-model run (default); all: one run on every rating")
+    t.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    t.add_argument("--dataset-name", default="personal")
+    t.add_argument("--from", dest="start", choices=["latest", "scratch"], default="latest",
+                   help="continue from the latest released version (default) or start a new lineage")
+    r.add_argument("--model", choices=["new", "latest"], default="new", help="latest: the newest released version")
+    sub.add_parser("chain", help="show the provenance chain, block by block")
+    lin = sub.add_parser("lineage", help="trace a model version back to its training runs and datasets")
+    lin.add_argument("version", nargs="?", help="e.g. 1.3.0 (default: the newest)")
     a = parser.parse_args(argv or ["run"])
     if a.command == "run":
         return run(a)
+    if a.command == "chain":
+        print("\n".join(open_ledger().render()))
+        return 0
+    if a.command == "lineage":
+        ledger = open_ledger()
+        entry = ledger.latest("model_version", **({"version": a.version} if a.version else {}))
+        if entry is None:
+            sys.exit("no such model version in the ledger")
+        for block in ledger.lineage(entry["hash"]):
+            print(f"Block {block['index']}  {ledger.describe(block)}")
+        return 0
     key = load_or_create_key(STORE / "dataset.key")
     if a.command == "sessions":
         for path in session_paths([]):
@@ -172,12 +207,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"exported {result} (plaintext; delete it after training)")
         return 0
     from .model import TemporalPredictor
+    from .training import TrainingPipeline
 
     model = load_plugin(a.predictor, feature_dim=feature_dim()) if a.predictor else TemporalPredictor(feature_dim())
-    _, metrics = train_from_sessions(model, paths, key)
-    print(f"trained {type(model).__name__} on {metrics['records']} ratings from {len(paths)} sessions: "
-          f"objective {metrics['objective_before']} -> {metrics['objective_after']}, "
-          f"model {metrics['old_version']} -> {metrics['new_version']}")
+    modes = ("memory", "imagination") if a.mode == "both" else (a.mode,)
+    ledger = open_ledger()
+    result = TrainingPipeline(ledger, key, STORE / "models").train(model, paths, modes, a.device, a.dataset_name, a.start)
+    for run_ in result["runs"]:
+        if "skipped" in run_:
+            print(f"{run_['mode']}-model training skipped: {run_['skipped']}")
+            continue
+        c = run_["compute"]
+        print(f"{run_['mode']}-model training (block {run_['block']}): {run_['records']} ratings on {c['device']} "
+              f"({c.get('gpu') or c['cpu']}), {c['seconds']} s, {c['samples_per_second']} samples/s; "
+              f"objective {run_['objective_before']} -> {run_['objective_after']}")
+    print(f"released {type(model).__name__} v{result['model_version']} (block {result['model_block']}), "
+          f"checkpoint {Path(result['checkpoint']).name}; dataset block {result['dataset']}")
     return 0
 
 
