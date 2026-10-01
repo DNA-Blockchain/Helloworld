@@ -160,7 +160,38 @@ r = torch.tensor(d["ratings"])                       # how it was rated
 
 **Hugging Face datasets:** `load_dataset("json", data_files="train.jsonl")` after `export --format jsonl`.
 
-## 6. Provenance
+## 6. Training pipeline and model lineage
+
+`python -m neurovisual train` turns recorded sessions into a released model version and writes each stage to the provenance chain:
+
+```
+GPU / CPU compute ──> model training ──> performance metrics + model hash ──> provenance block N ──> N+1 ...
+
+Block 0   Genesis
+Block 1   Dataset personal v1: 1 session, 98 steps, 2 ratings, raw EEG
+Block 2   Training-set hash (memory): SHA-256 of the exact arrays trained on
+Block 3   Memory-model training: epochs, objective before -> after, device (GPU or CPU), seconds, samples/s
+Block 4   Training-set hash (imagination)
+Block 5   Imagination-model training
+Block 6   Model v1.1: fingerprint, checkpoint file and its SHA-256        (from blocks 3, 5)
+ ...      v1.2, v1.3: each continues from the verified previous checkpoint
+```
+
+| Command | Does |
+|---|---|
+| `train [--mode both\|memory\|imagination\|all]` | registers the sessions as a dataset (same sessions → same block), then one run per mode, then one release |
+| `train --device auto\|cpu\|cuda` | trains on a CUDA GPU when PyTorch sees one; `cuda` without one is an error, never a silent CPU fallback. GPU models record their name, memory and peak use |
+| `train --predictor neurovisual.examples.torch_predictor:GRUPredictor` | a separate lineage per model class |
+| `train --from scratch` | starts a new lineage instead of continuing from the latest version |
+| `run --model latest` | runs live with the newest release; its checkpoint is verified against the ledger's SHA-256 and fingerprint first |
+| `chain` | prints every block with its hash, the previous hash and its links |
+| `lineage [1.3.0]` | traces a version back through its runs, training sets and datasets |
+
+The two built-in predictors use one network for both modes, so "memory-model training" means training on the ratings given in memory mode. A predictor with separate heads per mode can use the same pipeline unchanged.
+
+**High-compute runs:** with no GPU on the PC, export the dataset (`export --format npz`), train on any CUDA machine, cloud GPU or Colab with the same predictor class, and bring the checkpoint back. The `training_run` block records the device it actually ran on.
+
+## 7. Provenance
 
 `autonomous/neurovisual/provenance.jsonl` is a local hash chain. It records:
 - each learning burst: the model fingerprint, a config hash, metrics, and a keyed digest of the ratings;

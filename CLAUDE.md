@@ -14,7 +14,7 @@ RabbitSoftware is a research OS, an AI model and a blockchain in one repository
 | Cloud | `deploy/cloudflare/` (model gateway Worker), `deploy/cloudflare-sync/` (accounts and sync, R2) | private until launch |
 | APIs | `schemas/rabbitsoftware-*-v1.schema.json`, `docs/api/` | contract-tested; v1 only grows, breaking changes need `-v2` |
 | OS | `os/` (no_std Rust kernel, QEMU only), `linux/` (Alpine image), `os/tasks/` (generated bundles) | never write images to physical disks |
-| Neural → visual prototype | `neurovisual/` (core: `signals.py`, `model.py`, `system.py`, `provenance.py`; open slots: `interfaces.py`, `sensors.py`, `generators.py`, `conditioning.py`, `stream.py`, `datasets.py`, `profiles.py`); `python -m neurovisual run/sessions/export/train`; docs in `docs/neurovisual/` | sensors via BrainFlow/LSL or simulated; session datasets AES-GCM-encrypted under `autonomous/neurovisual/`; remote generators need https and a yes; the ledger holds keyed digests only |
+| Neural → visual prototype | `neurovisual/` (core: `signals.py`, `model.py`, `system.py`, `provenance.py`; open slots: `interfaces.py`, `sensors.py`, `generators.py`, `conditioning.py`, `stream.py`, `datasets.py`, `profiles.py`); `python -m neurovisual run/sessions/export/train/chain/lineage`; docs in `docs/neurovisual/` | sensors via BrainFlow/LSL or simulated; session datasets AES-GCM-encrypted under `autonomous/neurovisual/`; remote generators need https and a yes; the ledger holds keyed digests only |
 | UI kit | `ui/` (tokens.css, Web Components, no build step) | |
 | Releases | `VERSION`, `CHANGELOG.md`, `RELEASING.md`, `.github/workflows/release.yml`, `scripts/code_fingerprint.py` | tag `vX.Y.Z` must match `VERSION` |
 

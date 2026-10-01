@@ -141,6 +141,19 @@ class TemporalPredictor:
                        "objective_before": round(before, 6), "objective_after": round(model.objective(records), 6),
                        "old_version": self.version_text, "new_version": model.version_text}
 
+    def save(self, path) -> None:
+        """A checkpoint (.npz): weights, version and decay."""
+        with open(path, "wb") as f:
+            np.savez(f, W=self.W, version=np.asarray(self.version), decay=np.asarray(self.decay))
+
+    @classmethod
+    def load(cls, path) -> "TemporalPredictor":
+        with np.load(path) as data:
+            model = cls(data["W"].shape[1], decay=float(data["decay"]))
+            model.W = data["W"].copy()
+            model.version = tuple(int(x) for x in data["version"])
+        return model
+
     def fingerprint(self) -> str:
         """SHA-256 of the weights and version: identifies exactly which model produced an output."""
         digest = hashlib.sha256(self.version_text.encode())
