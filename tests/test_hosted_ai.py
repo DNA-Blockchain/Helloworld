@@ -166,8 +166,16 @@ def test_the_model_server_command(tmp_path, capsys):
     assert rabbit.model_server("https://rabbit.example.org", False, settings) == 0
     assert "asks before each question" in capsys.readouterr().out
     assert rabbit.model_server(None, False, settings) == 0
-    assert capsys.readouterr().out.strip() == "Model server: https://rabbit.example.org"
+    assert capsys.readouterr().out.strip().startswith("Model server: https://rabbit.example.org, asked before each")
+    assert rabbit.model_server(None, False, settings, always="on") == 0 and hosted_ai.always_use(settings)
+    assert "without asking" in capsys.readouterr().out
+    rabbit.model_server(None, False, settings)
+    assert "used without asking (--always on)" in capsys.readouterr().out
+    assert rabbit.model_server(None, False, settings, always="off") == 0 and not hosted_ai.always_use(settings)
+    capsys.readouterr()
     assert rabbit.model_server(None, True, settings) == 0 and configured_url(settings) == ""
+    assert rabbit.model_server(None, False, settings, always="on") == 1                     # needs a server first
+    assert "Set a model server first" in capsys.readouterr().out
 
 
 def test_the_client_uses_certifi_for_https():

@@ -8,6 +8,10 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **The AI everywhere in RabbitSoftware.inc** (opt-in with `python rabbit.py model-server --always on`):
+  - **No yes/no each time:** AI steps go straight to the configured model server. If it doesn't answer, this PC's model does, and the reply says so. `--always off` restores asking; `model-server` shows the mode.
+  - **AI summaries on status answers:** nodes, chain, ledger, agents, swarm, activity, reports, the pipeline report, the corpus, tools, jobs and the integrity report each get a 3–6 sentence technical summary from the model, labeled "AI summary". The exact figures computed on this PC stay below it as the reference. Before sending, the text is screened for personal information and your user folder is replaced with `~`. Summaries use only the model server, never the slow local model; with "always" off, status answers are unchanged and instant.
+  - **The AI answers anything else:** questions that aren't research or a command go to the model with a short description of the project, instead of the menu. Research terms still go research-first.
 - **SQL in the cloud: Cloudflare D1** for the sync service (`deploy/cloudflare-sync/migrations/0001_init.sql`), alongside R2:
   - **Shared answers:** stored in `training_answers` (no account or device) with a review status, instead of R2 files.
   - **Corpus:** every public record indexed once in `corpus_records`, searchable by anyone (`GET /v1/corpus/search`, `/v1/corpus/stats`).

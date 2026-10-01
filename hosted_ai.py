@@ -120,17 +120,38 @@ def from_settings(settings_file: Path) -> HostedAI | None:
         return None       # a bad saved address means no server, not a crash; `rabbit model-server` says why
 
 
+def always_use(settings_file: Path) -> bool:
+    """True when the owner chose to send AI steps to the model server without being asked each time."""
+    try:
+        return bool(json.loads(settings_file.read_text(encoding="utf-8")).get("model_server_always"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_always_use(settings_file: Path, on: bool) -> None:
+    try:
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        settings = {}
+    settings["model_server_always"] = on
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.write_text(json.dumps(settings, indent=1), encoding="utf-8")
+
+
 def save_url(settings_file: Path, url: str | None) -> str:
     """Saves the model server (checked first), or removes it when url is None. Returns what was saved."""
     try:
         settings = json.loads(settings_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         settings = {}
+    previous = settings.get("model_server", "")
     if url is None:
         settings.pop("model_server", None)
         saved = ""
     else:
         saved = settings["model_server"] = check_url(url)
+    if saved != previous:
+        settings.pop("model_server_always", None)   # "always" was agreed for one server, not whichever comes next
     settings_file.parent.mkdir(parents=True, exist_ok=True)
     settings_file.write_text(json.dumps(settings, indent=1), encoding="utf-8")
     return saved
