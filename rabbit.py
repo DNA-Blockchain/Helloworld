@@ -7,6 +7,8 @@ or a web page.
     python rabbit.py ask "how are the nodes"       # one question, one answer
     python rabbit.py model-server https://...      # answer with your model on a server (asks each time)
     python rabbit.py model-server --off            # answer only with this PC's model
+    python rabbit.py account create|pair|join CODE|recover|devices   # one account across your devices
+    python rabbit.py sync                          # research and encrypted history, with your other devices
 
 Everything runs on this PC unless you say yes: a public research search, and sending a question to
 the model server, each ask first. See rabbitsoft/.
@@ -65,6 +67,44 @@ def web(port: int, open_browser: bool) -> int:
     return 0
 
 
+def account(action: str, code: str | None, session: Session | None = None, ask=input, secret_input=None) -> int:
+    """The account commands. The recovery phrase is typed hidden here, never into the chat."""
+    import getpass
+
+    from rabbitsoft.sync import SyncError
+
+    session = session or Session()
+    secret_input = secret_input or getpass.getpass
+    if action == "status":
+        print(session.account_status())
+    elif action == "create":
+        reply = session.confirm_create_account()
+        show(reply)
+        if reply.confirm and ask("you> ").strip().lower() in ("y", "yes"):
+            show(session._create_account())
+    elif action == "pair":
+        show(session.add_device())
+    elif action == "join":
+        if not code:
+            print("Give the code from your other device: rabbit account join ABCD-EFGH-JKLM")
+            return 1
+        show(session.join_with_code(code))
+    elif action == "recover":
+        if session.sync_client.has_account():
+            print(session.account_status())
+            return 0
+        phrase = secret_input("Recovery phrase (hidden as you type): ")
+        try:
+            session.sync_client.join_with_phrase(phrase, session._device_name())
+        except (SyncError, ValueError) as error:
+            print(f"That didn't work: {error}")
+            return 1
+        print("This device is back in your account. Run: rabbit sync")
+    elif action == "devices":
+        show(session.list_devices())
+    return 0
+
+
 def model_server(url: str | None, off: bool, settings_file=None) -> int:
     from hosted_ai import configured_url, save_url
     from rabbitsoft import tools
@@ -100,6 +140,11 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--no-browser", action="store_true", help="don't open the page automatically")
     a = sub.add_parser("ask", help="one question, one answer")
     a.add_argument("question", nargs="+")
+    acc = sub.add_parser("account", help="your account across devices: create, pair, join, recover, devices")
+    acc.add_argument("action", nargs="?", default="status",
+                     choices=["status", "create", "pair", "join", "recover", "devices"])
+    acc.add_argument("code", nargs="?", help="the pairing code, for join")
+    sub.add_parser("sync", help="sync research and encrypted history with your other devices")
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
@@ -111,6 +156,11 @@ def main(argv: list[str] | None = None) -> int:
         return web(args.port, not args.no_browser)
     if args.command == "model-server":
         return model_server(args.url, args.off)
+    if args.command == "account":
+        return account(args.action, args.code)
+    if args.command == "sync":
+        show(Session().sync_now())
+        return 0
     show(Session().handle(" ".join(args.question)))
     return 0
 

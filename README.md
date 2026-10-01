@@ -755,6 +755,30 @@ records only, never anything personal.
 - "Download the meaning model" runs `ollama pull nomic-embed-text` (about
   270 MB, once); afterwards it runs only on this PC.
 
+**One account across your devices** (`rabbitsoft/sync.py`, service in
+[`deploy/cloudflare-sync/`](deploy/cloudflare-sync/), Cloudflare Workers + R2).
+"Create an account" makes it, with this device as the first. It shows a
+recovery phrase once; write it down. Add a device in one of two ways:
+
+- Say "add a device", then on the new device say "join with code
+  ABCD-EFGH-JKLM". The code lasts 10 minutes.
+- Run `rabbit account recover` on the new device and type the phrase. It's
+  hidden as you type.
+
+"My devices" lists them, and "remove device 2" cuts one off. "Sync now" (or
+`rabbit sync`) does three things:
+
+- It sends this device's public research records to the shared corpus, so
+  every device's corpus grows.
+- It brings in the records other devices found.
+- It saves your answers in your history, which is encrypted on the device with
+  a key only your devices have. The service only ever stores scrambled bytes.
+
+With an account, each answer can be **shared for training**. It's checked for
+personal information first, asks first, and carries no name, account or
+device. Shared answers train the next model. Until the public launch, new
+accounts need the sign-up key in `autonomous/rabbit/signup.key`.
+
 It can also act, always after a plain yes/no question and with an entry in
 the activity log:
 

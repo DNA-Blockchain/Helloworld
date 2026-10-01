@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -119,9 +121,12 @@ class Session:
                  embedder=AUTO, abstract_fetchers: dict | None = None,
                  embed_model_command: list[str] | None = None, hosted=AUTO,
                  tool_survey: Callable[[], list[dict]] | None = None, winget: bool | None = None,
-                 install_command: Callable[[object], list[str]] | None = None):
+                 install_command: Callable[[object], list[str]] | None = None, sync_client=None):
         self.paths = paths or tools.Paths()
         self.tool_survey, self.winget, self.install_command = tool_survey, winget, install_command
+        self._sync_client = sync_client
+        self.last_exchange: dict | None = None
+        self._listed_devices: list[dict] = []
         self._ai = ai
         self._hosted = hosted
         self._model_choice: bool | None = None      # for the step being answered: True = the model server
@@ -282,8 +287,22 @@ class Session:
             return self.menu(f"{GREETING} Ask me anything about this OS in your own words, or pick a number:")
         if note := words.split_note(text, self.vocab):
             return self.write_note(*note)
+        if m := words.JOIN_CODE.search(text):          # the code as typed, never spelling-"fixed"
+            return self.join_with_code(m.group("code"))
         fixed = words.fix_spelling(text, self.vocab)
         heard = f"I read that as: \"{fixed}\".\n" if fixed.lower() != text.lower() else ""
+        if words.ACCOUNT_CREATE.search(fixed):
+            return self._prefix(heard, self.confirm_create_account())
+        if words.ADD_DEVICE.search(fixed):
+            return self._prefix(heard, self.add_device())
+        if m := words.REMOVE_DEVICE.search(fixed):
+            return self._prefix(heard, self.confirm_remove_device(int(m.group("n"))))
+        if words.DEVICES.search(fixed):
+            return self._prefix(heard, self.list_devices())
+        if words.SYNC_NOW.search(fixed):
+            return self._prefix(heard, self.sync_now())
+        if words.ACCOUNT_STATUS.search(fixed):
+            return self._prefix(heard, Reply(self.account_status()))
         if words.NOTES_OFF.search(fixed):
             return self._prefix(heard, self.confirm_notes(False))
         if words.NOTES_ON.search(fixed):
@@ -408,9 +427,11 @@ class Session:
         if records:
             reply = self.answer(query, records)
             self.last_answer = reply.text          # so "more simply" has something to work on
-            return self._offer([("Explain that more simply", self.simpler),
-                                ("Search public sources for newer records", lambda: self._confirm_search(query))],
-                               heard + reply.text)
+            options = [("Explain that more simply", self.simpler),
+                       ("Search public sources for newer records", lambda: self._confirm_search(query))]
+            if self.last_exchange and self.sync_client.has_account():
+                options.append(("Share this answer for training", self.confirm_share_training))
+            return self._offer(options, heard + reply.text)
         options = [query] + [s for s in self.suggest_terms(original or query) if s.lower() != query.lower()]
         return self._offer([(f"Search for \"{s}\"", lambda s=s: self._confirm_search(s)) for s in options],
                            heard + "I don't have saved records on that yet. Which search should I run?")
@@ -461,6 +482,7 @@ class Session:
         except (OSError, RuntimeError, ValueError) as error:
             return Reply(f"The AI didn't answer ({error}). Is Ollama running? Here are the records:\n{sources}")
         text = tidy_answer(raw, len(records))
+        self._remember_exchange(question, text, [r["citation"]["url"] for r in records])
         return Reply(f"{text}\n\nSources:\n{sources}\n\n{self._ai_note()}")
 
     def simpler(self) -> Reply:
@@ -766,6 +788,176 @@ class Session:
         import swarm_explain
 
         return OllamaSummarizer(swarm_explain.pick_model(log=lambda _: None), timeout=600)
+
+    # -- one account across devices (rabbitsoft/sync.py) --------------------------------------------
+    @property
+    def sync_client(self):
+        if self._sync_client is None:
+            from .sync import SYNC_URL, SyncClient
+
+            self._sync_client = SyncClient(self.paths.rabbit / "account", os.environ.get("RABBIT_SYNC_URL", SYNC_URL))
+        return self._sync_client
+
+    @property
+    def _history_file(self):
+        return self.paths.rabbit / "history.jsonl"
+
+    def _remember_exchange(self, question: str, answer: str, sources: list[str]) -> None:
+        """Keeps each AI answer on this PC (and, with an account, in the encrypted synced history)."""
+        self.last_exchange = {"time": time.time(), "question": question, "answer": answer, "sources": sources[:10]}
+        try:
+            self.paths.rabbit.mkdir(parents=True, exist_ok=True)
+            with open(self._history_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(self.last_exchange) + "\n")
+        except OSError:
+            pass                 # history is a convenience; the answer stands without it
+
+    def _history(self, limit: int = 2000) -> list[dict]:
+        try:
+            lines = self._history_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        return [json.loads(l) for l in lines[-limit:] if l.strip()]
+
+    def _signup_key(self) -> str:
+        key = os.environ.get("RABBIT_SIGNUP_KEY", "")
+        if not key:
+            try:
+                key = (self.paths.rabbit / "signup.key").read_text(encoding="utf-8").strip()
+            except OSError:
+                key = ""
+        return key
+
+    @staticmethod
+    def _device_name() -> str:
+        import platform
+
+        return (platform.node() or "this device")[:60]
+
+    def account_status(self) -> str:
+        info = self.sync_client.info()
+        if info is None:
+            return ("This device has no RabbitSoftware account yet. Say \"create an account\", or on a new device "
+                    "\"join with code\" and the code from a device that has one.")
+        state = self.sync_client._state()
+        when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(state["last_sync"])) if state.get("last_sync")
+                else "not yet")
+        return (f"This device ({info['name']}) is part of account {info['account'][:8]}. Last sync: {when}. "
+                "Chat history syncs encrypted; only your devices can read it.")
+
+    def confirm_create_account(self) -> Reply:
+        if self.sync_client.has_account():
+            return Reply(self.account_status())
+        if not self._signup_key():
+            return Reply("New accounts aren't open yet. They open at the public launch.")
+        return self._ask("This creates your RabbitSoftware account on the sync service, with this device as its "
+                         "first. Your chat history will sync encrypted, so only your devices can read it. You'll see a "
+                         "recovery phrase once: write it down and keep it private, because it's the only way back in "
+                         "if you lose every device. Create it?", self._create_account)
+
+    def _create_account(self) -> Reply:
+        from .sync import SyncError
+
+        try:
+            phrase = self.sync_client.create_account(self._device_name(), self._signup_key())
+        except SyncError as error:
+            return Reply(f"The account wasn't created ({error}).")
+        self._log("account_created", {"account": self.sync_client.info()["account"][:8]})
+        return Reply("Your account is ready. Your recovery phrase (shown only this once; write it down and keep it "
+                     f"private):\n\n    {phrase}\n\nTo add another device, say \"add a device\" here.")
+
+    def add_device(self) -> Reply:
+        from .sync import SyncError
+
+        if not self.sync_client.has_account():
+            return Reply(self.account_status())
+        try:
+            code = self.sync_client.make_pairing_code()
+        except SyncError as error:
+            return Reply(f"I couldn't make a pairing code ({error}).")
+        self._log("pairing_code_made", {})
+        return Reply(f"On the new device, say: join with code {code}\nThe code works once, for 10 minutes.")
+
+    def join_with_code(self, code: str) -> Reply:
+        from .sync import SyncError
+
+        if self.sync_client.has_account():
+            return Reply(f"This device already belongs to an account. {self.account_status()}")
+        try:
+            self.sync_client.join_with_code(code, self._device_name())
+        except (SyncError, ValueError) as error:
+            return Reply(f"That didn't work: {error}")
+        self._log("device_joined", {"account": self.sync_client.info()["account"][:8]})
+        return Reply(f"This device joined your account. Say \"sync now\" to bring over your history and research.")
+
+    def list_devices(self) -> Reply:
+        from .sync import SyncError
+
+        if not self.sync_client.has_account():
+            return Reply(self.account_status())
+        try:
+            self._listed_devices = [d for d in self.sync_client.devices() if not d["removed"]]
+        except SyncError as error:
+            return Reply(f"I couldn't reach the sync service ({error}).")
+        me = self.sync_client.info()["device"]
+        return Reply("Your devices:\n" + "\n".join(
+            f"{i}. {d['name']}{' (this one)' if d['device'] == me else ''}, added {d['added_at'][:10]}"
+            for i, d in enumerate(self._listed_devices, start=1)) + "\nSay \"remove device\" and a number to cut one off.")
+
+    def confirm_remove_device(self, number: int) -> Reply:
+        if not 1 <= number <= len(self._listed_devices):
+            return Reply("Say \"my devices\" first, then \"remove device\" and a number from that list.")
+        device = self._listed_devices[number - 1]
+        return self._ask(f"This removes {device['name']} from your account: it can't sync or read your history from "
+                         "the service any more. Remove it?", lambda: self._remove_device(device))
+
+    def _remove_device(self, device: dict) -> Reply:
+        from .sync import SyncError
+
+        try:
+            self.sync_client.remove_device(device["device"])
+        except SyncError as error:
+            return Reply(f"It wasn't removed ({error}).")
+        self._log("device_removed", {"device": device["device"][:8]})
+        return Reply(f"Removed {device['name']}.")
+
+    def sync_now(self) -> Reply:
+        from .sync import SyncError
+
+        if not self.sync_client.has_account():
+            return Reply(self.account_status())
+        try:
+            result = self.sync_client.sync(self._catalog(), self._history())
+        except SyncError as error:
+            return Reply(f"The sync didn't finish ({error}). Try again in a minute.")
+        self._log("synced", result)
+        return Reply(f"Synced. Sent {result['pushed']} research records to your shared corpus, brought in "
+                     f"{result['added']} from other devices, and saved {result['history']} answers in your encrypted "
+                     "history.")
+
+    def confirm_share_training(self) -> Reply:
+        from research_provenance import personal_information
+
+        exchange = self.last_exchange
+        if not exchange:
+            return Reply("There's no answer to share yet.")
+        found = personal_information(f"{exchange['question']}\n{exchange['answer']}")
+        if found:
+            return Reply(f"I won't share that: it looks like it has personal information ({', '.join(found)}). "
+                         "Personal data belongs in your encrypted vault (python dna_shell.py data-vault-store <file>).")
+        return self._ask("This shares your question and this answer, with no name, account or device attached, to "
+                         "help train RabbitSoftware.inc's next model. Share it?", lambda: self._share_training(exchange))
+
+    def _share_training(self, exchange: dict) -> Reply:
+        from .sync import SyncError
+
+        model = getattr(self.hosted, "model", "") if self.hosted else "local"
+        try:
+            self.sync_client.share_training(exchange["question"], exchange["answer"], exchange["sources"], model=model)
+        except SyncError as error:
+            return Reply(f"It wasn't shared ({error}).")
+        self._log("training_answer_shared", {})
+        return Reply("Shared. Thank you; it helps the next model answer better.")
 
     # -- the tools this OS needs (integrity team) --------------------------------------------------
     def _survey(self) -> list[dict]:

@@ -63,6 +63,15 @@ NOTE = re.compile(r"^\s*(?P<verb>challenge|improve|improvement|reply(\s+to)?)\s+
                   r"(?P<ref>[0-9a-f]{6,32}|\d{1,2})\s*$", re.I)
 NOTE_KINDS = {"challenge": "challenge", "improve": "improvement", "improvement": "improvement", "reply": "reply"}
 NOTES_ON = re.compile(r"\b(turn|switch)\s+on\b.*\bnotes?\b|\b(enable|allow)\b.*\bnotes?\b", re.I)
+# One account across devices (rabbitsoft/sync.py).
+ACCOUNT_CREATE = re.compile(r"\b(create|make|open|set up|setup|start)\b.*\baccount\b", re.I)
+ADD_DEVICE = re.compile(r"\b(add|pair|link|connect)\b.*\b(device|phone|computer|pc|laptop|tablet)\b", re.I)
+# The code ends the message ("join with code ABCD-EFGH-JKLM"), so "with code" can't be mistaken for part of it.
+JOIN_CODE = re.compile(r"\bjoin\b.*?(?P<code>\b[A-Za-z2-7]{4}[- ]?[A-Za-z2-7]{4}[- ]?[A-Za-z2-7]{4})\W*$", re.I)
+REMOVE_DEVICE = re.compile(r"\b(remove|delete|unlink)\b.*\bdevice\s+#?(?P<n>\d{1,2})\b", re.I)
+DEVICES = re.compile(r"\b(my|list|show|which)\b.*\bdevices\b", re.I)
+SYNC_NOW = re.compile(r"\bsync(hronize|hronise)?\b", re.I)
+ACCOUNT_STATUS = re.compile(r"\b(my|the)\s+account\b|\baccount\s+(status|info)\b", re.I)
 # Integrity report fingerprints on the chain: daily on/off, or the latest one now.
 INTEGRITY_DAILY_OFF = re.compile(r"\b(stop|don't|dont|no longer|quit)\b.*\bpublish\w*\b.*\b(integrity|fingerprints?)\b|"
                                  r"\bkeep\b.*\b(integrity|fingerprints?|reports?)\b.*\b(on this pc|private|local)", re.I)
@@ -108,7 +117,8 @@ COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list"
                  "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable",
                  "latest", "last", "newest", "recent", "still", "true", "everything", "whole", "system", "check",
                  "fill", "fetch", "download", "install", "model", "publish", "publishing", "published", "fingerprint", "fingerprints",
-                 "keep", "private", "local")
+                 "keep", "private", "local", "account", "accounts", "device", "devices", "sync", "join", "pair",
+                 "phone", "laptop", "tablet", "computer", "share", "training", "remove", "create")
 
 
 def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:
