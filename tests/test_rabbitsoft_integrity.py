@@ -77,6 +77,59 @@ def test_a_maxwell_web_app_export_is_checked_by_its_links(tmp_path):
     assert check.status == integrity.PROBLEM and "can't be read as a Maxwell chain" in check.lines[0]
 
 
+def _saved_report(paths):
+    report = {"schema": "rabbitsoft-integrity.v1", "created_at": "2026-10-01T08:00:00+00:00", "ok": True, "checks": []}
+    json_path, _, fingerprint = integrity.write_report(report, paths.autonomous / "integrity")
+    return json_path, fingerprint
+
+
+def test_a_reports_fingerprint_goes_on_the_chain_only_after_a_yes(tmp_path):
+    from audit_trail import AuditTrail
+    from research_provenance import ResearchProvenanceQueue, validate_public_provenance
+
+    paths = make_os(tmp_path, time.time())
+    s = Session(paths, ai=FakeAI())
+    assert "no integrity report yet" in s.handle("publish the integrity fingerprint").text
+    json_path, fingerprint = _saved_report(paths)
+    assert 'say "publish the integrity fingerprint"' in s.handle("show the latest integrity report").text
+    ask = s.handle("publish the integrity fingerprint")
+    outbox = ResearchProvenanceQueue(paths.autonomous / "research-outbox")
+    assert ask.confirm and "only the SHA-256" in ask.text and outbox.peek() is None
+    assert s.handle("yes").text.startswith("Queued the fingerprint")
+    event, _ = outbox.peek()
+    validate_public_provenance(event)
+    assert event["data_kind"] == "integrity_report" and event["data_sha256"] == fingerprint
+    entry = [e for e in AuditTrail(str(paths.audit)).read_all() if e["action"] == "integrity_fingerprint_queued"][-1]
+    assert entry["details"]["sha256"] == fingerprint and entry["details"]["report"] == json_path.name
+
+
+def test_publishing_every_day_is_a_choice_kept_on_this_pc(tmp_path, monkeypatch):
+    from research_provenance import ResearchProvenanceQueue
+
+    paths = make_os(tmp_path, time.time())
+    s = Session(paths, ai=FakeAI())
+    assert not integrity.publishing_daily(paths)
+    assert s.handle("keep integrity reports on this pc").text == "Integrity reports already stay on this PC."
+    ask = s.handle("publish integrity fingerprints daily")
+    assert ask.confirm and not integrity.publishing_daily(paths)
+    assert s.handle("yes").text.startswith("On.") and integrity.publishing_daily(paths)
+    _saved_report(paths)
+    assert "also published to the shared chain" in s.handle("show the latest integrity report").text
+
+    # The daily run (python -m rabbitsoft.integrity --daily) publishes only while it's on.
+    monkeypatch.setattr(integrity, "Paths", lambda: paths)
+    monkeypatch.setattr(integrity, "run_all", lambda paths, run_tests: {
+        "schema": "rabbitsoft-integrity.v1", "created_at": "2026-10-02T08:00:00+00:00", "ok": True, "checks": []})
+    outbox = ResearchProvenanceQueue(paths.autonomous / "research-outbox")
+    assert integrity.main(["--no-tests", "--daily"]) == 0 and outbox.peek() is not None
+    assert s.handle("stop publishing integrity fingerprints").text.startswith("Off.")
+    assert not integrity.publishing_daily(paths)
+    for queued in (paths.autonomous / "research-outbox").glob("*.json"):
+        queued.unlink()
+    integrity.main(["--no-tests", "--daily"])
+    assert outbox.peek() is None
+
+
 def test_code_fingerprints_are_checked_on_the_real_project():
     check = integrity.code_fingerprints(tools.Paths())
     assert check.role == "code enforcement" and check.lines[0].startswith("Code fingerprint now: ")

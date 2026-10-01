@@ -288,6 +288,12 @@ class Session:
             return self._prefix(heard, self.confirm_notes(False))
         if words.NOTES_ON.search(fixed):
             return self._prefix(heard, self.confirm_notes(True))
+        if words.INTEGRITY_DAILY_OFF.search(fixed):
+            return self._prefix(heard, self.confirm_integrity_daily(False))
+        if words.INTEGRITY_DAILY_ON.search(fixed):
+            return self._prefix(heard, self.confirm_integrity_daily(True))
+        if words.INTEGRITY_PUBLISH.search(fixed):
+            return self._prefix(heard, self.confirm_publish_integrity())
         if re.search(r"\b(simpler|simply|easier words|plain words)\b", fixed, re.I) and self.last_answer:
             return self.simpler()
         if m := re.search(r"\bexplain\b.*?\bsynthetic\W*(\d)\b|\bsynthetic\W*(\d)\b", fixed, re.I):
@@ -678,10 +684,55 @@ class Session:
         reports = sorted((self.paths.autonomous / "integrity").glob("integrity-*.md"))
         if not reports:
             return "There's no integrity report yet. Say \"check integrity\" to make one."
+        from .integrity import publishing_daily
+
         text = reports[-1].read_text(encoding="utf-8")
         body = [l for l in text.splitlines() if l.strip() and not l.startswith("# ")]
+        where = ("Each day's fingerprint is also published to the shared chain." if publishing_daily(self.paths) else
+                 "Fingerprints stay on this PC; say \"publish the integrity fingerprint\" to put this one on the chain.")
         return "\n".join([f"Latest integrity report ({reports[-1].stem.removeprefix('integrity-')}):"] + body
-                         + [f"Saved on this PC: {reports[-1]}"])
+                         + [f"Saved on this PC: {reports[-1]}", where])
+
+    def confirm_publish_integrity(self) -> Reply:
+        from .integrity import latest_report
+
+        report = latest_report(self.paths)
+        if report is None:
+            return Reply("There's no integrity report yet. Say \"check integrity\" to make one.")
+        return self._ask(f"This puts the fingerprint (only the SHA-256) of the latest integrity report "
+                         f"({report.stem.removeprefix('integrity-')}) on the shared chain, so anyone can later check the "
+                         "report wasn't changed. The report itself stays on this PC. Like everything on the chain, it "
+                         "can't be removed. Publish it?", lambda: self._publish_integrity(report))
+
+    def _publish_integrity(self, report) -> Reply:
+        from .integrity import publish_fingerprint
+
+        try:
+            event_id = publish_fingerprint(self.paths, report)
+        except (OSError, ValueError, PermissionError) as error:
+            return Reply(f"It wasn't published ({error}).")
+        return Reply(f"Queued the fingerprint (entry {event_id[:8]}). Node-0 adds it to the chain within a minute or "
+                     "two, and the other nodes copy it.")
+
+    def confirm_integrity_daily(self, on: bool) -> Reply:
+        from .integrity import publishing_daily
+
+        if on == publishing_daily(self.paths):
+            return Reply("Each day's integrity fingerprint is already published to the chain." if on else
+                         "Integrity reports already stay on this PC.")
+        if not on:
+            return self._set_integrity_daily(False)
+        return self._ask("Every day, after the daily integrity check, this puts that report's fingerprint (only the "
+                         "SHA-256) on the shared chain. The reports stay on this PC. Turn it on?",
+                         lambda: self._set_integrity_daily(True))
+
+    def _set_integrity_daily(self, on: bool) -> Reply:
+        from .integrity import set_publishing_daily
+
+        set_publishing_daily(self.paths, on)
+        self._log("integrity_daily_publish_on" if on else "integrity_daily_publish_off", {})
+        return Reply("On. Each day's integrity fingerprint goes on the shared chain; the reports stay on this PC." if on
+                     else "Off. Integrity reports stay on this PC; you can still publish one by asking.")
 
     def whats_running(self) -> str:
         lines = [job.describe() for job in self.jobs.items[-5:]]

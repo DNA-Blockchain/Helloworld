@@ -725,7 +725,21 @@ JSON and a readable page, with the report's SHA-256 as its fingerprint):
   those it gives the command to run yourself.
 
 It only reads, and nothing leaves this PC. "Show the integrity report" reads
-the latest one; `python -m rabbitsoft.integrity` runs it directly.
+the latest one; `python -m rabbitsoft.integrity` runs it directly. The
+supervisor also runs it every day in its daily report (`--no-integrity` skips
+it). A problem it finds makes that day's report "needs attention".
+
+Reports stay on this PC. Only a report's fingerprint (its SHA-256) can go on the
+shared chain, as a `public_data_hash` of kind `integrity_report`. Anyone can then
+check later that the report wasn't changed. Two commands do this, each asking
+first:
+
+- "Publish the integrity fingerprint" publishes the latest report's.
+- "Publish integrity fingerprints daily" publishes every day's.
+
+"Keep integrity reports on this PC" turns daily publishing off; it's off by
+default. Running nodes need a restart (`python node_supervisor.py`) to accept
+the new kind.
 
 Research questions are answered by **meaning**, not only by matching words:
 every public record in the research catalog (title and abstract) becomes a

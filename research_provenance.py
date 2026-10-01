@@ -68,6 +68,9 @@ from typing import Iterable
 
 PROVENANCE_SCHEMA_VERSION = 1
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+# What a public data hash may fingerprint. integrity_report: the SHA-256 of a RabbitSoftware.inc integrity
+# report (rabbitsoft/integrity.py); the report itself stays on the PC that made it.
+DATA_HASH_KINDS = frozenset({"dataset", "biological_sequence", "research_file", "integrity_report"})
 _SOURCE_RE = re.compile(r"^[a-z0-9_.-]{1,64}$")
 _MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _EVENT_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -142,8 +145,8 @@ def create_public_data_hash_event(
         raise PermissionError("explicit confirmation is required before publishing a data hash")
     if not isinstance(data_sha256, str) or not _HASH_RE.fullmatch(data_sha256):
         raise ValueError("data hash must be a lowercase SHA-256 digest")
-    if data_kind not in {"dataset", "biological_sequence", "research_file"}:
-        raise ValueError("data kind must be dataset, biological_sequence, or research_file")
+    if data_kind not in DATA_HASH_KINDS:
+        raise ValueError(f"data kind must be one of {', '.join(sorted(DATA_HASH_KINDS))}")
     event = {
         "schema_version": PROVENANCE_SCHEMA_VERSION,
         "event_type": "public_data_hash",
@@ -1109,7 +1112,7 @@ def validate_public_provenance(event: dict) -> None:
             raise ValueError("unsupported data hash event schema version")
         if event["classification"] != "public":
             raise ValueError("only public data hashes may be queued")
-        if event["data_kind"] not in {"dataset", "biological_sequence", "research_file"}:
+        if event["data_kind"] not in DATA_HASH_KINDS:
             raise ValueError("data hash event has an invalid data kind")
         if not isinstance(event["data_sha256"], str) or not _HASH_RE.fullmatch(
             event["data_sha256"]

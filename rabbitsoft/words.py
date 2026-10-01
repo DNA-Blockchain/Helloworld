@@ -63,6 +63,12 @@ NOTE = re.compile(r"^\s*(?P<verb>challenge|improve|improvement|reply(\s+to)?)\s+
                   r"(?P<ref>[0-9a-f]{6,32}|\d{1,2})\s*$", re.I)
 NOTE_KINDS = {"challenge": "challenge", "improve": "improvement", "improvement": "improvement", "reply": "reply"}
 NOTES_ON = re.compile(r"\b(turn|switch)\s+on\b.*\bnotes?\b|\b(enable|allow)\b.*\bnotes?\b", re.I)
+# Integrity report fingerprints on the chain: daily on/off, or the latest one now.
+INTEGRITY_DAILY_OFF = re.compile(r"\b(stop|don't|dont|no longer|quit)\b.*\bpublish\w*\b.*\b(integrity|fingerprints?)\b|"
+                                 r"\bkeep\b.*\b(integrity|fingerprints?|reports?)\b.*\b(on this pc|private|local)", re.I)
+INTEGRITY_DAILY_ON = re.compile(r"\b(publish|share|put|post)\b.*\b(integrity|fingerprints?)\b.*"
+                                r"\b(daily|every day|each day|automatically)\b", re.I)
+INTEGRITY_PUBLISH = re.compile(r"\b(publish|share|put|post)\b.*\b(integrity|fingerprints?)\b", re.I)
 INSTALL = re.compile(r"\b(?:install|add|get)\s+(?:the\s+)?(?P<tool>[a-z0-9][\w+.-]*)", re.I)
 NOTES_OFF = re.compile(r"\b(turn|switch)\s+off\b.*\bnotes?\b|\b(disable|block)\b.*\bnotes?\b", re.I)
 
@@ -101,7 +107,8 @@ COMMAND_WORDS = ("show", "open", "read", "see", "find", "search", "look", "list"
                  "about", "more", "simpler", "simply", "yes", "no", "please", "thanks", "the", "and",
                  "challenge", "improve", "improvement", "reply", "note", "notes", "turn", "enable", "disable",
                  "latest", "last", "newest", "recent", "still", "true", "everything", "whole", "system", "check",
-                 "fill", "fetch", "download", "install", "model")
+                 "fill", "fetch", "download", "install", "model", "publish", "publishing", "published", "fingerprint", "fingerprints",
+                 "keep", "private", "local")
 
 
 def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:

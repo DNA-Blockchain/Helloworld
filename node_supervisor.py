@@ -132,6 +132,7 @@ class Config:
     poll_seconds: float = 5.0
     run_tests: bool = True
     run_self_tests: bool = True
+    run_integrity: bool = True           # rabbitsoft.integrity in the daily report
     notify: bool = True
     python: str = field(default_factory=lambda: console_python())
 
@@ -212,6 +213,21 @@ def merge_totals(snapshots: dict) -> dict:
             t["chain_ok"] = False
             t["chain_msgs"].append(snap.get("chain_msg"))
     return per_node
+
+
+def integrity_section(result: dict) -> tuple[str, list[str]]:
+    """The daily report's integrity section, and the problems that make the day "needs attention"."""
+    if result.get("error"):
+        return (f"\n## Integrity\n\n- [ALERT] the integrity check didn't run: {result['error']}\n",
+                [f"integrity check didn't run: {result['error']}"])
+    from rabbitsoft.integrity import PROBLEM, summary_line
+
+    problems = [c for c in result.get("checks", []) if c.get("status") == PROBLEM]
+    text = f"\n## Integrity\n\n{summary_line(result)}\n\n"
+    text += "".join(f"- [ALERT] {c['name']}: {' '.join(c['lines'][:3])}\n" for c in problems)
+    text += ("- Fingerprint queued for the shared chain.\n" if result.get("published") else
+             "- Report kept on this PC (autonomous/integrity/).\n")
+    return text, [f"integrity: {c['name']}" for c in problems]
 
 
 def build_report(date: dt.date, period_start: float, period_end: float, totals: dict,
@@ -646,17 +662,42 @@ class Supervisor:
         except (OSError, ValueError) as e:
             return {"error": f"no results ({e})"}
 
+    def run_integrity(self) -> dict:
+        """RabbitSoftware.inc's integrity check, without tests (this report runs them already), while the
+        nodes are stopped. Publishes the report's fingerprint only if that's turned on for this PC."""
+        out = self.cfg.path("integrity-daily.json")
+        if os.path.exists(out):
+            os.remove(out)
+        try:
+            run = subprocess.run([self.cfg.python, "-m", "rabbitsoft.integrity", "--no-tests", "--daily",
+                                  "--json-out", out], cwd=PROJECT_DIR, capture_output=True, text=True,
+                                 timeout=900, creationflags=NO_WINDOW)
+            with open(out, encoding="utf-8") as f:
+                result = json.load(f)
+        except subprocess.TimeoutExpired:
+            return {"error": "timed out after 15 minutes"}
+        except (OSError, ValueError) as e:
+            return {"error": f"no results ({e})"}
+        result["published"] = "Fingerprint queued" in run.stdout
+        return result
+
     def daily(self, now: dt.datetime) -> str:
         self.log.info("daily report starting")
         self.stop_nodes()
         self.collect_status()
         tests = self.run_tests() if self.cfg.run_tests else None
         self_tests = self.run_self_tests() if self.cfg.run_self_tests else None
+        integrity = self.run_integrity() if self.cfg.run_integrity else None
         log_problems = {i: scan_log(os.path.join(self.cfg.logs_dir, f"node-{i}.log"))
                         for i in range(self.cfg.node_count)}
         report, ok, reasons = build_report(
             now.date(), self.state["period_start"], now.timestamp(), self.state["snapshots"],
             self.state["crashes"], tests, log_problems, self.cfg.node_count, self_tests)
+        if integrity is not None:
+            section, problems = integrity_section(integrity)
+            report += section
+            if problems:
+                ok, reasons = False, reasons + problems
         backup_alerts = self.backup_alerts()
         if backup_alerts:
             report += "\n## Backups\n\n" + "".join(f"- [ALERT] {a}\n" for a in backup_alerts)
@@ -881,9 +922,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--no-tests", action="store_true", help="skip running the test suite in the report")
     p.add_argument("--no-self-tests", action="store_true",
                    help="skip run_self_tests.py (component self-tests) in the report")
+    p.add_argument("--no-integrity", action="store_true",
+                   help="skip RabbitSoftware.inc's integrity check in the report")
     args = p.parse_args(argv)
     cfg = Config(report_hour=args.report_hour, run_tests=not args.no_tests,
-                 run_self_tests=not args.no_self_tests)
+                 run_self_tests=not args.no_self_tests, run_integrity=not args.no_integrity)
 
     if args.install:
         return install()

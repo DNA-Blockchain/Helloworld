@@ -144,7 +144,7 @@ def test_single_instance_lock(tmp_path):
 def test_real_nodes_restart_after_crash_and_daily_report(tmp_path):
     cfg = sup.Config(base_dir=str(tmp_path / "auto"), node_count=2, base_port=19780,
                      heartbeat_seconds=1, round_seconds=4, takeover_seconds=1,
-                     run_tests=False, run_self_tests=False, notify=False)
+                     run_tests=False, run_self_tests=False, run_integrity=False, notify=False)
     s = sup.Supervisor(cfg)
     s.load_keys()
     try:
@@ -179,6 +179,35 @@ def test_real_nodes_restart_after_crash_and_daily_report(tmp_path):
         s.stop_nodes()
 
 
+def test_the_daily_report_includes_the_integrity_check(tmp_path, monkeypatch):
+    import subprocess
+
+    cfg = sup.Config(base_dir=str(tmp_path), node_count=0, python="python")
+    s = sup.Supervisor(cfg)
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        report = {"ok": False, "checks": [
+            {"role": "records and data", "name": "Node chains", "status": "ok", "lines": ["node-0: intact"]},
+            {"role": "records and data", "name": "Activity log", "status": "problem", "lines": ["hash chain BROKEN."]}]}
+        with open(cmd[cmd.index("--json-out") + 1], "w", encoding="utf-8") as f:
+            json.dump(report, f)
+        return subprocess.CompletedProcess(cmd, 1, stdout="Fingerprint queued for the chain (entry ab12cd34).\n")
+
+    monkeypatch.setattr(sup.subprocess, "run", fake_run)
+    result = s.run_integrity()
+    assert seen[0][1:5] == ["-m", "rabbitsoft.integrity", "--no-tests", "--daily"] and result["published"]
+    section, problems = sup.integrity_section(result)
+    assert "1 checks passed, 1 found problems" in section
+    assert "- [ALERT] Activity log: hash chain BROKEN." in section and "queued for the shared chain" in section
+    assert problems == ["integrity: Activity log"]
+    kept, none = sup.integrity_section({"ok": True, "checks": [], "published": False})
+    assert "Report kept on this PC" in kept and none == []
+    failed, why = sup.integrity_section({"error": "timed out after 15 minutes"})
+    assert "[ALERT] the integrity check didn't run" in failed and why
+
+
 def test_keys_read_in_process_match_the_cli(tmp_path):
     import subprocess, sys
     cfg = sup.Config(base_dir=str(tmp_path), node_count=2, python=sys.executable)
@@ -207,7 +236,8 @@ def test_nodes_publish_queued_topics_only_while_confirmed(tmp_path):
 
 
 def _loop_supervisor(tmp_path, monkeypatch):
-    cfg = sup.Config(base_dir=str(tmp_path), node_count=0, run_tests=False, run_self_tests=False, notify=False)
+    cfg = sup.Config(base_dir=str(tmp_path), node_count=0, run_tests=False, run_self_tests=False,
+                     run_integrity=False, notify=False)
     s = sup.Supervisor(cfg)
     monkeypatch.setattr(sup.time, "sleep", lambda secs: None)
     monkeypatch.setattr(s, "stop_orphans", lambda: None)
