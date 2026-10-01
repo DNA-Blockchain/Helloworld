@@ -9,6 +9,8 @@ or a web page.
     python rabbit.py model-server --off            # answer only with this PC's model
     python rabbit.py account create|pair|join CODE|recover|devices   # one account across your devices
     python rabbit.py sync                          # research and encrypted history, with your other devices
+    python rabbit.py update                        # install the latest release (asks first)
+    python rabbit.py --version
 
 Everything runs on this PC unless you say yes: a public research search, and sending a question to
 the model server, each ask first. See rabbitsoft/.
@@ -105,6 +107,24 @@ def account(action: str, code: str | None, session: Session | None = None, ask=i
     return 0
 
 
+def update(root=None, ask=input, run=None, fetch=None) -> int:
+    import subprocess
+    from pathlib import Path
+
+    from rabbitsoft import __version__
+    from rabbitsoft.update import check, installer_command
+
+    root = Path(root or Path(__file__).resolve().parent)
+    result = check(root, __version__, fetch)
+    print(result["message"])
+    if result["action"] != "install":
+        return 0
+    if ask("Install it now? (yes/no) ").strip().lower() not in ("y", "yes"):
+        print("OK, not now.")
+        return 0
+    return (run or subprocess.call)(installer_command(root, result["tag"]))
+
+
 def model_server(url: str | None, off: bool, settings_file=None) -> int:
     from hosted_ai import configured_url, save_url
     from rabbitsoft import tools
@@ -132,7 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):          # the Windows console isn't UTF-8 by default
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    from rabbitsoft import __version__
+
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
+    p.add_argument("--version", action="version", version=f"{NAME} {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("chat", help="talk in this terminal")
     w = sub.add_parser("web", help="talk in a web page on this PC")
@@ -145,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                      choices=["status", "create", "pair", "join", "recover", "devices"])
     acc.add_argument("code", nargs="?", help="the pairing code, for join")
     sub.add_parser("sync", help="sync research and encrypted history with your other devices")
+    sub.add_parser("update", help="install the latest RabbitSoftware release (asks first)")
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
@@ -161,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         show(Session().sync_now())
         return 0
+    if args.command == "update":
+        return update()
     show(Session().handle(" ".join(args.question)))
     return 0
 

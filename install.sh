@@ -5,7 +5,7 @@
 #
 #     curl -fsSL https://raw.githubusercontent.com/DNA-Blockchain/Helloworld/master/install.sh | bash
 #
-# It downloads the project from GitHub into ~/.local/share/rabbitsoftware, gives it its own Python
+# It downloads the latest RabbitSoftware release from GitHub into ~/.local/share/rabbitsoftware, gives it its own Python
 # environment, and adds a `rabbit` command:  rabbit chat | rabbit web | rabbit ask "..."
 # Running it again updates the code and keeps your data (chains, notes, research, settings).
 #
@@ -13,14 +13,36 @@
 # command to run. Options, as environment variables:
 #   RABBIT_HOME       where to install (default ~/.local/share/rabbitsoftware)
 #   RABBIT_SOURCE     a .zip of the project to install from instead of GitHub
+#   RABBIT_CHANNEL    "dev" installs the newest code (master) instead of the latest release
+#   RABBIT_DRY_RUN    any value: say what would be installed, and stop
 #   RABBIT_MODEL_URL  a model server to use (https); RabbitSoftware.inc asks before each question sent there
 set -euo pipefail
 
-REPO_ZIP="https://github.com/DNA-Blockchain/Helloworld/archive/refs/heads/master.zip"
+REPO="DNA-Blockchain/Helloworld"
+REPO_ZIP="https://github.com/$REPO/archive/refs/heads/master.zip"
+LABEL="the development version (master)"
 RABBIT_HOME="${RABBIT_HOME:-$HOME/.local/share/rabbitsoftware}"
 BIN_DIR="$HOME/.local/bin"
 
 echo "RabbitSoftware.inc installer"
+
+# Which version: the latest release, unless RABBIT_CHANNEL=dev (master) or a zip was given.
+if [ -z "${RABBIT_SOURCE:-}" ] && [ "${RABBIT_CHANNEL:-}" != "dev" ]; then
+    TAG="$(curl -fsSL -H 'User-Agent: RabbitSoftware-installer' "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null |
+           python3 -c 'import json, sys; print(json.load(sys.stdin).get("tag_name", ""))' 2>/dev/null || true)"
+    if [ -n "$TAG" ]; then
+        REPO_ZIP="https://github.com/$REPO/archive/refs/tags/$TAG.zip"
+        LABEL="release $TAG"
+    else
+        echo "No release is published yet, so this installs the development version."
+    fi
+fi
+[ -n "${RABBIT_SOURCE:-}" ] && LABEL="the zip in RABBIT_SOURCE"
+echo "Installing $LABEL."
+if [ -n "${RABBIT_DRY_RUN:-}" ]; then
+    echo "Dry run: would download $REPO_ZIP into $RABBIT_HOME"
+    exit 0
+fi
 
 # 1. Python 3.11 or newer, able to make environments
 PYTHON=""
