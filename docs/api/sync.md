@@ -1,7 +1,7 @@
 # Sync API v1
 
 Between `rabbitsoft/sync.py` on each device and the sync service (`deploy/cloudflare-sync`, Cloudflare
-Workers + R2). Schema: [`rabbitsoftware-sync-api-v1`](../../schemas/rabbitsoftware-sync-api-v1.schema.json).
+Workers + R2 + D1). Schema: [`rabbitsoftware-sync-api-v1`](../../schemas/rabbitsoftware-sync-api-v1.schema.json).
 
 ## Signing
 
@@ -30,7 +30,13 @@ Private routes are signed by a registered device:
 | `POST /v1/training` | yes | `trainingItem` (stored with no account or device) | `{"shared": true}` |
 | `POST /v1/pairing` | yes | `pairingCreate` | `pairingCreated` (10 minutes) |
 | `GET /v1/pairing/{slot}` | no; 5 tries | — | `pairingSlot` (only the sealed secret) |
-| `GET /v1/admin/training` | yes, owner's account only | — | shared answers, for export |
+| `GET /v1/corpus/search?q=&limit=` | no; cached for 60 s | — | `corpusSearchReply` (every word in the title or abstract; up to 50) |
+| `GET /v1/corpus/stats` | no; cached for 60 s | — | `corpusStats` |
+| `GET /v1/admin/training?status=&limit=` | yes, owner's account only | — | `trainingList` (pending, approved, rejected or all) |
+| `POST /v1/admin/training/review` | yes, owner's account only | `trainingReview` | `trainingReviewReply` |
+| `GET /v1/admin/training/export?limit=` | yes, owner's account only | — | `trainingList` (not yet exported, not rejected) |
+| `POST /v1/admin/training/exported` | yes, owner's account only | `trainingExported` (after the file is on Hugging Face) | `trainingExportedReply`; 409 if the file is already recorded |
+| `GET /v1/admin/stats` | yes, owner's account only | — | `adminStats` |
 
 ## Errors
 
@@ -40,6 +46,6 @@ Errors come as `error` (`{"error": "..."}`):
 |---|---|
 | 401 | unsigned, wrong signature, or clock off |
 | 403 | not part of the account, sign-up closed, or not the owner |
-| 409 | slot taken, or too many devices |
+| 409 | slot taken, too many devices, or an export file already recorded |
 | 413 | over 1 MB |
 | 429 | over a daily limit |

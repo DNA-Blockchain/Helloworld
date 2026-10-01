@@ -6,7 +6,7 @@ task_categories: [text-generation, question-answering]
 tags: [rabbitsoftware, rlhf, feedback]
 configs:
   - config_name: default
-    data_files: "data/*.jsonl"
+    data_files: "data/*.parquet"
 ---
 
 # RabbitSoftware.inc shared answers (private)
@@ -16,23 +16,37 @@ Questions and answers that RabbitSoftware.inc users **chose to share** to help t
 
 ## How an answer gets here
 
-1. Someone asks RabbitSoftware.inc a question, and the model answers from public research records.
-2. They choose "Share this answer for training" and say yes. Sharing is never automatic.
-3. Before anything is sent, the question and answer are checked for personal information: emails, phone and ID numbers, dates of birth, addresses and long DNA sequences. If any is found, the answer is not shared.
-4. The answer is stored by the RabbitSoftware sync service (Cloudflare R2) **without any name, account or device**.
-5. A daily export copies new answers here, one JSON Lines file per day, under `data/`.
+1. **An answer is given.** Someone asks RabbitSoftware.inc a question, and the model answers from public research records.
+2. **They choose to share it.** They pick "Share this answer for training" and say yes. Sharing is never automatic.
+3. **It's screened on the device.** Before anything is sent, the question and answer are checked for personal information: emails, phone and ID numbers, dates of birth, addresses and long DNA sequences. If any is found, the answer isn't shared.
+4. **It's stored with no identity.** The RabbitSoftware sync service stores the answer in its SQL database (Cloudflare D1, table `training_answers`) **without any name, account or device**, with review status `pending`.
+5. **The owner reviews it.** The owner can approve or reject answers. Rejected answers are never exported.
+6. **It's exported here.** Each export (`python rabbit.py training export`, or daily if turned on) screens every answer again and writes one Parquet file (zstd) to `data/`. The service then records the file, its SHA-256 and the commit, so no answer is exported twice.
 
 ## Fields
 
-| Field | Meaning |
-|---|---|
-| `question` | what was asked, up to 2,000 characters |
-| `answer` | the model's answer, up to 4,000 characters |
-| `sources` | the public record links the answer was based on, at most 10 |
-| `rating` | 1 helpful, -1 wrong, 0 not rated |
-| `model` | which model answered (`rabbitsoftware` = the hosted model, `local` = the user's own PC) |
-| `shared_at` | when it was shared (UTC) |
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | the answer's random ID on the sync service |
+| `shared_at` | string | when it was shared (ISO 8601, UTC) |
+| `question` | string | what was asked, up to 2,000 characters |
+| `answer` | string | the model's answer, up to 4,000 characters |
+| `sources` | list of strings | the public record links the answer was based on, at most 10 |
+| `rating` | int8 | 1 helpful, −1 wrong, 0 not rated |
+| `model` | string | which model answered (`rabbitsoftware` = the hosted model, `local` = the user's own PC) |
+| `status` | string | review status at export: `pending` or `approved` |
 
 ## Use
 
-The dataset is private: it holds only the owner's training material for future LoRA rounds. Before training, check answers against their sources. A shared answer isn't necessarily correct, which is what the `rating` field and review are for.
+```python
+from datasets import load_dataset
+ds = load_dataset("Therealsickonechase-bit/rabbitsoftware-training", split="train")   # needs your HF login
+```
+
+Or query it with SQL from DuckDB:
+
+```sql
+SELECT status, rating, COUNT(*) FROM 'hf://datasets/Therealsickonechase-bit/rabbitsoftware-training/data/*.parquet' GROUP BY ALL;
+```
+
+The dataset is private: it holds only the owner's training material for future LoRA rounds. Before training, check answers against their sources. A shared answer isn't necessarily correct, which is what the `rating`, the review status and the review itself are for.

@@ -170,6 +170,13 @@ SYNC_ROUTES = [  # (method, path pattern) -> (request definition, reply definiti
     ("POST", r"^/v1/training$", "trainingItem", "ok"),
     ("POST", r"^/v1/pairing$", "pairingCreate", "pairingCreated"),
     ("GET", r"^/v1/pairing/[A-Z2-7]{4}$", None, "pairingSlot"),
+    ("GET", r"^/v1/corpus/search\?", None, "corpusSearchReply"),
+    ("GET", r"^/v1/corpus/stats$", None, "corpusStats"),
+    ("GET", r"^/v1/admin/training\?", None, "trainingList"),
+    ("POST", r"^/v1/admin/training/review$", "trainingReview", "trainingReviewReply"),
+    ("GET", r"^/v1/admin/training/export", None, "trainingList"),
+    ("POST", r"^/v1/admin/training/exported$", "trainingExported", "trainingExportedReply"),
+    ("GET", r"^/v1/admin/stats$", None, "adminStats"),
 ]
 
 
@@ -182,7 +189,9 @@ def test_the_sync_api_v1_on_the_wire(tmp_path):
     from research_catalog import ResearchCatalog
     from tests.test_sync_client import RECORD, SERVER
 
-    process = subprocess.Popen(["node", str(SERVER), "0"], stdout=subprocess.PIPE, text=True)
+    from tests.test_training_export import OWNER_SECRET, owner_id
+
+    process = subprocess.Popen(["node", str(SERVER), "0", owner_id()], stdout=subprocess.PIPE, text=True)
     url = f"http://127.0.0.1:{process.stdout.readline().split()[1]}"
     seen = []
 
@@ -204,6 +213,15 @@ def test_the_sync_api_v1_on_the_wire(tmp_path):
         assert [e["question"] for e in b.pull_history()] == ["q"]
         a.share_training("q", "a", [], rating=1)
         a.devices()
+        a.corpus_search("sickle")
+        a.corpus_stats()
+        owner = SyncClient(tmp_path / "owner", url, http=recording)
+        owner._register(OWNER_SECRET, "owner", "letmein")
+        [item] = owner.admin_training("pending")
+        owner.review_training([item["id"]], "approved")
+        owner.training_to_export()
+        owner.mark_exported("data/2026-10-01.parquet", "b" * 64, "c0ffee", [item["id"]])
+        owner.admin_stats()
         b.remove_device(a.info()["device"])
     finally:
         process.terminate()

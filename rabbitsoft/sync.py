@@ -307,6 +307,32 @@ class SyncClient:
         self._json("POST", "/v1/training", {"question": question, "answer": answer, "sources": sources[:10],
                                             "rating": rating, "model": model})
 
+    # -- the shared corpus in SQL (public) -------------------------------------------------------------
+    def corpus_search(self, query: str, limit: int = 20) -> list[dict]:
+        from urllib.parse import urlencode
+
+        return self._json("GET", "/v1/corpus/search?" + urlencode({"q": query, "limit": limit}), signed=False)["records"]
+
+    def corpus_stats(self) -> dict:
+        return self._json("GET", "/v1/corpus/stats", signed=False)
+
+    # -- the owner: review and export shared answers (the service allows only ADMIN_ACCOUNT) ----------
+    def admin_training(self, status: str = "pending", limit: int = 100) -> list[dict]:
+        return self._json("GET", f"/v1/admin/training?status={status}&limit={limit}")["items"]
+
+    def review_training(self, ids: list[str], status: str) -> int:
+        return self._json("POST", "/v1/admin/training/review", {"ids": ids, "status": status})["updated"]
+
+    def training_to_export(self, limit: int = 1000) -> list[dict]:
+        return self._json("GET", f"/v1/admin/training/export?limit={limit}")["items"]
+
+    def mark_exported(self, file: str, sha256: str, hf_commit: str, ids: list[str]) -> int:
+        return self._json("POST", "/v1/admin/training/exported",
+                          {"file": file, "sha256": sha256, "hf_commit": hf_commit, "ids": ids})["marked"]
+
+    def admin_stats(self) -> dict:
+        return self._json("GET", "/v1/admin/stats")
+
     def sync(self, catalog, history: list[dict]) -> dict:
         pushed = self.push_corpus(catalog)
         added = self.pull_corpus(catalog)

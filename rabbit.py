@@ -184,6 +184,46 @@ def model_server(url: str | None, off: bool, settings_file=None) -> int:
     return 0
 
 
+def training(action: str, ids: list[str], daily: str | None = None, session: Session | None = None, ask=input,
+             hub=None) -> int:
+    """The owner's commands for shared answers (rabbitsoft/training_export.py)."""
+    from rabbitsoft import training_export
+    from rabbitsoft.sync import SyncError
+
+    session = session or Session()
+    client = session.sync_client
+    try:
+        if action == "stats":
+            s = client.admin_stats()
+            by_status = ", ".join(f"{t['status']} {t['answers']} ({t.get('exported') or 0} exported)" for t in s["training"]) or "none"
+            print(f"Accounts: {s['accounts']}. Shared answers: {by_status}. Corpus: {s['corpus']['records']} records "
+                  f"from {s['corpus']['sources']} sources. Exports: {s['exports']['files']} files, "
+                  f"{s['exports']['rows']} answers (last {s['exports'].get('last') or 'never'}).")
+        elif action == "pending":
+            items = client.admin_training("pending")
+            for item in items:
+                print(f"{item['id']}  {item['shared_at'][:10]}  rating {item['rating']:+d}  Q: {item['question'][:80]}\n"
+                      f"    A: {item['answer'][:160]}")
+            print(f"{len(items)} answer(s) waiting for review.")
+        elif action in ("approve", "reject"):
+            if not ids:
+                print("Give the answer IDs (from: python rabbit.py training pending).")
+                return 1
+            updated = client.review_training(ids, "approved" if action == "approve" else "rejected")
+            print(f"{updated} answer(s) marked {action}d.")
+        elif daily:
+            training_export.set_exporting_daily(session.paths, daily == "on")
+            session._log("training_export_daily_" + daily, {})
+            print("The supervisor will export new shared answers once a day." if daily == "on" else
+                  "Daily export is off; export with: python rabbit.py training export")
+        else:
+            print(training_export.export(client, hub=hub, ask=ask, log=session._log)["message"])
+    except SyncError as error:
+        print(f"The sync service refused: {error}")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):          # the Windows console isn't UTF-8 by default
         if hasattr(stream, "reconfigure"):
@@ -212,6 +252,10 @@ def main(argv: list[str] | None = None) -> int:
                                                 "chain, nodes, integrity (read-only)")
     pr.add_argument("--hours", type=float, default=24, help="the period for the \"new\" figures (default 24)")
     pr.add_argument("--json", action="store_true", help="the report as JSON")
+    tr = sub.add_parser("training", help="shared answers (owner): stats, pending, approve/reject, export to Hugging Face")
+    tr.add_argument("action", choices=["stats", "pending", "approve", "reject", "export"])
+    tr.add_argument("ids", nargs="*", help="answer IDs, for approve and reject")
+    tr.add_argument("--daily", choices=["on", "off"], help="with export: let the supervisor export once a day")
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
@@ -232,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
         return update()
     if args.command == "publish-code-fingerprint":
         return publish_code_fingerprint(args.tag)
+    if args.command == "training":
+        return training(args.action, args.ids, args.daily)
     if args.command == "pipeline-report":
         from rabbitsoft import pipeline_report
 

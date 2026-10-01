@@ -188,6 +188,27 @@ def pipeline_section(period_start: float, period_end: float, paths=None) -> str:
     return "\n## Research data pipeline\n\n" + "\n".join(lines) + "\n"
 
 
+def training_export_section(paths=None, session_factory=None) -> tuple[str, list[str]]:
+    """The daily export of shared answers to the private Hugging Face dataset, only when the owner turned it on
+    (python rabbit.py training export --daily on). A failed export makes the day "needs attention"."""
+    try:
+        from rabbitsoft import training_export
+        from rabbitsoft.tools import Paths
+
+        paths = paths or Paths()
+        if not training_export.exporting_daily(paths):
+            return "", []
+        if session_factory is None:
+            from rabbitsoft.assistant import Session
+            session_factory = Session
+        session = session_factory(paths)
+        result = training_export.export(session.sync_client, ask=lambda _: "yes", log=session._log)
+        return f"\n## Training export\n\n- {result['message']}\n", []
+    except Exception as e:                    # the report must still be written
+        reason = f"training export didn't run ({type(e).__name__}: {e})"
+        return f"\n## Training export\n\n- [ALERT] {reason}\n", [reason]
+
+
 def build_report(date: dt.date, period_start: float, period_end: float, totals: dict,
                  crashes: list[dict], tests: Optional[dict], log_problems: dict[int, list[str]],
                  node_count: int, self_tests: Optional[dict] = None) -> tuple[str, bool, list[str]]:
@@ -657,6 +678,10 @@ class Supervisor:
             if problems:
                 ok, reasons = False, reasons + problems
         report += pipeline_section(self.state["period_start"], now.timestamp())
+        section, problems = training_export_section()
+        report += section
+        if problems:
+            ok, reasons = False, reasons + problems
         backup_alerts = self.backup_alerts()
         if backup_alerts:
             report += "\n## Backups\n\n" + "".join(f"- [ALERT] {a}\n" for a in backup_alerts)
