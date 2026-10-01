@@ -30,6 +30,13 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 
   It's available as `rabbit pipeline-report [--hours N] [--json]`, in chat ("pipeline report", "data mining report") and as a section of the supervisor's daily report. It's read-only, and its JSON follows the new `rabbitsoftware-pipeline-report-v1` schema (`docs/api/pipeline-report.md`).
 
+- **Neural → visual memory/imagination prototype** (`neurovisual/`, #70), simulated sensors only:
+  - **Signals:** EEG band power per window (delta to gamma, Hann-windowed FFT), a per-person running baseline (Welford z-scores), and signal quality from dead or non-finite channels.
+  - **Prediction:** a temporal predictor over an exponentially weighted sequence. Memory and imagination modes with explicit evidence, inference and generative weights; evidence is claimed only when a stored anchor exists, and confidence is computed from the mix, signal quality and baseline readiness.
+  - **Learning:** reward-weighted learning from ratings, run in a background thread on a copy of the model and swapped in atomically, so real time never blocks.
+  - **Provenance:** a local hash-chained ledger holding model fingerprints, config hashes, metrics and keyed (HMAC) data digests. No raw signals, notes or memories reach disk or the shared chain.
+  - `python -m neurovisual` runs a simulated session.
+
 ### Changed
 - **Research answers are technical reports:**
   - three sections (Findings, with the reported figures; Methods and evidence, with each record's study type; Limitations), every claim cited;
