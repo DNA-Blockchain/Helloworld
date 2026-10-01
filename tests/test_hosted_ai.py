@@ -77,9 +77,12 @@ def test_the_server_is_saved_and_the_environment_wins(tmp_path, monkeypatch):
 
 
 def test_a_private_hugging_face_endpoint_uses_this_pcs_login_and_nothing_else_does(tmp_path, monkeypatch):
-    import huggingface_hub
+    import sys
+    import types
 
-    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "hf_login")
+    fake = types.ModuleType("huggingface_hub")     # GitHub's test machine doesn't install huggingface_hub
+    fake.get_token = lambda: "hf_login"
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
     settings = tmp_path / "settings.json"
     save_url(settings, "https://abc.endpoints.huggingface.cloud")
     assert from_settings(settings).key == "hf_login"
