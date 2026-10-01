@@ -21,6 +21,15 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   - each release attaches a **code manifest** (`scripts/code_fingerprint.py`): the author, the license, the commit and the SHA-256 of every file, as stored in git, so it's reproducible on any OS;
   - `rabbit publish-code-fingerprint vX.Y.Z` records a release's fingerprint on the chain as the new `code_release` kind.
 
+- **Research data pipeline report** (`rabbitsoft/pipeline_report.py`) follows mined research through every stage, with the figures for each:
+  - **ingestion:** catalog records, abstracts, publication years and new records per source; the research agent's topics and per-source status; public searches and abstract fetches;
+  - **corpus:** documents, current vectors per embedding model, search method, unindexed records, cutoffs;
+  - **model:** training items kept and rejected per task, the latest evaluation, the model file, summaries, hosted questions, fallbacks and shared answers;
+  - **chain:** entries per kind, each node's copy, published records per source, corrections, notes, datasets, Bitcoin timestamp proof state, outbox;
+  - **nodes** and **integrity**.
+
+  It's available as `rabbit pipeline-report [--hours N] [--json]`, in chat ("pipeline report", "data mining report") and as a section of the supervisor's daily report. It's read-only, and its JSON follows the new `rabbitsoftware-pipeline-report-v1` schema (`docs/api/pipeline-report.md`).
+
 ### Changed
 - **Research answers are technical reports:**
   - three sections (Findings, with the reported figures; Methods and evidence, with each record's study type; Limitations), every claim cited;

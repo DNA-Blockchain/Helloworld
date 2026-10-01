@@ -14,6 +14,7 @@ against it. So a change that would break another part fails the tests before it 
 | Model API v1 | RabbitSoftware.inc ↔ gateway ↔ model | `rabbitsoftware-model-api-v1` | [model.md](model.md) |
 | Sync API v1 | devices ↔ sync service | `rabbitsoftware-sync-api-v1` | [sync.md](sync.md) |
 | Integrity v1 | integrity team → reports and readers | `rabbitsoftware-integrity-v1` | [integrity.md](integrity.md) |
+| Pipeline report v1 | every pipeline store → reports, chat, dashboards | `rabbitsoftware-pipeline-report-v1` | [pipeline-report.md](pipeline-report.md) |
 
 Check a message from code:
 

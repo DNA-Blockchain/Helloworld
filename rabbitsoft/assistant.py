@@ -366,6 +366,8 @@ class Session:
             return Reply(heard + self.tools_status())
         if intent == "jobs":
             return Reply(heard + self.whats_running())
+        if intent == "pipeline":
+            return Reply(heard + self.pipeline_report())
         if intent in tools.TOOLS:
             return Reply(heard + "\n".join(tools.TOOLS[intent](self.paths)))
         if intent == "research":
@@ -377,6 +379,12 @@ class Session:
             return self.research(fixed, original=text, heard=heard)
         return self.menu(heard + "I'm not sure what you'd like. Pick a number, or say it another way:")
 
+    def pipeline_report(self, hours: float = 24) -> str:
+        from . import pipeline_report
+
+        now = time.time()
+        return "\n".join(pipeline_report.render(pipeline_report.build(self.paths, now=now, since=now - hours * 3600)))
+
     def _tool_or_research(self, intent: str, fixed: str, text: str) -> Callable[[], Reply]:
         if intent == "research":
             return lambda: self.research(fixed, original=text)
@@ -385,7 +393,8 @@ class Session:
     def _tool_or_ask(self, intent: str) -> Callable[[], Reply]:
         actions = {"agents": lambda: Reply(self.agent_status()), "selftest": self.confirm_self_tests,
                    "jobs": lambda: Reply(self.whats_running()), "integrity": self.confirm_integrity,
-                   "corpus": lambda: Reply(self.corpus_status()), "tools": lambda: Reply(self.tools_status())}
+                   "corpus": lambda: Reply(self.corpus_status()), "tools": lambda: Reply(self.tools_status()),
+                   "pipeline": lambda: Reply(self.pipeline_report())}
         if intent in actions:
             return actions[intent]
         if intent in tools.TOOLS:

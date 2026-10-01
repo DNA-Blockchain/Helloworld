@@ -32,6 +32,8 @@ INTENTS: dict[str, tuple[str, ...]] = {
     "tools": ("tools", "toolchain", "missing tools", "installed", "compiler", "cmake", "qemu", "java", "jq",
               "rust", "ollama", "python", "git", "nodejs", "winget"),
     "jobs": ("jobs", "job", "what's running", "whats running", "background", "still running"),
+    "pipeline": ("pipeline", "pipeline report", "data pipeline", "data mining", "mining report", "data report",
+                 "ingestion", "how much data", "research data", "data flow"),
     "research": ("research", "study", "studies", "paper", "papers", "trial", "trials", "gene", "genes",
                  "disease", "treatment", "therapy", "cancer", "mutation", "editing", "crispr", "search",
                  "find", "look up", "question", "evidence"),
@@ -51,6 +53,7 @@ LABELS = {
     "corpus": "The research corpus (search by meaning)",
     "tools": "Tools this OS needs (what's missing)",
     "jobs": "What's running in the background",
+    "pipeline": "Research data pipeline report",
 }
 # Reading the shared chain: "what's on the chain", "find BRCA1 on the chain", "show entry 3".
 CHAIN_CONTENTS = re.compile(r"\bwhat('s|s| is| does)?\b.*\b(on|in)\b.*\bchain\b|\bchain (contents|holds)\b|"

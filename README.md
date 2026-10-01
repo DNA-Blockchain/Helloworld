@@ -690,6 +690,15 @@ model, cosine range and cutoff), the sources and publication years, and
 abstract coverage. "Summarize in brief" condenses an answer to 2–3
 sentences, keeping every figure and citation.
 
+"Pipeline report" (or `python rabbit.py pipeline-report --hours 24`) reports
+the whole research data pipeline, read-only. It covers records mined per
+source and abstract coverage, the research agent's per-source status, corpus
+indexing per embedding model, LoRA training items kept and rejected, the
+latest model evaluation, hosted-model use, chain entries per kind, published
+records per source and timestamp proofs, each node's copy and audits, and the
+latest integrity fingerprint. The supervisor adds it to every daily report;
+`--json` gives the data ([docs/api/pipeline-report.md](docs/api/pipeline-report.md)).
+
 Requests are routed deterministically, without a model round-trip: spelling is
 corrected against the project's vocabulary and shown back ("I read that
 as…"), and choices are numbered. Standard display settings on the web page:
