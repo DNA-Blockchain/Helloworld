@@ -60,7 +60,8 @@ client works whichever of them hosts the model.
 
 Where the server is comes from the RABBIT_MODEL_URL environment variable or, more usually, from
 `rabbit model-server <url>` (saved in autonomous/rabbit/settings.json). An access key, if the server
-needs one, only ever comes from RABBIT_MODEL_KEY: it's never written to a file by this project.
+needs one, comes from RABBIT_MODEL_KEY or, for a private Hugging Face endpoint, from this PC's
+existing Hugging Face login: it's never written to a file by this project.
 
 RabbitSoftware.inc asks before each question is sent here (see rabbitsoft/assistant.py); this module
 only does the sending.
@@ -149,12 +150,25 @@ def configured_url(settings_file: Path) -> str:
     return url
 
 
+def hf_login_key(url: str) -> str:
+    """For a private Hugging Face endpoint: the token this PC is already logged in with (`hf auth login`),
+    so its owner can use it without writing the token anywhere. Never sent to any other server."""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if not host.endswith(".endpoints.huggingface.cloud"):
+        return ""
+    try:
+        from huggingface_hub import get_token
+    except ImportError:
+        return ""
+    return get_token() or ""
+
+
 def from_settings(settings_file: Path) -> HostedAI | None:
     url = configured_url(settings_file)
     if not url:
         return None
     try:
-        return HostedAI(url, key=os.environ.get("RABBIT_MODEL_KEY", ""),
+        return HostedAI(url, key=os.environ.get("RABBIT_MODEL_KEY", "") or hf_login_key(url),
                         model=os.environ.get("RABBIT_MODEL_NAME", DEFAULT_MODEL))
     except ValueError:
         return None       # a bad saved address means no server, not a crash; `rabbit model-server` says why
