@@ -204,6 +204,24 @@ def is_greeting(text: str) -> bool:
     return bool(GREETINGS.match(text))
 
 
+# Biomedical words beyond the spelling list, and endings that mark medical terms (arthritis, glioma, fibrosis,
+# leukemia, neuropathy...): questions with these go research-first, with sources, rather than to the model alone.
+RESEARCH_HINTS = {
+    "disease", "diseases", "disorder", "syndrome", "symptom", "symptoms", "autism", "diabetes", "obesity", "asthma", "alzheimer", "alzheimers", "parkinson", "parkinsons", "dementia",
+    "stroke", "heart", "cardiac", "vaccine", "vaccines", "virus", "viral", "infection", "bacteria", "antibiotic",
+    "drug", "drugs", "dose", "medication", "clinical", "patients", "prognosis", "biomarker", "biomarkers",
+    "chromosome", "allele", "heritable", "pediatric", "depression", "schizophrenia", "epilepsy",
+}
+MEDICAL_ENDINGS = ("itis", "oma", "omas", "osis", "emia", "aemia", "pathy", "ectomy", "plasia")
+
+
+def mentions_research(text: str) -> bool:
+    """A research term (genes, diseases, therapies...): research comes first for these, with sources."""
+    found = re.findall(r"[a-z0-9-]+", text.lower())
+    return any(w in DOMAIN_TERMS or w in RESEARCH_HINTS or (len(w) > 6 and w.endswith(MEDICAL_ENDINGS))
+               for w in found)
+
+
 def looks_like_a_question(text: str) -> bool:
     """Enough to search for: a known research term, or two content words of four or more letters."""
     found = re.findall(r"[A-Za-z0-9-]+", text.lower())

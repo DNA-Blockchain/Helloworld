@@ -17,6 +17,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from . import GREETING, NAME, chain_view, toolchain, tools, words
@@ -58,6 +59,31 @@ TERMS_PROMPT = (
     "Give up to 3 short search phrases (2 to 5 words each) for medical research databases that match "
     "what they mean. Write one phrase per line, with no numbers, quotes or other text."
 )
+STATUS_PROMPT = (
+    "You are {name}, the operator assistant of RabbitSoftware: a research OS, an AI model and a blockchain of "
+    "research nodes. Below are exact figures about {topic}, computed on this PC.\n"
+    "Write a technical summary in 3 to 6 sentences: the overall state, anything abnormal or needing attention "
+    "(with the figure that shows it), and the next step if there is one. Quote every number exactly as written "
+    "and add no figures that aren't in the data; don't compare figures or compute differences between them. "
+    "Small differences in times or block counts between nodes are normal. If everything is normal, say so plainly.\n\n"
+    "Data:\n{data}\n\nSummary:"
+)
+GENERAL_PROMPT = (
+    "You are {name}, the assistant of RabbitSoftware: a research OS with three local blockchain nodes that "
+    "collect public biomedical research (PubMed, Europe PMC, NIH RePORTER, ClinicalTrials.gov) into a catalog, "
+    "a search-by-meaning corpus and a replicated research chain; a fine-tuned Llama 3.2 3B model; a Rust kernel "
+    "and Alpine OS image; and a neural-to-visual research prototype. Its live state is available through these "
+    "requests: \"how are the nodes\", \"blockchain checks\", \"pipeline report\", \"check integrity\", "
+    "\"what tools are missing\".\n"
+    "Answer the question below directly and technically. If it's about this system's live state, say which of "
+    "those requests shows it instead of guessing figures. If you aren't sure, say so.\n\n"
+    "Question: {question}\n\nAnswer:"
+)
+GENERAL_NOTE = ("Written by {who} from its own knowledge, not from research records; it can be wrong. To answer "
+                "from published research, pick \"Search public research sources for this\". For this system's live "
+                "figures, ask for them directly.")
+STATUS_NOTE = ("The AI summary was written by your model on {host} from these figures and can be imprecise; "
+               "the figures were computed on this PC and are exact.")
 BRIEF_PROMPT = (
     "Condense this answer into a 2 to 3 sentence summary for a technical reader. Keep every figure and "
     "every bracketed reference like [2] exactly as written. Add nothing new.\n\n{text}"
@@ -142,6 +168,8 @@ class Session:
         self._hosted = hosted
         self._model_choice: bool | None = None      # for the step being answered: True = the model server
         self._server_ai: ServerThenLocal | None = None
+        self._words = ""                            # the request being answered, as the person typed it
+        self._held_back: list[str] = []             # why the model server wasn't used for this step
         self.pending_no: Callable[[], Reply] | None = None
         self._explain_ai = explain_ai
         self._embedder = embedder
@@ -180,20 +208,42 @@ class Session:
             self._ai = LocalAI()
         return self._ai
 
+    def _personal_in_words(self) -> list[str]:
+        """What in the person's own words looks personal (emails, phone or ID numbers, addresses...). Words like
+        that never go to the model server, whether it's asked each time or always used."""
+        from research_provenance import personal_information
+
+        return personal_information(self._words) if self._words else []
+
     @property
     def ai(self):
         if self.hosted is None or self._model_choice is False:
+            return self._local_ai()
+        if kinds := self._personal_in_words():
+            self._held_back = kinds                 # said in the reply; nothing is sent
             return self._local_ai()
         if self._model_choice is None:
             raise NeedsModelChoice()
         self._server_ai = self._server_ai or ServerThenLocal(self.hosted, self._local_ai)
         return self._server_ai
 
+    @property
+    def always_hosted(self) -> bool:
+        """The owner chose to use the model server without being asked each time (`rabbit model-server --always on`)."""
+        from hosted_ai import always_use
+
+        return self.hosted is not None and always_use(self._settings_file)
+
     def _run(self, step: Callable[[], Reply], prefix: str = "") -> Reply:
         """Runs one step. If it needs the AI and a model server is set up, asks first whether to send it
-        there ("yes") or answer on this PC ("no"), then runs the step with that choice."""
+        there ("yes") or answer on this PC ("no"), then runs the step with that choice. With "always" on,
+        it goes to the server without asking (and to this PC's model if the server doesn't answer)."""
+        if self._model_choice is None and self.always_hosted:
+            reply = self._with_model(True, step)
+            reply.text = prefix + reply.text
+            return reply
         try:
-            reply = step()
+            reply = self._with_held_back_note(step())
         except NeedsModelChoice:
             return self._ask(prefix + f"This needs the AI. Send your words, and the public records they're "
                              f"answered from, to the model server {self.hosted.host}? Nothing personal is sent. "
@@ -209,16 +259,22 @@ class Session:
             return AI_NOTE.replace("the local AI", f"your model on {self.hosted.host}")
         return AI_NOTE
 
+    def _with_held_back_note(self, reply: Reply) -> Reply:
+        if self._held_back:
+            kinds, self._held_back = self._held_back, []
+            reply.text = (f"(Your words look like they include {' and '.join(kinds)}, so this PC's model answered and "
+                          f"nothing was sent to the model server.)\n{reply.text}")
+        return reply
+
     def _with_model(self, server: bool, step: Callable[[], Reply]) -> Reply:
         self._model_choice, self._server_ai = server, None
         try:
-            reply = step()
+            reply = self._with_held_back_note(step())
         finally:
             self._model_choice = None
-        if server:
-            self._log("model_server_used", {"host": self.hosted.host,
-                                            "fell_back": bool(self._server_ai and self._server_ai.fell_back)})
-            if self._server_ai and self._server_ai.fell_back:
+        if server and self._server_ai is not None:          # only when the step actually used the AI
+            self._log("model_server_used", {"host": self.hosted.host, "fell_back": bool(self._server_ai.fell_back)})
+            if self._server_ai.fell_back:
                 reply.text = (f"(The model server didn't answer: {self._server_ai.fell_back}. This PC's model "
                               f"answered instead.)\n{reply.text}")
         return reply
@@ -294,6 +350,7 @@ class Session:
         return reply
 
     def _understand(self, text: str) -> Reply:
+        self._words = text                          # what any later yes, no or numbered choice is about
         if words.is_greeting(text):
             return self.menu(f"{GREETING} Ask me anything about this OS in your own words, or pick a number:")
         if note := words.split_note(text, self.vocab):
@@ -337,7 +394,7 @@ class Session:
         if m := words.CHAIN_FIND.search(fixed):
             return self._prefix(heard, self.find_on_chain(m.group("terms")))
         if words.CHAIN_CONTENTS.search(fixed):
-            return Reply(heard + "\n".join(chain_view.summary(chain_view.collect(self.paths))))
+            return self._status("the shared research chain", "\n".join(chain_view.summary(chain_view.collect(self.paths))), heard)
         intent, ranked = words.best_intent(fixed)
         if intent == "help":
             return self.menu(heard + "Here's what I can do. Pick a number, or just type in your own words:")
@@ -346,11 +403,11 @@ class Session:
         if intent == "agents" and words.STOP.search(fixed):
             return self._prefix(heard, self.confirm_agent_stop())
         if intent == "agents":
-            return Reply(heard + self.agent_status())
+            return self._status("the research agents", self.agent_status(), heard)
         if intent == "selftest":
             return self._prefix(heard, self.confirm_self_tests())
         if intent == "integrity" and re.search(r"\breport\b|\blast\b|\blatest\b", fixed, re.I):
-            return Reply(heard + self.latest_integrity())
+            return self._status("the latest integrity report", self.latest_integrity(), heard)
         if intent == "integrity":
             return self._prefix(heard, self.confirm_integrity())
         if intent == "corpus" and re.search(r"\babstracts?\b", fixed, re.I) and \
@@ -359,25 +416,72 @@ class Session:
         if intent == "corpus" and re.search(r"\b(download|install|pull|get)\b", fixed, re.I):
             return self._prefix(heard, self.confirm_embed_model())
         if intent == "corpus":
-            return Reply(heard + self.corpus_status())
+            return self._status("the research corpus", self.corpus_status(), heard)
         if (m := words.INSTALL.search(fixed)) and (tool := toolchain.tool_named(m.group("tool"))):
             return self._prefix(heard, self.confirm_install(tool))
         if intent == "tools":
-            return Reply(heard + self.tools_status())
+            return self._status("the tools this OS needs", self.tools_status(), heard)
         if intent == "jobs":
-            return Reply(heard + self.whats_running())
+            return self._status("background jobs", self.whats_running(), heard)
         if intent == "pipeline":
-            return Reply(heard + self.pipeline_report())
+            return self._status("the research data pipeline", self.pipeline_report(), heard)
         if intent in tools.TOOLS:
-            return Reply(heard + "\n".join(tools.TOOLS[intent](self.paths)))
+            return self._status(words.LABELS[intent].lower(), "\n".join(tools.TOOLS[intent](self.paths)), heard)
         if intent == "research":
             return self.research(fixed, original=text, heard=heard)
         if ranked:            # a tie: asking beats guessing
             return self._offer([(words.LABELS[i], self._tool_or_research(i, fixed, text)) for i in ranked[:3]],
                                heard + "I'm not sure which you mean. Pick a number:")
-        if words.looks_like_a_question(fixed):
+        if words.mentions_research(fixed) or (words.looks_like_a_question(fixed) and self._has_records(fixed)):
             return self.research(fixed, original=text, heard=heard)
+        if words.looks_like_a_question(fixed) or len(fixed.split()) >= 3:
+            return self.general(fixed, heard)              # anything else: the model answers it
         return self.menu(heard + "I'm not sure what you'd like. Pick a number, or say it another way:")
+
+    # -- the AI on top of status answers, and for anything else ---------------------------------------
+    def _status(self, topic: str, text: str, heard: str = "") -> Reply:
+        """A status answer: with "always use the model server" on, the model's technical summary first and the
+        exact figures below it; otherwise (or if the model can't answer) the figures alone, at once."""
+        summary = self._summarize_status(topic, text)
+        if not summary:
+            return Reply(heard + text)
+        if summary.startswith(("(Your model didn't answer", "(AI summary held back")):
+            return Reply(f"{heard}{summary}\n{text}")
+        return Reply(f"{heard}AI summary: {summary}\n\nFigures (computed on this PC):\n{text}\n\n"
+                     + STATUS_NOTE.format(host=self.hosted.host))
+
+    def _summarize_status(self, topic: str, text: str) -> str:
+        """Only through the model server, never the slow local model, so a status question never waits minutes.
+        Nothing personal is sent: the text is screened first, and this PC's user folder is left out."""
+        if not self.always_hosted:
+            return ""
+        from research_provenance import personal_information
+
+        data = text.replace(str(Path.home()), "~")[:6000]
+        # Machine timestamps ("2026-09-30 17:57") read as phone numbers to the screen; they aren't personal.
+        if kinds := personal_information(re.sub(r"\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?", " ", data)):
+            self._log("model_server_used", {"host": self.hosted.host, "purpose": "status", "held_back": kinds})
+            return (f"(AI summary held back: the figures include what looks like {' and '.join(kinds)}, so nothing "
+                    "was sent. Here are the figures.)")
+        try:
+            raw = self.hosted.generate(STATUS_PROMPT.format(name=NAME, topic=topic, data=data), num_predict=300)
+        except (OSError, RuntimeError, ValueError) as error:
+            self._log("model_server_used", {"host": self.hosted.host, "purpose": "status", "error": str(error)[:200]})
+            return f"(Your model didn't answer: {error}. Here are the figures.)"
+        self._log("model_server_used", {"host": self.hosted.host, "purpose": "status", "topic": topic})
+        return raw.strip()
+
+    def general(self, question: str, heard: str = "") -> Reply:
+        """A question that isn't research or a command: the model answers it, with the project as context."""
+        try:
+            raw = self.ai.generate(GENERAL_PROMPT.format(name=NAME, question=question), num_predict=ANSWER_TOKENS)
+        except (OSError, RuntimeError, ValueError) as error:
+            return Reply(f"{heard}The AI didn't answer ({error}). Pick a number, or say it another way.")
+        who = (f"your model on {self.hosted.host}" if self._model_choice and self._server_ai
+               and not self._server_ai.fell_back else "the local AI")
+        return self._offer([("Search public research sources for this", lambda: self._confirm_search(question)),
+                            ("What I can do", lambda: self.menu("Here's what I can do:"))],
+                           f"{heard}{raw.strip()}\n\n{GENERAL_NOTE.format(who=who)}")
 
     def pipeline_report(self, hours: float = 24) -> str:
         from . import pipeline_report
@@ -391,14 +495,17 @@ class Session:
         return self._tool_or_ask(intent)
 
     def _tool_or_ask(self, intent: str) -> Callable[[], Reply]:
-        actions = {"agents": lambda: Reply(self.agent_status()), "selftest": self.confirm_self_tests,
-                   "jobs": lambda: Reply(self.whats_running()), "integrity": self.confirm_integrity,
-                   "corpus": lambda: Reply(self.corpus_status()), "tools": lambda: Reply(self.tools_status()),
-                   "pipeline": lambda: Reply(self.pipeline_report())}
+        actions = {"agents": lambda: self._status("the research agents", self.agent_status()),
+                   "selftest": self.confirm_self_tests,
+                   "jobs": lambda: self._status("background jobs", self.whats_running()),
+                   "integrity": self.confirm_integrity,
+                   "corpus": lambda: self._status("the research corpus", self.corpus_status()),
+                   "tools": lambda: self._status("the tools this OS needs", self.tools_status()),
+                   "pipeline": lambda: self._status("the research data pipeline", self.pipeline_report())}
         if intent in actions:
             return actions[intent]
         if intent in tools.TOOLS:
-            return lambda: Reply("\n".join(tools.TOOLS[intent](self.paths)))
+            return lambda: self._status(words.LABELS[intent].lower(), "\n".join(tools.TOOLS[intent](self.paths)))
         if intent == "research":
             return lambda: Reply("What would you like to know? Type it in your own words.")
         return lambda: self.menu("Here's what I can do:")
@@ -428,6 +535,24 @@ class Session:
                 titles.add(key)
                 unique.append(r)
         return unique[:limit]
+
+    def _has_records(self, query: str) -> bool:
+        """Whether saved research matches the question's content words (four or more letters, not everyday
+        words), so "how should I name branches" doesn't count as research because "in" appears in a title."""
+        content = list(dict.fromkeys(w for w in re.findall(r"[\w-]+", query.lower())
+                                     if len(w) >= 4 and w not in words.STOPWORDS))
+        if not content or not self.paths.catalog.exists():
+            return False
+        try:
+            rows = self._catalog().retrieve(" ".join(content), limit=10)
+        except ValueError:
+            return False
+        needed = min(2, len(content))              # whole words only: "repo" mustn't match "reported"
+        for r in rows:
+            text = f"{r['citation']['title']} {r.get('abstract') or ''}".lower()
+            if sum(bool(re.search(rf"\b{re.escape(w)}\b", text)) for w in content) >= needed:
+                return True
+        return False
 
     def _meaning_matches(self, query: str, top_k: int) -> list[dict]:
         from corpus_vector_store import min_similarity

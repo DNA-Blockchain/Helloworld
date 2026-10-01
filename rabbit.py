@@ -7,6 +7,7 @@ or a web page.
     python rabbit.py ask "how are the nodes"       # one question, one answer
     python rabbit.py model-server https://...      # answer with your model on a server (asks each time)
     python rabbit.py model-server --off            # answer only with this PC's model
+    python rabbit.py model-server --always on      # use the server without asking; AI summaries and general answers
     python rabbit.py account create|pair|join CODE|recover|devices   # one account across your devices
     python rabbit.py sync                          # research and encrypted history, with your other devices
     python rabbit.py update                        # install the latest release (asks first)
@@ -161,11 +162,20 @@ def update(root=None, ask=input, run=None, fetch=None) -> int:
     return (run or subprocess.call)(installer_command(root, result["tag"]))
 
 
-def model_server(url: str | None, off: bool, settings_file=None) -> int:
-    from hosted_ai import configured_url, save_url
+def model_server(url: str | None, off: bool, settings_file=None, always: str | None = None) -> int:
+    from hosted_ai import always_use, configured_url, save_url, set_always_use
     from rabbitsoft import tools
 
     settings_file = settings_file or tools.Paths().rabbit / "settings.json"
+    if always:
+        if always == "on" and not configured_url(settings_file):
+            print("Set a model server first: python rabbit.py model-server <https address>")
+            return 1
+        set_always_use(settings_file, always == "on")
+        print(f"{NAME} now sends AI steps to the model server without asking, writes a technical summary on status "
+              "answers, and answers general questions there; if the server doesn't answer, this PC's model does."
+              if always == "on" else f"{NAME} asks before each question is sent to the model server again.")
+        return 0
     if off:
         save_url(settings_file, None)
         print(f"{NAME} now answers only with this PC's model.")
@@ -180,7 +190,12 @@ def model_server(url: str | None, off: bool, settings_file=None) -> int:
               "say no to answer with this PC's model instead.")
         return 0
     current = configured_url(settings_file)
-    print(f"Model server: {current}" if current else "No model server: answers use this PC's model.")
+    if not current:
+        print("No model server: answers use this PC's model.")
+    else:
+        mode = ("used without asking (--always on)" if always_use(settings_file) else
+                "asked before each question (python rabbit.py model-server --always on to stop asking)")
+        print(f"Model server: {current}, {mode}.")
     return 0
 
 
@@ -259,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
+    m.add_argument("--always", choices=["on", "off"],
+                   help="on: use the model server without asking (status summaries and general answers too)")
     args = p.parse_args(argv)
 
     if args.command == "chat":
@@ -266,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "web":
         return web(args.port, not args.no_browser)
     if args.command == "model-server":
-        return model_server(args.url, args.off)
+        return model_server(args.url, args.off, always=args.always)
     if args.command == "account":
         return account(args.action, args.code)
     if args.command == "sync":
