@@ -1,0 +1,9 @@
+{
+  "name": "rabbitsoftware-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/sync.test.mjs",
+    "deploy": "wrangler deploy"
+  }
+}
