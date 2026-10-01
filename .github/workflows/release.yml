@@ -33,10 +33,19 @@ jobs:
       - name: Run test suite
         run: python -m pytest tests/ -q
 
+      - name: Code manifest (authorship and the SHA-256 of every file)
+        run: |
+          MANIFEST="rabbitsoftware-${GITHUB_REF_NAME#v}-code-manifest.json"
+          python scripts/code_fingerprint.py --commit HEAD --out "$MANIFEST"   # HEAD is the tagged commit here
+          echo "MANIFEST=$MANIFEST" >> "$GITHUB_ENV"
+
       - name: Release notes from CHANGELOG.md
-        run: python scripts/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
+        run: |
+          python scripts/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
+          FINGERPRINT=$(python -c "import json; print(json.load(open('$MANIFEST'))['fingerprint'])")
+          printf '\n\n---\n**Code fingerprint:** `%s`. The attached `%s` lists the SHA-256 of every file. Check it with `python scripts/code_fingerprint.py --commit %s`. Authorship: see NOTICE.md.\n' "$FINGERPRINT" "$MANIFEST" "$GITHUB_REF_NAME" >> release-notes.md
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "RabbitSoftware ${GITHUB_REF_NAME#v}" --notes-file release-notes.md --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" "$MANIFEST" --title "RabbitSoftware ${GITHUB_REF_NAME#v}" --notes-file release-notes.md --verify-tag

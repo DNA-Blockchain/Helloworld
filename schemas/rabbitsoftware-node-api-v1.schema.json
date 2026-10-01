@@ -57,13 +57,13 @@
       }
     },
     "dataHashEvent": {
-      "description": "A fingerprint of public data. integrity_report: a RabbitSoftware.inc integrity report (the report stays on its PC).",
+      "description": "A fingerprint of public data. integrity_report: a RabbitSoftware.inc integrity report (the report stays on its PC). code_release: a release's code manifest fingerprint (scripts/code_fingerprint.py), the record of its authorship.",
       "allOf": [{"$ref": "#/$defs/researchEvent"}],
       "type": "object",
       "required": ["event_type", "data_kind", "data_sha256"],
       "properties": {
         "event_type": {"const": "public_data_hash"},
-        "data_kind": {"enum": ["dataset", "biological_sequence", "research_file", "integrity_report"]},
+        "data_kind": {"enum": ["dataset", "biological_sequence", "research_file", "integrity_report", "code_release"]},
         "data_sha256": {"$ref": "#/$defs/hex64"}
       },
       "unevaluatedProperties": false
