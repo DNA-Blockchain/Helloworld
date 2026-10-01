@@ -12,6 +12,13 @@ without a yes.
     python rabbit.py ask "how are the nodes doing"
 """
 
+from pathlib import Path
+
+try:                                 # one version for the whole project: the VERSION file (see RELEASING.md)
+    __version__ = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
+except OSError:
+    __version__ = "0.0.0"
+
 NAME = "RabbitSoftware.inc"          # the assistant: page heading, chat label, terminal prompt
 COMPANY = "RabbitSoftware, Inc."     # the company it comes from
 GREETING = f"Hello! I'm {NAME}, the assistant from {COMPANY}"     # COMPANY already ends the sentence

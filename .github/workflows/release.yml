@@ -1,0 +1,42 @@
+name: release
+
+# Pushing a tag vX.Y.Z publishes the GitHub release that installers and `rabbit update` use.
+# The steps are in RELEASING.md.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The tag matches VERSION
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          FILE="$(tr -d '[:space:]' < VERSION)"
+          if [ "$TAG" != "$FILE" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match VERSION ($FILE)"; exit 1
+          fi
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests/ -q
+
+      - name: Release notes from CHANGELOG.md
+        run: python scripts/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "RabbitSoftware ${GITHUB_REF_NAME#v}" --notes-file release-notes.md --verify-tag

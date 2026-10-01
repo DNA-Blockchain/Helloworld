@@ -4,7 +4,7 @@
 #
 #     irm https://raw.githubusercontent.com/DNA-Blockchain/Helloworld/master/install.ps1 | iex
 #
-# It downloads the project from GitHub into %LOCALAPPDATA%\RabbitSoftware, gives it its own Python
+# It downloads the latest RabbitSoftware release from GitHub into %LOCALAPPDATA%\RabbitSoftware, gives it its own Python
 # environment, and adds a `rabbit` command:  rabbit chat | rabbit web | rabbit ask "..."
 # Running it again updates the code and keeps your data (chains, notes, research, settings).
 #
@@ -12,15 +12,37 @@
 # command to run. Options, as environment variables set before running it:
 #   RABBIT_HOME       where to install (default %LOCALAPPDATA%\RabbitSoftware)
 #   RABBIT_SOURCE     a .zip of the project to install from instead of GitHub
+#   RABBIT_CHANNEL    "dev" installs the newest code (master) instead of the latest release
+#   RABBIT_DRY_RUN    any value: say what would be installed, and stop
 #   RABBIT_MODEL_URL  a model server to use (https); RabbitSoftware.inc asks before each question sent there
 
 function Install-RabbitSoftware {
     $ErrorActionPreference = "Stop"
     $ProgressPreference = "SilentlyContinue"          # Invoke-WebRequest is far slower with the progress bar
-    $repoZip = "https://github.com/DNA-Blockchain/Helloworld/archive/refs/heads/master.zip"
+    $repo = "DNA-Blockchain/Helloworld"
+    $repoZip = "https://github.com/$repo/archive/refs/heads/master.zip"
+    $label = "the development version (master)"
     $home_ = if ($env:RABBIT_HOME) { $env:RABBIT_HOME } else { Join-Path $env:LOCALAPPDATA "RabbitSoftware" }
 
     Write-Host "RabbitSoftware.inc installer" -ForegroundColor Cyan
+
+    # Which version: the latest release, unless RABBIT_CHANNEL=dev (master) or a zip was given.
+    if (-not $env:RABBIT_SOURCE -and $env:RABBIT_CHANNEL -ne "dev") {
+        try {
+            $release = Invoke-RestMethod -UseBasicParsing -Headers @{ "User-Agent" = "RabbitSoftware-installer" } `
+                -Uri "https://api.github.com/repos/$repo/releases/latest"
+            $repoZip = "https://github.com/$repo/archive/refs/tags/$($release.tag_name).zip"
+            $label = "release $($release.tag_name)"
+        } catch {
+            Write-Host "No release is published yet, so this installs the development version."
+        }
+    }
+    if ($env:RABBIT_SOURCE) { $label = "the zip in RABBIT_SOURCE" }
+    Write-Host "Installing $label."
+    if ($env:RABBIT_DRY_RUN) {
+        Write-Host "Dry run: would download $repoZip into $home_"
+        return
+    }
 
     # 1. Python 3.11 or newer (the py launcher first; the Microsoft Store "python" stub doesn't count)
     $python = $null
