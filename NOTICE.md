@@ -21,8 +21,9 @@ architecture, protocols, documentation, designs, and all related materials
 **Chase Allen Ringquist** ("the Author").
 
 The Author is the sole originator of the Work unless a specific component is
-expressly credited to another contributor in its source file or in the
-accompanying `CONTRIBUTORS` record.
+expressly credited to another contributor in the accompanying `CONTRIBUTORS`
+record. Individual source files don't repeat this notice; it applies to every
+file in the repository.
 
 ## 2. Scope of Ownership
 
@@ -99,13 +100,19 @@ available to the Author under applicable law.
 ---
 
 **Author & Rights Holder:** Chase Allen Ringquist  
-**Location:** Bixby, Oklahoma, United States  
+**Location:** Oklahoma, United States  
 **Effective:** 2026
+
+## Record of origin
+
+Authorship is recorded at the repository level rather than repeated in every file:
+
+- this notice, the [LICENSE](./LICENSE) (UPL-1.0) and the [privacy policy](./PRIVACY.md);
+- the commit history;
+- for every release, a **code manifest** attached to the GitHub release. It lists the SHA-256 of every file, the commit and the author, and its fingerprint can also be recorded on the RabbitSoftware chain as a `code_release` entry (see `RELEASING.md`). Anyone can then check that a given copy of the code is the one the Author released.
 
 ## Contact
 
 For licensing, permissions, partnerships, or reports of unauthorized use:
 
 - **Email:** ringquistchase@gmail.com
-- **Phone:** (918) 845-0940
-- **Location:** Bixby, OK, United States

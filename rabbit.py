@@ -107,6 +107,42 @@ def account(action: str, code: str | None, session: Session | None = None, ask=i
     return 0
 
 
+def publish_code_fingerprint(tag: str, paths=None, ask=input) -> int:
+    """Puts the fingerprint of a release's code manifest on the chain: the public record that this exact
+    code is the author's release. Only the fingerprint is published; the manifest is on the GitHub release."""
+    import importlib.util
+    from pathlib import Path
+
+    from audit_trail import AuditTrail
+    from rabbitsoft import tools
+    from research_provenance import ResearchProvenanceQueue, create_public_data_hash_event
+
+    spec = importlib.util.spec_from_file_location("code_fingerprint", Path(__file__).resolve().parent /
+                                                  "scripts" / "code_fingerprint.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        result = module.manifest(module.ROOT, tag)
+    except Exception as error:               # unknown tag, no git
+        print(f"Couldn't read release {tag}: {error}")
+        return 1
+    print(f"RabbitSoftware {result['version']} ({tag}, commit {result['commit'][:12]}), by {result['author']}, "
+          f"{result['license']}: {result['file_count']} files, fingerprint {result['fingerprint']}.")
+    if ask("Record this fingerprint on the shared chain? It's public and permanent. (yes/no) ").strip().lower() \
+            not in ("y", "yes"):
+        print("OK, nothing was published.")
+        return 0
+    paths = paths or tools.Paths()
+    event = create_public_data_hash_event(data_sha256=result["fingerprint"], data_kind="code_release",
+                                          classification="public", confirm_hash_publication=True)
+    ResearchProvenanceQueue(paths.autonomous / "research-outbox").enqueue(event)
+    AuditTrail(str(paths.audit)).log("rabbitsoft", "code_fingerprint_queued", "local",
+                                     {"tag": tag, "commit": result["commit"], "fingerprint": result["fingerprint"],
+                                      "event_id": event["event_id"]})
+    print(f"Queued (entry {event['event_id'][:8]}). Node-0 adds it to the chain within a minute or two.")
+    return 0
+
+
 def update(root=None, ask=input, run=None, fetch=None) -> int:
     import subprocess
     from pathlib import Path
@@ -169,6 +205,9 @@ def main(argv: list[str] | None = None) -> int:
     acc.add_argument("code", nargs="?", help="the pairing code, for join")
     sub.add_parser("sync", help="sync research and encrypted history with your other devices")
     sub.add_parser("update", help="install the latest RabbitSoftware release (asks first)")
+    fp = sub.add_parser("publish-code-fingerprint",
+                        help="record a release's code fingerprint (its authorship) on the chain (asks first)")
+    fp.add_argument("tag", help="the release tag, e.g. v0.9.0")
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
@@ -187,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "update":
         return update()
+    if args.command == "publish-code-fingerprint":
+        return publish_code_fingerprint(args.tag)
     show(Session().handle(" ".join(args.question)))
     return 0
 

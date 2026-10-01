@@ -7,16 +7,17 @@ literature-research agent over **real public biomedical APIs**. Every
 module logs to one tamper-evident audit trail, and every run is tied to
 a verifiable hash of the exact code state (`project_identifier.py`).
 
-Project material is offered under [CC0 1.0 Universal](LICENSE), to the
-extent the person applying CC0 holds or is authorized to waive the
-relevant rights. This does not change rights in third-party software,
-provider data, datasets, or contributions not authorized for CC0. It
-runs on plain Python. It does
-not require Claude, an internet account, a subscription, or GitHub to
-run — see [Owning your copy](#owning-your-copy).
+It runs on plain Python. It does not require Claude, an internet account, a subscription, or GitHub to run;
+see [Owning your copy](#owning-your-copy).
 
-See [NOTICE.md](NOTICE.md) for the author's authorship and ownership
-declaration. It does not replace or narrow the existing CC0 license.
+### Authorship, license and privacy
+
+| | |
+|---|---|
+| Author | Chase Allen Ringquist. [NOTICE.md](NOTICE.md) records authorship and ownership for every file in the repository, so files carry no per-file header. |
+| License | [Universal Permissive License 1.0](LICENSE) (SPDX: UPL-1.0). Copies obtained while the project was under CC0 1.0 keep those terms; third-party components keep their own licenses. |
+| Proof of origin | Each release attaches a **code manifest**: the SHA-256 of every file, the commit and the author, under one fingerprint. That fingerprint can be recorded on the RabbitSoftware chain (`rabbit publish-code-fingerprint vX.Y.Z`). Check any copy with `python scripts/code_fingerprint.py --commit <tag>`. |
+| Privacy | [PRIVACY.md](PRIVACY.md) explains what stays on the device, what leaves it (only after a yes), and what the public chain holds. |
 
 ---
 

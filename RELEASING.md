@@ -23,6 +23,8 @@ install master with `RABBIT_CHANNEL=dev`.
    - It checks that the tag matches `VERSION`.
    - It runs the tests.
    - It publishes a GitHub release whose notes are the changelog section for that version.
+   - It attaches the **code manifest** (`rabbitsoftware-X.Y.Z-code-manifest.json`): the author, the license, the commit and the SHA-256 of every file, plus one fingerprint over all of them (`scripts/code_fingerprint.py`).
+7a. **Record the release's authorship on the chain:** `python rabbit.py publish-code-fingerprint vX.Y.Z`. It shows the fingerprint and asks before publishing a `code_release` entry.
 7. **Check the release page.** Then install it once from scratch with each installer:
    - Windows: `irm https://raw.githubusercontent.com/DNA-Blockchain/Helloworld/master/install.ps1 | iex`
    - Linux/WSL: `curl -fsSL https://raw.githubusercontent.com/DNA-Blockchain/Helloworld/master/install.sh | bash`

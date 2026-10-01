@@ -15,6 +15,18 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 - **Versioned routes:** `/api/v1/message`, `/api/v1/poll` and `/api/v1/status`, with the old `/api/...` routes kept as aliases. The web page uses v1.
 - **`GET /api/v1/shell`:** a read-only snapshot of nodes, jobs, AI, account and the latest integrity report, for the desktop shell.
 - **`jsonschema`** added to `requirements.txt`, for the contract tests.
+- **Authorship recorded at the repository level:**
+  - `NOTICE.md` now covers every file;
+  - `PRIVACY.md` is the privacy policy;
+  - each release attaches a **code manifest** (`scripts/code_fingerprint.py`): the author, the license, the commit and the SHA-256 of every file, as stored in git, so it's reproducible on any OS;
+  - `rabbit publish-code-fingerprint vX.Y.Z` records a release's fingerprint on the chain as the new `code_release` kind.
+
+### Changed
+- **Per-file headers removed:** the 53-line license and contact header is gone from all 190 source files (about 10,300 lines). The author's phone number and town are no longer published in the repository.
+- **README license statement corrected:** it said CC0 1.0, but the license is UPL-1.0.
+
+### Upgrade note
+- Restart the nodes after updating, so they accept `code_release` entries.
 
 ## [0.9.0] - 2026-10-01
 
