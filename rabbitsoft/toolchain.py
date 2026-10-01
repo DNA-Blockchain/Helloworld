@@ -83,7 +83,8 @@ def survey(here: set[str] | None = None, wsl: set[str] | None | bool = False) ->
              "wsl": None if wsl is None else any(c in wsl for c in t.commands)} for t in TOOLS]
 
 
-def describe(rows: list[dict], windows: bool = sys.platform == "win32", winget: bool | None = None) -> list[str]:
+def describe(rows: list[dict], windows: bool | None = None, winget: bool | None = None) -> list[str]:
+    windows = sys.platform == "win32" if windows is None else windows     # decided now, not when imported
     here_name = "Windows" if windows else "this computer"
     winget = winget_available() if winget is None else winget
     lines, missing = [], []
