@@ -62,3 +62,7 @@ backup_task.log
 
 # personal transmit licence/bands (signal_lab.py); see signal_tx_policy.example.json
 signal_tx_policy.json
+
+# Deep-research working folders (Claude Code); finished reports are copied into docs/research/
+/research_notes/
+/reports/

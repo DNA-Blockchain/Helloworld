@@ -8,6 +8,7 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **Research report: EEG to image reconstruction (2026)** in `docs/research/`, with its source notes (methods and models, datasets and benchmarks, imagery/memory/real-time, law and ethics). It gives the evidence base and design guidance for `neurovisual/` and is linked from the SDK guide. Deep-research working folders (`/research_notes/`, `/reports/`) are gitignored.
 - **SQL in the cloud: Cloudflare D1** for the sync service (`deploy/cloudflare-sync/migrations/0001_init.sql`), alongside R2:
   - **Shared answers:** stored in `training_answers` (no account or device) with a review status, instead of R2 files.
   - **Corpus:** every public record indexed once in `corpus_records`, searchable by anyone (`GET /v1/corpus/search`, `/v1/corpus/stats`).
