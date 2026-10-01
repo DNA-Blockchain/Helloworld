@@ -24,7 +24,8 @@ def test_authorship_lives_at_the_repository_level():
     assert "UPL" in (ROOT / "LICENSE").read_text(encoding="utf-8")
     privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
     assert "encrypted on the device" in privacy and "public and permanent" in privacy
-    tracked = subprocess.run(["git", "grep", "-l", "SPDX-License-Identifier: UPL-1.0"], cwd=ROOT,
+    marker = "SPDX-License-" + "Identifier: UPL-1.0"                           # split so this file doesn't match
+    tracked = subprocess.run(["git", "grep", "-l", marker], cwd=ROOT,
                              capture_output=True, text=True).stdout.split()
     assert tracked == [], f"per-file headers are back in: {tracked}"
 
