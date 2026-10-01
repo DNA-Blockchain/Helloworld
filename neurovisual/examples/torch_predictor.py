@@ -43,23 +43,26 @@ class GRUPredictor:
     def version_text(self) -> str:
         return ".".join(map(str, self.version))
 
-    def _window(self, sequence: list[np.ndarray]) -> np.ndarray:
+    def context(self, sequence: list[np.ndarray]) -> np.ndarray:
+        """The model's input for a sequence: the last SEQUENCE_LENGTH vectors, zero-padded at the start."""
         window = np.zeros((SEQUENCE_LENGTH, self.feature_dim))
         recent = np.asarray(sequence[-SEQUENCE_LENGTH:], dtype=float)
         window[SEQUENCE_LENGTH - len(recent):] = recent
         return window
 
     def predict(self, sequence, mode, anchor, quality, timestamp, event_id=None):
-        window = self._window(sequence)
+        window = self.context(sequence)
         with torch.no_grad():
             neural = self.net(torch.from_numpy(window)[None]).numpy()[0]
         return compose(neural, window, mode, anchor, quality, timestamp, event_id, self.version_text, self.rng)
 
-    def trained(self, records: list[dict], epochs: int = 25, learning_rate: float = 0.01):
+    def trained(self, records: list[dict], epochs: int = 25, learning_rate: float = 0.01, device: str = "cpu"):
+        """A trained copy, on `device` ("cpu" or "cuda") for training; the copy is returned on the CPU."""
         model = copy.deepcopy(self)
-        windows = torch.from_numpy(np.stack([r["context"] for r in records]))
-        shown = torch.from_numpy(np.stack([r["neural"] for r in records]))
-        ratings = torch.tensor([r["rating"] for r in records], dtype=torch.float64)
+        model.net.to(device)
+        windows = torch.from_numpy(np.stack([r["context"] for r in records])).to(device)
+        shown = torch.from_numpy(np.stack([r["neural"] for r in records])).to(device)
+        ratings = torch.tensor([r["rating"] for r in records], dtype=torch.float64, device=device)
         objective = lambda net: (ratings * (net(windows) * shown).sum(1) / LATENT_SIZE).mean()
         with torch.no_grad():
             before = float(objective(model.net))
@@ -70,11 +73,24 @@ class GRUPredictor:
             optimizer.step()
         with torch.no_grad():
             after = float(objective(model.net))
+        model.net.to("cpu")
         major, minor, patch = model.version
         model.version = (major, minor + 1, patch)
         return model, {"records": len(records), "epochs": epochs, "learning_rate": learning_rate,
                        "objective_before": round(before, 6), "objective_after": round(after, 6),
                        "old_version": self.version_text, "new_version": model.version_text}
+
+    def save(self, path) -> None:
+        torch.save({"state": self.net.state_dict(), "version": self.version, "feature_dim": self.feature_dim,
+                    "hidden": self.net.gru.hidden_size}, path)
+
+    @classmethod
+    def load(cls, path) -> "GRUPredictor":
+        checkpoint = torch.load(path, weights_only=True)
+        model = cls(checkpoint["feature_dim"], hidden=checkpoint["hidden"])
+        model.net.load_state_dict(checkpoint["state"])
+        model.version = tuple(checkpoint["version"])
+        return model
 
     def fingerprint(self) -> str:
         digest = hashlib.sha256(self.version_text.encode())

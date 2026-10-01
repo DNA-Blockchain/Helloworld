@@ -142,18 +142,39 @@ def read_session(path: Path, key: bytes) -> tuple[dict, list[dict]]:
     return header, rows
 
 
-def training_records(rows: list[dict]) -> list[dict]:
-    """Rated steps as records a predictor's trained() accepts: context, neural, rating."""
-    steps = {r["index"]: r for r in rows if r["type"] == "step"}
-    return [{"context": np.asarray(steps[r["step"]]["context"]), "neural": np.asarray(steps[r["step"]]["neural"]),
-             "rating": r["rating"]} for r in rows if r["type"] == "rating" and r["step"] in steps]
+def training_records(rows: list[dict], context=None, mode: str | None = None) -> list[dict]:
+    """Rated steps as records a predictor's trained() accepts: context, neural, rating (and mode).
+
+    `context` is the training model's own context function (sequence -> input). The sequence is rebuilt
+    from the recorded features up to the rated step, so any model can train on any session, whichever
+    model recorded it. Without it, the recording model's context is used. `mode` keeps one mode only."""
+    from .system import SEQUENCE_LENGTH
+
+    steps = [r for r in rows if r["type"] == "step"]
+    position = {r["index"]: i for i, r in enumerate(steps)}
+    records = []
+    for r in rows:
+        if r["type"] != "rating" or r["step"] not in position:
+            continue
+        i = position[r["step"]]
+        step = steps[i]
+        if mode and step["mode"] != mode:
+            continue
+        if context is not None:
+            ctx = context([np.asarray(s["features"]) for s in steps[max(0, i - SEQUENCE_LENGTH + 1):i + 1]])
+        else:
+            ctx = np.asarray(step["context"])
+        records.append({"context": np.asarray(ctx, dtype=float), "neural": np.asarray(step["neural"]),
+                        "rating": r["rating"], "mode": step["mode"]})
+    return records
 
 
-def train_from_sessions(predictor, paths: list[Path], key: bytes):
+def train_from_sessions(predictor, paths: list[Path], key: bytes, mode: str | None = None):
     """Trains any predictor that has trained() on the ratings in recorded sessions."""
-    records = [rec for p in paths for rec in training_records(read_session(p, key)[1])]
+    context = getattr(predictor, "context", None)
+    records = [rec for p in paths for rec in training_records(read_session(p, key)[1], context, mode)]
     if not records:
-        raise ValueError("the sessions hold no ratings to train on")
+        raise ValueError("the sessions hold no ratings to train on" + (f" in {mode} mode" if mode else ""))
     if not hasattr(predictor, "trained"):
         raise TypeError(f"{type(predictor).__name__} can't be trained here (no trained() method)")
     return predictor.trained(records)

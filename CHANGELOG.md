@@ -43,6 +43,15 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   - **Game engines:** a UDP latent stream on localhost for Unity, Unreal, Godot and TouchDesigner.
   - **Session datasets:** every step, rating, memory and generation, encrypted with AES-256-GCM in authenticated frames (`docs/neurovisual/DATASET.md`); `sessions`, `export` (npz, jsonl) and `train` commands; datasets recorded in the provenance ledger.
   - **Profiles:** `research`, `gaming`, `development`.
+- **Neurovisual training lineage:** `python -m neurovisual train` writes a linked chain of blocks to the provenance ledger:
+  - a versioned **dataset**, then a **training-set hash** per mode;
+  - memory- and imagination-model **training runs**, recording the device (GPU name and memory, or CPU), seconds, samples/s and the objective;
+  - a **model version** with its fingerprint and checkpoint SHA-256.
+
+  Each release continues from the verified previous checkpoint (v1.1 → v1.2 → v1.3). `chain` shows the blocks and `lineage` traces any version back to its data; `run --model latest` serves the newest verified release. PyTorch models train on CUDA when available.
+
+### Fixed
+- **Neurovisual:** training a model on sessions recorded by a different model now rebuilds that model's own input from the recorded features (the PyTorch model had been given the recording model's 7-value context instead of its 32-step window), and ratings are matched to steps within their own session.
 
 ### Changed
 - **Research answers are technical reports:**
