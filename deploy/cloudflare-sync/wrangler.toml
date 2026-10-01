@@ -1,0 +1,29 @@
+# RabbitSoftware.inc sync service on Cloudflare Workers + R2 (free plan).
+#
+#   cd deploy/cloudflare-sync
+#   npx wrangler deploy                       # publish (or update) the service
+#   npx wrangler secret put SIGNUP_KEY        # needed to create accounts until OPEN_SIGNUP is "true"
+#
+# ADMIN_ACCOUNT is the owner's account ID (`rabbit account` shows it); only it can export shared
+# training answers to the private Hugging Face dataset.
+name = "rabbitsoftware-sync"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+OPEN_SIGNUP = "false"          # "true" at the public launch
+ADMIN_ACCOUNT = ""
+QUOTAS = '{"history": 500, "corpus": 50, "training": 300, "pairing": 20}'   # per account per day
+
+[[r2_buckets]]
+binding = "SYNC"
+bucket_name = "rabbitsoftware-sync"
+
+[[durable_objects.bindings]]
+name = "QUOTA"
+class_name = "Quota"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Quota"]
