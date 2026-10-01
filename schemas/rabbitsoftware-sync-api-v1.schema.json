@@ -71,7 +71,99 @@
     "corpusUploadReply": {
       "type": "object",
       "required": ["batch", "records"],
-      "properties": {"batch": {"type": "string"}, "records": {"type": "integer", "minimum": 1}}
+      "properties": {
+        "batch": {"type": "string"},
+        "records": {"type": "integer", "minimum": 1},
+        "new_records": {"type": "integer", "minimum": 0, "description": "records not already in the shared corpus (D1)"}
+      }
+    },
+    "recordSummary": {
+      "type": "object",
+      "required": ["source", "external_id", "title", "source_url", "published_at"],
+      "properties": {
+        "source": {"type": "string"}, "external_id": {"type": "string"}, "title": {"type": "string"},
+        "source_url": {"type": "string"}, "published_at": {"type": "string"}
+      }
+    },
+    "corpusSearchReply": {
+      "description": "GET /v1/corpus/search?q=&limit=: shared records whose title or abstract contains every word (D1).",
+      "type": "object",
+      "required": ["query", "records"],
+      "properties": {"query": {"type": "string"}, "records": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/recordSummary"}}}
+    },
+    "corpusStats": {
+      "description": "GET /v1/corpus/stats: shared records per source (D1).",
+      "type": "object",
+      "required": ["total", "sources"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "sources": {"type": "array", "items": {
+          "type": "object",
+          "required": ["source", "records"],
+          "properties": {"source": {"type": "string"}, "records": {"type": "integer"}, "last_added": {"type": ["string", "null"]}}
+        }}
+      }
+    },
+    "reviewStatus": {"enum": ["pending", "approved", "rejected"]},
+    "trainingAnswer": {
+      "description": "A shared answer as the owner sees it (D1 training_answers). No account or device.",
+      "type": "object",
+      "required": ["id", "shared_at", "question", "answer", "sources", "rating", "model", "status"],
+      "properties": {
+        "id": {"type": "string"}, "shared_at": {"type": "string"},
+        "question": {"type": "string"}, "answer": {"type": "string"},
+        "sources": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
+        "rating": {"enum": [-1, 0, 1]}, "model": {"type": "string"}, "status": {"$ref": "#/$defs/reviewStatus"},
+        "reviewed_at": {"type": ["string", "null"]}, "exported_in": {"type": ["string", "null"]}
+      }
+    },
+    "trainingList": {
+      "description": "GET /v1/admin/training?status= and GET /v1/admin/training/export (owner only).",
+      "type": "object",
+      "required": ["items"],
+      "properties": {"items": {"type": "array", "items": {"$ref": "#/$defs/trainingAnswer"}}}
+    },
+    "trainingReview": {
+      "description": "POST /v1/admin/training/review (owner only).",
+      "type": "object",
+      "required": ["ids", "status"],
+      "properties": {"ids": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"type": "string"}}, "status": {"$ref": "#/$defs/reviewStatus"}}
+    },
+    "trainingReviewReply": {
+      "type": "object",
+      "required": ["updated"],
+      "properties": {"updated": {"type": "integer", "minimum": 0}}
+    },
+    "trainingExported": {
+      "description": "POST /v1/admin/training/exported (owner only), once the export file is on Hugging Face.",
+      "type": "object",
+      "required": ["file", "sha256", "ids"],
+      "properties": {
+        "file": {"type": "string", "pattern": "^data/[0-9A-Za-z._-]{1,80}\\.parquet$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "hf_commit": {"type": "string"},
+        "ids": {"type": "array", "minItems": 1, "maxItems": 5000, "items": {"type": "string"}}
+      }
+    },
+    "trainingExportedReply": {
+      "type": "object",
+      "required": ["file", "marked"],
+      "properties": {"file": {"type": "string"}, "marked": {"type": "integer", "minimum": 0}}
+    },
+    "adminStats": {
+      "description": "GET /v1/admin/stats (owner only).",
+      "type": "object",
+      "required": ["accounts", "training", "corpus", "exports"],
+      "properties": {
+        "accounts": {"type": "integer", "minimum": 0},
+        "training": {"type": "array", "items": {
+          "type": "object",
+          "required": ["status", "answers"],
+          "properties": {"status": {"$ref": "#/$defs/reviewStatus"}, "answers": {"type": "integer"}, "exported": {"type": ["integer", "null"]}}
+        }},
+        "corpus": {"type": "object", "required": ["records", "sources"]},
+        "exports": {"type": "object", "required": ["files", "rows"]}
+      }
     },
     "corpusBatchList": {
       "type": "object",

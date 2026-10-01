@@ -95,22 +95,78 @@ test("public research records grow a shared corpus anyone can read, cached by Cl
   assert.equal((await call(e, "POST", "/v1/corpus", account, device, JSON.stringify({ records: [] }))).status, 400);
 });
 
-test("shared training answers carry no account, and only the owner can export them", async () => {
+test("shared training answers go to D1 with no account, and only the owner can read them", async () => {
   const e = env();
   const [owner, ownerDevice, someone, theirDevice] = [await keypair(), await keypair(), await keypair(), await keypair()];
   await register(e, owner, ownerDevice);
   await register(e, someone, theirDevice);
   e.ADMIN_ACCOUNT = owner.id;
   const shared = await call(e, "POST", "/v1/training", someone, theirDevice,
-    JSON.stringify({ question: "What is HBB?", answer: "The beta-globin gene.", rating: 1, model: "rabbitsoftware" }));
+    JSON.stringify({ question: "What is HBB?", answer: "The beta-globin gene.", rating: 1, model: "rabbitsoftware", sources: ["https://x.org/1"] }));
   assert.equal(shared.status, 200);
-  const [key] = [...e.SYNC.objects.keys()].filter((k) => k.startsWith("training/"));
-  const stored = JSON.parse(new TextDecoder().decode(e.SYNC.objects.get(key)));
-  assert.equal(JSON.stringify(stored).includes(someone.id), false);
+  const rows = e.DB.db.prepare("SELECT * FROM training_answers").all();
+  assert.equal(rows.length, 1);
+  assert.equal(JSON.stringify(rows).includes(someone.id) || JSON.stringify(rows).includes(theirDevice.id), false);
+  assert.equal([...e.SYNC.objects.keys()].some((k) => k.startsWith("training/")), false);    // not in R2 any more
   assert.equal((await call(e, "GET", "/v1/admin/training", someone, theirDevice)).status, 403);
-  const exported = await (await call(e, "GET", "/v1/admin/training", owner, ownerDevice)).json();
-  assert.equal(exported.items[0].question, "What is HBB?");
+  const pending = await (await call(e, "GET", "/v1/admin/training?status=pending", owner, ownerDevice)).json();
+  assert.equal(pending.items[0].question, "What is HBB?");
+  assert.deepEqual(pending.items[0].sources, ["https://x.org/1"]);
+  assert.equal(pending.items[0].status, "pending");
   assert.equal((await call(e, "POST", "/v1/training", someone, theirDevice, JSON.stringify({ question: "x", answer: "y", rating: 5 }))).status, 400);
+});
+
+test("the owner reviews answers and exports them once, recorded with the file's hash", async () => {
+  const e = env();
+  const [owner, device] = [await keypair(), await keypair()];
+  await register(e, owner, device);
+  e.ADMIN_ACCOUNT = owner.id;
+  for (const q of ["one?", "two?", "three?"]) {
+    await call(e, "POST", "/v1/training", owner, device, JSON.stringify({ question: q, answer: "a", rating: 0 }));
+  }
+  const all = (await (await call(e, "GET", "/v1/admin/training?status=all", owner, device)).json()).items;
+  const id = (q) => all.find((r) => r.question === q).id;
+  const reviewed = await call(e, "POST", "/v1/admin/training/review", owner, device,
+    JSON.stringify({ ids: [id("two?")], status: "rejected" }));
+  assert.deepEqual(await reviewed.json(), { updated: 1 });
+  const toExport = (await (await call(e, "GET", "/v1/admin/training/export", owner, device)).json()).items;
+  assert.deepEqual(toExport.map((r) => r.question).sort(), ["one?", "three?"]);           // rejected stays out
+  const sha = "a".repeat(64);
+  const done = await call(e, "POST", "/v1/admin/training/exported", owner, device,
+    JSON.stringify({ file: "data/2026-10-01.parquet", sha256: sha, hf_commit: "abc123", ids: toExport.map((r) => r.id) }));
+  assert.deepEqual(await done.json(), { file: "data/2026-10-01.parquet", marked: 2 });
+  assert.deepEqual((await (await call(e, "GET", "/v1/admin/training/export", owner, device)).json()).items, []);
+  const again = await call(e, "POST", "/v1/admin/training/exported", owner, device,
+    JSON.stringify({ file: "data/2026-10-01.parquet", sha256: sha, ids: [id("one?")] }));
+  assert.equal(again.status, 409);                                                         // same file twice: refused, nothing changed
+  assert.equal((await call(e, "POST", "/v1/admin/training/exported", owner, device,
+    JSON.stringify({ file: "../evil", sha256: sha, ids: ["x"] }))).status, 400);
+  const stats = await (await call(e, "GET", "/v1/admin/stats", owner, device)).json();
+  assert.equal(stats.accounts, 1);
+  assert.deepEqual(stats.exports, { files: 1, rows: 2, last: stats.exports.last });
+  assert.deepEqual(stats.training.map((t) => [t.status, t.answers, t.exported]).sort(), [["pending", 2, 2], ["rejected", 1, 0]]);
+});
+
+test("shared records are indexed once in D1 and searchable by anyone", async () => {
+  const e = env();
+  const [account, device] = [await keypair(), await keypair()];
+  await register(e, account, device);
+  const records = [
+    { source: "pubmed", external_id: "1", title: "Base editing in sickle cell disease", abstract: "A phase 1 trial.", source_url: "https://pubmed.ncbi.nlm.nih.gov/1/", published_at: "2026" },
+    { source: "europe_pmc", external_id: "2", title: "Prime editing 50%_off", abstract: "Mouse study.", source_url: "https://europepmc.org/2", published_at: "2025" },
+  ];
+  const first = await (await call(e, "POST", "/v1/corpus", account, device, JSON.stringify({ records }))).json();
+  const second = await (await call(e, "POST", "/v1/corpus", account, device, JSON.stringify({ records }))).json();
+  assert.equal(first.new_records, 2);
+  assert.equal(second.new_records, 0);                                                     // deduplicated across batches
+  const search = (q) => worker.fetch(new Request(`https://sync.example/v1/corpus/search?q=${encodeURIComponent(q)}`), e);
+  const found = await (await search("sickle TRIAL")).json();
+  assert.deepEqual(found.records.map((r) => r.external_id), ["1"]);
+  assert.deepEqual((await (await search("50%_")).json()).records.map((r) => r.external_id), ["2"]);   // % and _ are literal
+  assert.deepEqual((await (await search("editing")).json()).records.length, 2);
+  assert.equal((await search("")).status, 400);
+  const stats = await (await worker.fetch(new Request("https://sync.example/v1/corpus/stats"), e)).json();
+  assert.equal(stats.total, 2);
 });
 
 test("each account has daily limits", async () => {

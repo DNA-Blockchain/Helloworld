@@ -1,11 +1,13 @@
-# RabbitSoftware.inc sync service on Cloudflare Workers + R2 (free plan).
+# RabbitSoftware.inc sync service on Cloudflare Workers + R2 + D1 (free plan).
 #
 #   cd deploy/cloudflare-sync
+#   npx wrangler d1 migrations apply rabbitsoftware-sync --remote   # create/upgrade the SQL tables first
 #   npx wrangler deploy                       # publish (or update) the service
 #   npx wrangler secret put SIGNUP_KEY        # needed to create accounts until OPEN_SIGNUP is "true"
+#   npx wrangler secret put ADMIN_ACCOUNT     # the owner's account ID (`python rabbit.py account` shows it)
 #
-# ADMIN_ACCOUNT is the owner's account ID (`rabbit account` shows it); only it can export shared
-# training answers to the private Hugging Face dataset.
+# ADMIN_ACCOUNT is a secret, not a var, so the owner's account ID isn't published with this file. Only that
+# account can review shared answers and export them to the private Hugging Face dataset.
 name = "rabbitsoftware-sync"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
@@ -13,8 +15,13 @@ workers_dev = true
 
 [vars]
 OPEN_SIGNUP = "false"          # "true" at the public launch
-ADMIN_ACCOUNT = ""
 QUOTAS = '{"history": 500, "corpus": 50, "training": 300, "pairing": 20}'   # per account per day
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rabbitsoftware-sync"
+database_id = "6abca1c1-784c-4151-bd37-95f9fe30cc52"
+migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "SYNC"

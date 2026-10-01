@@ -8,6 +8,16 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **SQL in the cloud: Cloudflare D1** for the sync service (`deploy/cloudflare-sync/migrations/0001_init.sql`), alongside R2:
+  - **Shared answers:** stored in `training_answers` (no account or device) with a review status, instead of R2 files.
+  - **Corpus:** every public record indexed once in `corpus_records`, searchable by anyone (`GET /v1/corpus/search`, `/v1/corpus/stats`).
+  - **Exports:** each export to Hugging Face recorded in `exports`, together with marking its answers, in one transaction, so nothing is exported twice.
+  - **Owner routes:** `/v1/admin/training` (by status), `/review`, `/export`, `/exported` and `/v1/admin/stats`, all in the sync API v1 schema and contract-tested on the wire.
+  - **Writes:** bulk writes are single set-based statements.
+- **Shared answers to the private HF dataset as Parquet** (#40): `python rabbit.py training stats | pending | approve | reject | export`:
+  - an export re-screens every answer for personal information (failures are rejected), refuses a public repo, asks first, uploads `data/<date>.parquet` (zstd) with this PC's HF login, then records the file's SHA-256 and HF commit;
+  - `training export --daily on` lets the supervisor export once a day (a failure marks the day "needs attention");
+  - `pyarrow` added to the requirements.
 - **Stable APIs between the parts:**
   - versioned JSON Schemas in `schemas/rabbitsoftware-*-v1.schema.json` for the local app API, the OS shell API, the node API, the model API, the sync API, and the integrity report and tool survey;
   - a page for each in `docs/api/`, with the rules for how an API may change;
@@ -45,6 +55,7 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   - **Profiles:** `research`, `gaming`, `development`.
 
 ### Changed
+- **Sync service:** `ADMIN_ACCOUNT` is now a Wrangler secret instead of a var, so the owner's account ID isn't published in the repository. The dataset card describes the Parquet export and review.
 - **Research answers are technical reports:**
   - three sections (Findings, with the reported figures; Methods and evidence, with each record's study type; Limitations), every claim cited;
   - a retrieval line on each answer: keyword and meaning matches with their scores and cutoff, the sources, publication years and abstract coverage;

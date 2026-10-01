@@ -7,6 +7,7 @@ requests>=2.32.0
 opentimestamps>=0.4.5
 brainflow>=5.22.0        # signal_lab.py EEG boards, including the simulated one
 scikit-learn>=1.5        # corpus_vector_store.py: TF-IDF search until the local meaning model is downloaded
+pyarrow>=25.0            # rabbitsoft/training_export.py: shared answers to the HF dataset as Parquet
 
 # testing
 pytest>=9.1.0
