@@ -1,0 +1,104 @@
+/* RabbitSoftware design tokens: one place for colors, type and spacing, used by every screen.
+ *
+ * Modes, set on <html> (rabbit.js keeps them per device):
+ *   data-text="big"         larger type everywhere
+ *   data-contrast="high"    black/white with a yellow focus ring
+ *   data-theme="dark|light" otherwise follows the system setting
+ */
+:root {
+  --rabbit-font: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --rabbit-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --rabbit-size: 18px;
+  --rabbit-line: 1.55;
+  --rabbit-radius: 12px;
+  --rabbit-space: 16px;
+  --rabbit-touch: 48px;                 /* smallest target for a tap or click */
+
+  --rabbit-bg: #f6f7fb;
+  --rabbit-surface: #ffffff;
+  --rabbit-text: #1b1f2a;
+  --rabbit-muted: #4c5568;
+  --rabbit-border: #c9cfdc;
+  --rabbit-accent: #1f5fbf;
+  --rabbit-accent-text: #ffffff;
+  --rabbit-ok: #136b3a;
+  --rabbit-warn: #8a5300;
+  --rabbit-problem: #b3261e;
+  --rabbit-focus: #1f5fbf;
+  --rabbit-you: #e3ecfb;                /* the person's own messages */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --rabbit-bg: #12151c;
+    --rabbit-surface: #1c2130;
+    --rabbit-text: #edf0f7;
+    --rabbit-muted: #b4bccd;
+    --rabbit-border: #3a4256;
+    --rabbit-accent: #8ab4ff;
+    --rabbit-accent-text: #0b1220;
+    --rabbit-ok: #6fdc9b;
+    --rabbit-warn: #ffc56b;
+    --rabbit-problem: #ff8a80;
+    --rabbit-focus: #8ab4ff;
+    --rabbit-you: #22314f;
+  }
+}
+
+:root[data-theme="dark"] {
+  --rabbit-bg: #12151c;
+  --rabbit-surface: #1c2130;
+  --rabbit-text: #edf0f7;
+  --rabbit-muted: #b4bccd;
+  --rabbit-border: #3a4256;
+  --rabbit-accent: #8ab4ff;
+  --rabbit-accent-text: #0b1220;
+  --rabbit-ok: #6fdc9b;
+  --rabbit-warn: #ffc56b;
+  --rabbit-problem: #ff8a80;
+  --rabbit-focus: #8ab4ff;
+  --rabbit-you: #22314f;
+}
+
+:root[data-text="big"] {
+  --rabbit-size: 24px;
+  --rabbit-touch: 60px;
+}
+
+:root[data-contrast="high"] {
+  --rabbit-bg: #000000;
+  --rabbit-surface: #000000;
+  --rabbit-text: #ffffff;
+  --rabbit-muted: #ffffff;
+  --rabbit-border: #ffffff;
+  --rabbit-accent: #ffff00;
+  --rabbit-accent-text: #000000;
+  --rabbit-ok: #00ff66;
+  --rabbit-warn: #ffff00;
+  --rabbit-problem: #ff6666;
+  --rabbit-focus: #ffff00;
+  --rabbit-you: #1a1a1a;
+}
+
+html {
+  font-family: var(--rabbit-font);
+  font-size: var(--rabbit-size);
+  line-height: var(--rabbit-line);
+  background: var(--rabbit-bg);
+  color: var(--rabbit-text);
+}
+
+body {
+  margin: 0;
+  background: var(--rabbit-bg);
+  color: var(--rabbit-text);
+}
+
+:focus-visible {
+  outline: 4px solid var(--rabbit-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

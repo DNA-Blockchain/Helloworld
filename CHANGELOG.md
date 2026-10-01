@@ -15,6 +15,12 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 - **Versioned routes:** `/api/v1/message`, `/api/v1/poll` and `/api/v1/status`, with the old `/api/...` routes kept as aliases. The web page uses v1.
 - **`GET /api/v1/shell`:** a read-only snapshot of nodes, jobs, AI, account and the latest integrity report, for the desktop shell.
 - **`jsonschema`** added to `requirements.txt`, for the contract tests.
+- **UI kit (`ui/`), Web Components with no build step:**
+  - **Design tokens:** big-text, high-contrast, dark and reduced-motion modes.
+  - **Components:** `<rabbit-button>`, `<rabbit-card>`, `<rabbit-status>`, `<rabbit-choices>` (number keys pick), `<rabbit-dialog>` (yes/no, with "No" focused first) and `<rabbit-chat>` (read out by screen readers).
+  - **Gallery:** a page at `/ui/gallery.html`.
+  - **Safety:** text is always inserted as text, never as HTML.
+  - **Serving:** the local app serves the kit's files by name only.
 
 ## [0.9.0] - 2026-10-01
 

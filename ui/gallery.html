@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RabbitSoftware UI kit</title>
+  <link rel="stylesheet" href="/ui/tokens.css">
+  <style>
+    main { max-width: 60em; margin: 0 auto; padding: var(--rabbit-space); }
+    h1 { font-size: 1.6em; margin: 0.5em 0 0.2em; }
+    .modes, .row { display: flex; flex-wrap: wrap; gap: 0.6em; align-items: center; }
+    .modes { margin-bottom: var(--rabbit-space); }
+    p.lead { color: var(--rabbit-muted); margin-top: 0; }
+  </style>
+  <script type="module" src="/ui/rabbit.js"></script>
+  <script type="module" src="/ui/gallery.js"></script>
+</head>
+<body>
+  <main>
+    <h1>RabbitSoftware UI kit</h1>
+    <p class="lead">Every component, in every mode. Try the keyboard too: Tab moves between controls, and a number key picks a choice.</p>
+
+    <div class="modes" role="group" aria-label="Display modes">
+      <rabbit-button data-mode="text" data-value="big">Bigger text</rabbit-button>
+      <rabbit-button data-mode="text" data-value="normal">Normal text</rabbit-button>
+      <rabbit-button data-mode="contrast" data-value="high">High contrast</rabbit-button>
+      <rabbit-button data-mode="contrast" data-value="normal">Normal contrast</rabbit-button>
+      <rabbit-button data-mode="theme" data-value="dark">Dark</rabbit-button>
+      <rabbit-button data-mode="theme" data-value="light">Light</rabbit-button>
+      <rabbit-button data-mode="theme" data-value="system">Like this device</rabbit-button>
+    </div>
+
+    <rabbit-card heading="Buttons">
+      <div class="row">
+        <rabbit-button variant="primary">Search</rabbit-button>
+        <rabbit-button>Explain more simply</rabbit-button>
+        <rabbit-button variant="danger">Remove device</rabbit-button>
+        <rabbit-button disabled>Not available</rabbit-button>
+      </div>
+    </rabbit-card>
+
+    <rabbit-card heading="Status">
+      <div class="row">
+        <rabbit-status state="ok">3 nodes running, chains intact</rabbit-status>
+        <rabbit-status state="warn">The model server is asleep</rabbit-status>
+        <rabbit-status state="problem">The activity log's hash chain is broken</rabbit-status>
+        <rabbit-status>Not checked yet</rabbit-status>
+      </div>
+    </rabbit-card>
+
+    <rabbit-card heading="Choices">
+      <rabbit-choices id="choices" label="Pick a search"></rabbit-choices>
+      <p id="picked" aria-live="polite"></p>
+    </rabbit-card>
+
+    <rabbit-card heading="Yes or no">
+      <rabbit-button id="ask" variant="primary">Ask a yes/no question</rabbit-button>
+      <p id="answer" aria-live="polite"></p>
+      <rabbit-dialog id="dialog"></rabbit-dialog>
+    </rabbit-card>
+
+    <rabbit-card heading="Conversation">
+      <rabbit-chat id="chat"></rabbit-chat>
+    </rabbit-card>
+  </main>
+</body>
+</html>

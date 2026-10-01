@@ -20,6 +20,10 @@ from .assistant import Session
 from .jobs import Jobs
 
 PAGE = Path(__file__).with_name("page.html")
+UI = Path(__file__).resolve().parent.parent / "ui"
+# The UI kit's files, served by name only (nothing else under ui/, and no paths).
+UI_FILES = {"tokens.css": "text/css; charset=utf-8", "rabbit.js": "text/javascript; charset=utf-8",
+            "gallery.html": "text/html; charset=utf-8", "gallery.js": "text/javascript; charset=utf-8"}
 DEFAULT_PORT = 8792
 MAX_SESSIONS = 20
 MAX_TEXT = 4000
@@ -64,7 +68,7 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int, jobs: Jobs |
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy",
-                             "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
+                             "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
             self.end_headers()
             self.wfile.write(body)
 
@@ -79,6 +83,11 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int, jobs: Jobs |
                 return self._json(403, {"error": "open this page at http://127.0.0.1:%d" % port})
             if self.path in ("/", "/index.html"):
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            if self.path.startswith("/ui/"):
+                name = self.path[len("/ui/"):]
+                if name in UI_FILES:
+                    return self._send(200, (UI / name).read_bytes(), UI_FILES[name])
+                return self._json(404, {"error": "not found"})
             path = route(self.path)
             if path in ("/api/status", "/api/shell") and self.headers.get("X-Rabbit") != "1":
                 return self._json(403, {"error": "missing X-Rabbit header"})
