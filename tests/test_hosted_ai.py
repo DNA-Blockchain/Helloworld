@@ -76,6 +76,19 @@ def test_the_server_is_saved_and_the_environment_wins(tmp_path, monkeypatch):
     assert json.loads(settings.read_text()) == {"notes": True}
 
 
+def test_a_private_hugging_face_endpoint_uses_this_pcs_login_and_nothing_else_does(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "hf_login")
+    settings = tmp_path / "settings.json"
+    save_url(settings, "https://abc.endpoints.huggingface.cloud")
+    assert from_settings(settings).key == "hf_login"
+    save_url(settings, "https://gateway.example.org")
+    assert from_settings(settings).key == ""                       # the login never goes to other servers
+    monkeypatch.setenv("RABBIT_MODEL_KEY", "k1")
+    assert from_settings(settings).key == "k1"
+
+
 class FakeServer:
     host = "rabbit.example.org"
 
