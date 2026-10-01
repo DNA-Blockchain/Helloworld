@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-model-api-v1.schema.json",
+  "title": "RabbitSoftware model API v1",
+  "description": "The OpenAI-compatible subset spoken between hosted_ai.py, the gateway (deploy/cloudflare, deploy/gateway) and the model endpoint (llama.cpp): POST /v1/chat/completions. The gateway cleans every request down to chatRequest; limits are 20 questions per person per hour and 500 a day by default.",
+  "$defs": {
+    "message": {
+      "type": "object",
+      "required": ["role", "content"],
+      "properties": {
+        "role": {"enum": ["system", "user", "assistant"]},
+        "content": {"type": "string"}
+      }
+    },
+    "chatRequest": {
+      "type": "object",
+      "required": ["messages"],
+      "properties": {
+        "model": {"type": "string"},
+        "messages": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/message"}},
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "temperature": {"type": "number", "minimum": 0, "maximum": 1.5},
+        "stream": {"const": false}
+      }
+    },
+    "chatResponse": {
+      "type": "object",
+      "required": ["choices"],
+      "properties": {
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["message"],
+            "properties": {"message": {"type": "object", "required": ["content"], "properties": {"content": {"type": "string"}}}}
+          }
+        }
+      }
+    },
+    "error": {
+      "description": "HTTP 400 bad request, 413 too long, 429 over a limit, 503 the model is waking up (try again in a minute).",
+      "type": "object",
+      "required": ["error"],
+      "properties": {"error": {"type": "string"}}
+    }
+  }
+}

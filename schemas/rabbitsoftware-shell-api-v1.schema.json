@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-shell-api-v1.schema.json",
+  "title": "RabbitSoftware OS shell API v1",
+  "description": "GET /api/v1/shell on the local app server: one read-only snapshot for the desktop shell's status screens. Built by rabbitsoft/shell_api.py from files the OS already writes; it changes nothing.",
+  "type": "object",
+  "required": ["schema", "version", "nodes", "jobs", "ai", "integrity"],
+  "properties": {
+    "schema": {"const": "rabbitsoft-shell.v1"},
+    "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "chain_blocks", "chain_ok", "connected_peers", "updated_at"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^node-\\d+$"},
+          "chain_blocks": {"type": "integer", "minimum": 0},
+          "chain_ok": {"type": "boolean"},
+          "connected_peers": {"type": "array", "items": {"type": "integer"}},
+          "updated_at": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "running", "summary"],
+        "properties": {
+          "name": {"type": "string"},
+          "running": {"type": "boolean"},
+          "summary": {"type": "string"}
+        }
+      }
+    },
+    "ai": {
+      "type": "object",
+      "required": ["model_server", "account"],
+      "properties": {
+        "model_server": {"type": ["string", "null"], "description": "The model server outside this PC, if one is set"},
+        "account": {"type": "boolean", "description": "Whether this device belongs to a RabbitSoftware account"}
+      }
+    },
+    "integrity": {
+      "type": ["object", "null"],
+      "required": ["created_at", "ok"],
+      "properties": {
+        "created_at": {"type": "string"},
+        "ok": {"type": "boolean"}
+      }
+    }
+  }
+}

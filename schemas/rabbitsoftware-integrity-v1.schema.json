@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-integrity-v1.schema.json",
+  "title": "RabbitSoftware integrity report and tool survey v1",
+  "description": "What the integrity team writes: the report (rabbitsoft/integrity.py; saved in autonomous/integrity/, its SHA-256 is the fingerprint that can go on the chain) and the tool survey (rabbitsoft/toolchain.py).",
+  "$defs": {
+    "report": {
+      "type": "object",
+      "required": ["schema", "created_at", "ok", "checks"],
+      "properties": {
+        "schema": {"const": "rabbitsoft-integrity.v1"},
+        "created_at": {"type": "string"},
+        "ok": {"type": "boolean", "description": "true when no check found a problem"},
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "name", "status", "lines"],
+            "properties": {
+              "role": {"enum": ["records and data", "code enforcement"]},
+              "name": {"type": "string"},
+              "status": {"enum": ["ok", "problem", "skipped"]},
+              "lines": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "toolSurvey": {
+      "type": "object",
+      "required": ["schema", "tools"],
+      "properties": {
+        "schema": {"const": "rabbitsoft-tools.v1"},
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "name", "needed_for", "here", "wsl"],
+            "properties": {
+              "key": {"type": "string"},
+              "name": {"type": "string"},
+              "needed_for": {"type": "string"},
+              "here": {"type": "boolean"},
+              "wsl": {"type": ["boolean", "null"], "description": "null when there's no WSL (or this isn't Windows)"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

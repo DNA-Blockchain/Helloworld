@@ -43,7 +43,12 @@ class Sessions:
             return self.items[key]
 
 
-def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
+def route(path: str) -> str:
+    """The API's version-1 routes (schemas/rabbitsoftware-app-api-v1); the older /api/... ones are aliases."""
+    return path.replace("/api/v1/", "/api/", 1) if path.startswith("/api/v1/") else path
+
+
+def make_handler(sessions: Sessions, paths: tools.Paths, port: int, jobs: Jobs | None = None):
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
 
     class Handler(BaseHTTPRequestHandler):
@@ -74,10 +79,15 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
                 return self._json(403, {"error": "open this page at http://127.0.0.1:%d" % port})
             if self.path in ("/", "/index.html"):
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
-            if self.path == "/api/status":
-                if self.headers.get("X-Rabbit") != "1":
-                    return self._json(403, {"error": "missing X-Rabbit header"})
+            path = route(self.path)
+            if path in ("/api/status", "/api/shell") and self.headers.get("X-Rabbit") != "1":
+                return self._json(403, {"error": "missing X-Rabbit header"})
+            if path == "/api/status":
                 return self._json(200, {"nodes": tools.nodes(paths)[0], "chain": tools.chain(paths)[0]})
+            if path == "/api/shell":
+                from .shell_api import snapshot
+
+                return self._json(200, snapshot(paths, jobs))
             self._json(404, {"error": "not found"})
 
         def do_POST(self):
@@ -89,7 +99,8 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
                 raw = b""
             if not self._trusted() or self.headers.get("X-Rabbit") != "1":
                 return self._json(403, {"error": "not allowed"})
-            if self.path not in ("/api/message", "/api/poll"):
+            path = route(self.path)
+            if path not in ("/api/message", "/api/poll"):
                 return self._json(404, {"error": "not found"})
             try:
                 body = json.loads(raw or b"{}")
@@ -99,7 +110,7 @@ def make_handler(sessions: Sessions, paths: tools.Paths, port: int):
                 return self._json(400, {"error": "send {\"session\": <uuid>, \"text\": <message>}"})
             session, lock = sessions.get(key)
             with lock:
-                if self.path == "/api/poll":                  # background jobs that finished meanwhile
+                if path == "/api/poll":                       # background jobs that finished meanwhile
                     notice = session.poll()
                     return self._json(200, {"text": notice.text if notice else ""})
                 reply = session.handle(text)
@@ -113,4 +124,4 @@ def serve(port: int = DEFAULT_PORT, paths: tools.Paths | None = None,
     paths = paths or tools.Paths()
     shared_jobs = Jobs(paths.rabbit / "jobs")         # one set of background jobs for every tab
     sessions = Sessions(factory or (lambda: Session(paths, jobs=shared_jobs)))
-    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(sessions, paths, port))
+    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(sessions, paths, port, shared_jobs))

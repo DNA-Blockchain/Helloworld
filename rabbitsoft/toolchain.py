@@ -116,6 +116,13 @@ def describe(rows: list[dict], windows: bool | None = None, winget: bool | None 
     return lines
 
 
+def survey_json(rows: list[dict]) -> dict:
+    """The survey in its API form (schemas/rabbitsoftware-integrity-v1, toolSurvey)."""
+    return {"schema": "rabbitsoft-tools.v1",
+            "tools": [{"key": r["tool"].key, "name": r["tool"].name, "needed_for": r["tool"].needed_for,
+                       "here": r["here"], "wsl": r["wsl"]} for r in rows]}
+
+
 def winget_command(tool: Tool) -> list[str]:
     return ["winget", "install", "-e", "--id", tool.winget, "--accept-source-agreements",
             "--accept-package-agreements", "--disable-interactivity"]
