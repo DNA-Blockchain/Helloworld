@@ -76,9 +76,13 @@ sent, never anything personal. Say no and this PC's own model (Ollama) answers i
 server doesn't answer, this PC's model takes over. `rabbit model-server --off` stops using it.
 
 Publishing the model and its gateway is in [`deploy/`](deploy/). The model goes in a private Hugging
-Face repo, behind a paid Inference Endpoint that sleeps when unused. A free gateway Space sits in
-front of it: it holds the access key, limits each person and each day, and never records
-questions. Run `python deploy/hf_publish.py` to see the steps.
+Face repo, behind a paid Inference Endpoint that sleeps when unused (`python deploy/hf_publish.py`
+shows the steps). The public reaches it through a gateway on Cloudflare Workers' free plan
+([`deploy/cloudflare/`](deploy/cloudflare/)): it holds the access token as an encrypted secret, so
+the token never ships in a download. It allows each person 20 questions an hour and everyone
+together 500 a day, which caps the bill, and it never records questions. The same gateway can
+instead run as a Hugging Face Space ([`deploy/gateway/`](deploy/gateway/)), which needs a
+Hugging Face PRO plan.
 
 ## Requirements
 

@@ -44,6 +44,8 @@ __pycache__/
 
 # npm dependencies
 node_modules/
+# Cloudflare Wrangler's local state (deploy/cloudflare)
+.wrangler/
 
 # Rust build artifacts
 target/
