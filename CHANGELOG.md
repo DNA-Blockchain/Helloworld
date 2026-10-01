@@ -36,6 +36,13 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   - **Learning:** reward-weighted learning from ratings, run in a background thread on a copy of the model and swapped in atomically, so real time never blocks.
   - **Provenance:** a local hash-chained ledger holding model fingerprints, config hashes, metrics and keyed (HMAC) data digests. No raw signals, notes or memories reach disk or the shared chain.
   - `python -m neurovisual` runs a simulated session.
+- **Neurovisual SDK** (`docs/neurovisual/SDK.md`): every slot open, for research, gaming and AI development:
+  - **Live EEG:** through BrainFlow (OpenBCI, Muse, Neurosity and others; synthetic board -1 needs no hardware) and Lab Streaming Layer.
+  - **Any model:** loaded as `package.module:Class` and given the same evidence accounting through `model.compose()`; trainable if it has `trained()`. A PyTorch GRU example is included.
+  - **Generators:** latent states conditioned into prompt, seed, guidance and strength requests for existing image and video generators: ComfyUI workflows (SDXL, Flux, AnimateDiff, SVD), AUTOMATIC1111, diffusers and any HTTP service. Remote destinations need https and a yes; `AsyncRenderer` keeps generation off the real-time path (newest request wins, errors counted).
+  - **Game engines:** a UDP latent stream on localhost for Unity, Unreal, Godot and TouchDesigner.
+  - **Session datasets:** every step, rating, memory and generation, encrypted with AES-256-GCM in authenticated frames (`docs/neurovisual/DATASET.md`); `sessions`, `export` (npz, jsonl) and `train` commands; datasets recorded in the provenance ledger.
+  - **Profiles:** `research`, `gaming`, `development`.
 
 ### Changed
 - **Research answers are technical reports:**

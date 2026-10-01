@@ -68,6 +68,24 @@ class VisualLatentState:
                 "inference": self.inference_weight, "generative": self.generative_weight}
 
 
+def compose(neural: np.ndarray, context: np.ndarray, mode: VisualMode, anchor: np.ndarray | None, quality: float,
+            timestamp: float, event_id: str | None, model_version: str, rng: np.random.Generator) -> VisualLatentState:
+    """A model's neural output, mixed with the stored anchor and generated detail by mode, with the
+    confidence that mix earns. Any predictor can use it so evidence is accounted for the same way."""
+    neural = np.asarray(neural, dtype=float)
+    if neural.shape != (LATENT_SIZE,):
+        raise ValueError(f"a predictor's neural output has {LATENT_SIZE} values, not shape {neural.shape}")
+    evidence, inference, generative = MIX[(mode.value, anchor is not None)]
+    scene = inference * neural + generative * np.tanh(rng.normal(size=LATENT_SIZE))
+    if anchor is not None:
+        scene = scene + evidence * anchor
+    confidence = (evidence * SOURCE_CONFIDENCE["evidence"] + inference * SOURCE_CONFIDENCE["inference"]
+                  + generative * SOURCE_CONFIDENCE["generative"]) * quality
+    return VisualLatentState(timestamp=timestamp, mode=mode.value, event_id=event_id, scene=np.clip(scene, -1, 1),
+                             neural=neural, context=context, evidence_weight=evidence, inference_weight=inference,
+                             generative_weight=generative, confidence=float(confidence), model_version=model_version)
+
+
 def anchor_embedding(description: str) -> np.ndarray:
     """A deterministic unit vector for a described event. A placeholder for a real visual embedding
     (from the person's own photos or video, kept off-chain); same description, same vector."""
@@ -96,18 +114,8 @@ class TemporalPredictor:
     def predict(self, sequence: list[np.ndarray], mode: VisualMode, anchor: np.ndarray | None,
                 quality: float, timestamp: float, event_id: str | None = None) -> VisualLatentState:
         ctx = self.context(sequence)
-        neural = np.tanh(self.W @ ctx)
-        evidence, inference, generative = MIX[(mode.value, anchor is not None)]
-        scene = inference * neural + generative * np.tanh(self.rng.normal(size=LATENT_SIZE))
-        if anchor is not None:
-            scene = scene + evidence * anchor
-        confidence = (evidence * SOURCE_CONFIDENCE["evidence"] + inference * SOURCE_CONFIDENCE["inference"]
-                      + generative * SOURCE_CONFIDENCE["generative"]) * quality
-        return VisualLatentState(timestamp=timestamp, mode=mode.value, event_id=event_id,
-                                 scene=np.clip(scene, -1, 1), neural=neural, context=ctx,
-                                 evidence_weight=evidence, inference_weight=inference,
-                                 generative_weight=generative, confidence=float(confidence),
-                                 model_version=self.version_text)
+        return compose(np.tanh(self.W @ ctx), ctx, mode, anchor, quality, timestamp, event_id,
+                       self.version_text, self.rng)
 
     def objective(self, records: list[dict]) -> float:
         """Mean rating-weighted agreement with the rated outputs (higher is better)."""
