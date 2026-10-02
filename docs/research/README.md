@@ -6,6 +6,7 @@ notes it was written from, so every figure can be traced to its source.
 | Report | Date | Notes | Informs |
 |---|---|---|---|
 | [EEG to image reconstruction](eeg-to-image-reconstruction.md) | October 2026 | [notes/](eeg-to-image-reconstruction/notes/): methods and models, datasets and benchmarks, imagery/memory/real-time, law and ethics | `neurovisual/` ([SDK](../neurovisual/SDK.md)) |
+| [DNA editing and cancer remission](dna-editing-and-cancer-remission.md) | October 2026 | [notes/](dna-editing-and-cancer-remission/notes/): CRISPR clinical results, DNA-based remission monitoring, before/after datasets, oncology digital twins, RF and visualization claims | `twinos/` genomics ([guide](../genomics/README.md)) |
 
 ## Where the knowledge goes
 

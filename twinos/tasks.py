@@ -25,7 +25,8 @@ from .locking import locked
 from .protocol import canonical
 
 TASKS = {
-    "status": "read_context", "update_context": "write_context", "generate_code": "generate_code",
+    "status": "read_context", "research_search": "read_context", "update_context": "write_context",
+    "generate_code": "generate_code",
     "review_code": "review_code", "run_tests": "run_tests", "run_code": "run_code",
     "terminal_command": "terminal", "read_file": "file_read", "write_file": "file_write",
     "network_operation": "network", "micropython_command": "micropython", "gpu_training": "gpu_compute",

@@ -143,7 +143,8 @@ def test_policy_can_never_make_consequential_capabilities_automatic(tmp_path):
 def test_an_automatic_task_runs_and_returns_its_result(pair):
     twin, coder = pair
     caps = ask(coder, twin, "CAPABILITY_REQUEST", {})["payload"]
-    assert caps["automatic"] == ["status"] and "status" in caps["task_types"]
+    # Only read-only task types run without the owner's approval.
+    assert set(caps["automatic"]) == {"status", "research_search"} and "status" in caps["task_types"]
     reply = ask(coder, twin, "TASK_REQUEST", {"task_type": "status", "description": "how are you", "parameters": {}})
     assert reply["message_type"] == "TASK_RESULT"
     assert reply["payload"]["status"] == "completed" and reply["payload"]["result"]["success"] is True
@@ -286,7 +287,7 @@ def test_command_line_status_trust_tasks_and_remote_guard(tmp_path, capsys, monk
     home = str(tmp_path / "cli")
     assert main(["--home", home, "status"]) == 0
     status = json.loads(capsys.readouterr().out)
-    assert status["ledger_valid"] and status["automatic"] == ["status"]
+    assert status["ledger_valid"] and status["automatic"] == ["research_search", "status"]
     peer = AgentIdentity(tmp_path / "peer")
     assert main(["--home", home, "trust", peer.agent_id, peer.public_key]) == 0
     assert main(["--home", home, "trust", peer.agent_id, "ab" * 32]) == 1

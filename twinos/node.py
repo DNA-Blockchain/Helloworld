@@ -63,6 +63,7 @@ class AgentNode:
             "update_context": handlers.update_context(self.context_path),
             "run_tests": handlers.run_tests(self.paths.root),
             "gpu_training": handlers.gpu_training(self.paths.autonomous / "neurovisual"),
+            "research_search": handlers.research_search(self.paths.root),
         }
         self.device = None
 
