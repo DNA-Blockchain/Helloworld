@@ -24,6 +24,7 @@ def main(argv: list[str]) -> int:
     if not notes:
         print(f"CHANGELOG.md has no section for {argv[0]}", file=sys.stderr)
         return 1
+    sys.stdout.reconfigure(encoding="utf-8")          # the Windows console isn't UTF-8 by default
     print(notes)
     return 0
 
