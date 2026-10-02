@@ -38,3 +38,15 @@ install master with `RABBIT_CHANNEL=dev`.
 
 Fix it on master and release a PATCH version. Don't move or delete a published tag: installs and `rabbit
 update` compare against it.
+
+
+## Required GitHub release security controls
+
+Before tagging a release, configure these repository controls. The release workflow depends on the tag ruleset and publishing-environment protections below to make its approval gate effective:
+
+1. In **Settings → Rules → Rulesets**, create an active tag ruleset matching `v*.*.*`. Restrict tag creation, updates, and deletion to trusted release managers; do not grant broad bypass access.
+2. In **Settings → Environments**, create `release-publish`. Require approval from an independent trusted reviewer, enable **Prevent self-review**, and restrict deployments to tags matching `v*.*.*`.
+3. Store `HF_TOKEN` as a secret on the `release-publish` environment with only the Hugging Face repository write scope needed for publishing. Remove any repository- or organization-level `HF_TOKEN` secret after the environment secret is confirmed.
+4. Keep release tags pointed at commits already merged into the protected default branch. The workflow checks this before tests and again before publishing. A tag that points elsewhere fails without releasing.
+
+This organization currently has one member. With self-review prevented, add a trusted independent release approver before the next release; otherwise the publish job intentionally remains blocked. Do not bypass the environment approval just to complete a release.
