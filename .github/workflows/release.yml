@@ -33,6 +33,17 @@ jobs:
       - name: Run test suite
         run: python -m pytest tests/ -q
 
+      - name: Publish the model versions this release ships (Hugging Face)
+        # deploy/huggingface/model-versions.json lists them; their files are already on the private repo's
+        # "candidates" branch. This copies each to main on Hugging Face, tags it model-v<version> and checks
+        # its SHA-256. HF_TOKEN is a write token for that repo, set by the owner in the repository's secrets;
+        # a release that ships no model version doesn't need it.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install "huggingface_hub>=1.0"
+          python deploy/hf_publish.py promote --release "$GITHUB_REF_NAME"
+
       - name: Code manifest (authorship and the SHA-256 of every file)
         run: |
           MANIFEST="rabbitsoftware-${GITHUB_REF_NAME#v}-code-manifest.json"
@@ -43,6 +54,8 @@ jobs:
         run: |
           python scripts/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
           FINGERPRINT=$(python -c "import json; print(json.load(open('$MANIFEST'))['fingerprint'])")
+          python deploy/hf_publish.py notes --release "$GITHUB_REF_NAME" > model-notes.md
+          if [ -s model-notes.md ]; then printf '\n\n### Model\n' >> release-notes.md; cat model-notes.md >> release-notes.md; fi
           printf '\n\n---\n**Code fingerprint:** `%s`. The attached `%s` lists the SHA-256 of every file. Check it with `python scripts/code_fingerprint.py --commit %s`. Authorship: see NOTICE.md.\n' "$FINGERPRINT" "$MANIFEST" "$GITHUB_REF_NAME" >> release-notes.md
 
       - name: Publish the release
