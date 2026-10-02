@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-agent-message-v1.schema.json",
+  "title": "RabbitSoftware agent message v1 (U-A2A 1.0)",
+  "description": "Messages between TwinOS agents (twinos/protocol.py): a signed envelope whose payload depends on message_type. Sent as a 4-byte big-endian length and UTF-8 JSON, at most 1 MiB. The signature is Ed25519 over the canonical JSON (sorted keys, no spaces) of every field except signature.",
+  "$defs": {
+    "agentId": {"type": "string", "pattern": "^agent-[0-9a-f]{24}$"},
+    "hex32": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "agentType": {"enum": ["digital_twin", "coding_agent", "terminal_agent", "development_agent", "automation_agent",
+                           "micropython_agent", "gpu_agent", "os_agent", "generic_agent"]},
+    "message": {
+      "type": "object",
+      "required": ["protocol", "protocol_version", "message_id", "message_type", "sender_agent", "sender_type",
+                   "sender_key", "receiver_agent", "timestamp", "nonce", "payload", "signature"],
+      "properties": {
+        "protocol": {"const": "U-A2A"},
+        "protocol_version": {"const": "1.0"},
+        "message_id": {"$ref": "#/$defs/hex32"},
+        "message_type": {"enum": ["IDENTITY_REQUEST", "IDENTITY_RESPONSE", "CAPABILITY_REQUEST", "CAPABILITY_RESPONSE",
+                                  "TASK_REQUEST", "TASK_STATUS_REQUEST", "APPROVAL_REQUIRED", "TASK_RESULT",
+                                  "TASK_REJECTED", "ERROR"]},
+        "sender_agent": {"$ref": "#/$defs/agentId"},
+        "sender_type": {"$ref": "#/$defs/agentType"},
+        "sender_key": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Ed25519 public key; sender_agent is agent- plus the first 24 hex digits of its SHA-256"},
+        "receiver_agent": {"type": "string", "description": "an agent id, \"any\" (discovery only), or \"unknown\" when an error answers a sender that couldn't be identified"},
+        "timestamp": {"type": "number", "description": "unix seconds; receivers accept 120 s either side of their clock"},
+        "nonce": {"$ref": "#/$defs/hex32"},
+        "payload": {"type": "object"},
+        "signature": {"type": "string", "pattern": "^[0-9a-f]{128}$"}
+      },
+      "allOf": [
+        {"if": {"properties": {"message_type": {"const": "IDENTITY_RESPONSE"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/identityPayload"}}}},
+        {"if": {"properties": {"message_type": {"const": "CAPABILITY_RESPONSE"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/capabilityPayload"}}}},
+        {"if": {"properties": {"message_type": {"const": "TASK_REQUEST"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/taskRequestPayload"}}}},
+        {"if": {"properties": {"message_type": {"const": "TASK_STATUS_REQUEST"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/taskStatusRequestPayload"}}}},
+        {"if": {"properties": {"message_type": {"enum": ["APPROVAL_REQUIRED", "TASK_RESULT"]}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/taskView"}}}},
+        {"if": {"properties": {"message_type": {"const": "TASK_REJECTED"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/rejectedPayload"}}}},
+        {"if": {"properties": {"message_type": {"const": "ERROR"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/errorPayload"}}}}
+      ]
+    },
+    "identityPayload": {
+      "type": "object",
+      "required": ["agent"],
+      "properties": {
+        "agent": {
+          "type": "object",
+          "required": ["agent_id", "name", "agent_type", "public_key", "protocol", "protocol_version"],
+          "properties": {
+            "agent_id": {"$ref": "#/$defs/agentId"},
+            "name": {"type": "string"},
+            "agent_type": {"$ref": "#/$defs/agentType"},
+            "public_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "operating_system": {"type": "string"},
+            "architecture": {"type": "string"},
+            "protocol": {"const": "U-A2A"},
+            "protocol_version": {"type": "string"}
+          }
+        }
+      }
+    },
+    "capabilityPayload": {
+      "type": "object",
+      "required": ["task_types", "automatic"],
+      "properties": {
+        "task_types": {"type": "array", "items": {"type": "string"}, "description": "task types this agent has a handler for"},
+        "automatic": {"type": "array", "items": {"type": "string"}, "description": "the subset its policy runs without the owner's approval"}
+      }
+    },
+    "taskRequestPayload": {
+      "type": "object",
+      "required": ["task_type", "description"],
+      "properties": {
+        "task_type": {"type": "string"},
+        "description": {"type": "string", "maxLength": 2000},
+        "parameters": {"type": "object"}
+      }
+    },
+    "taskStatusRequestPayload": {
+      "type": "object",
+      "required": ["task_id"],
+      "properties": {"task_id": {"type": "string", "pattern": "^task-[0-9a-f]{16}$"}}
+    },
+    "taskView": {
+      "type": "object",
+      "required": ["task_id", "task_type", "capability", "status"],
+      "properties": {
+        "task_id": {"type": "string", "pattern": "^task-[0-9a-f]{16}$"},
+        "task_type": {"type": "string"},
+        "capability": {"type": "string"},
+        "status": {"enum": ["waiting_approval", "approved", "denied", "completed", "failed"]},
+        "result": {"type": "object", "required": ["success"], "properties": {"success": {"type": "boolean"}}}
+      }
+    },
+    "rejectedPayload": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {"reason": {"type": "string"}}
+    },
+    "errorPayload": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {
+        "reason": {"enum": ["invalid_message", "wrong_receiver", "not_trusted", "unknown_task", "unexpected_message"]},
+        "detail": {"type": "string"}
+      }
+    }
+  }
+}

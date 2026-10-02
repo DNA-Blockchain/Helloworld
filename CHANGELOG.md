@@ -8,6 +8,13 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **TwinOS universal agent network, part 1** (`twinos/`, `python -m twinos`): a digital twin as one agent among coding, development, terminal, MicroPython, GPU and other agents, all speaking **U-A2A 1.0**:
+  - **Identity:** a persistent Ed25519 key per agent. The agent id is derived from the key, so an id can't be claimed without the key.
+  - **Messages:** each one is signed, and checked against `schemas/rabbitsoftware-agent-message-v1` (contract-tested, documented in `docs/api/agent-message.md`), a ±120 s clock window and a nonce against replays. Frames are length-prefixed, up to 1 MiB.
+  - **Trust:** anyone can discover an agent, but only peers whose keys the owner has pinned (`twinos trust`) can ask for anything else. Nothing is pinned automatically.
+  - **Policy and approvals:** the receiver builds each task from its type, description and parameters only, so a sender can't approve its own task. Capabilities outside `policy.json` wait for `twinos approve|deny`, which is written to the activity log. Code, terminal, file writes, network, MicroPython and GPU always wait. A node offers only task types it has a handler for (here, `status`), rather than reporting work it didn't do.
+  - **Network:** listens on `127.0.0.1:8790` by default. Other machines need `--allow-remote` to listen or send, which is logged. At most 32 connections at a time and 100 waiting tasks per peer.
+  - **Ledger:** keyed digests of messages from pinned peers and of every task decision and result, in `autonomous/twinos/ledger.jsonl` (the `neurovisual` provenance ledger, which can now name its genesis block). Nothing is published.
 - **Research report: EEG to image reconstruction (2026)** in `docs/research/`, with its source notes (methods and models, datasets and benchmarks, imagery/memory/real-time, law and ethics). It gives the evidence base and design guidance for `neurovisual/` and is linked from the SDK guide. Deep-research working folders (`/research_notes/`, `/reports/`) are gitignored.
 - **The AI everywhere in RabbitSoftware.inc** (opt-in with `python rabbit.py model-server --always on`):
   - **No yes/no each time:** AI steps go straight to the configured model server. If it doesn't answer, this PC's model does, and the reply says so. `--always off` restores asking; `model-server` shows the mode.
