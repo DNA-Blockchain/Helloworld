@@ -8,7 +8,7 @@ what the adapter does when the source fails. Every response below was captured f
 |---|---|---|---|
 | PubMed | [`multi_source_research.py`](../../multi_source_research.py) `search_pubmed` | `article` | [NCBI policies](https://www.ncbi.nlm.nih.gov/home/about/policies/) |
 | Europe PMC | [`extended_research_sources.py`](../../extended_research_sources.py) `search_europepmc` | `article`, `preprint` | [Europe PMC terms](https://europepmc.org/terms) |
-| ClinicalTrials.gov | [`research_analysis.py`](../../research_analysis.py) via `find_trials` | `clinical_trial` | [Terms and conditions](https://clinicaltrials.gov/about-site/terms-conditions) |
+| ClinicalTrials.gov | [`research_matcher.py`](../../research_matcher.py) `find_trials` | `clinical_trial` | [Terms and conditions](https://clinicaltrials.gov/about-site/terms-conditions) |
 | ClinVar | [`public_variant_sources.py`](../../public_variant_sources.py) `search_ncbi_variants` | `variant` | [NCBI policies](https://www.ncbi.nlm.nih.gov/home/about/policies/) |
 | NIH RePORTER | [`extended_research_sources.py`](../../extended_research_sources.py) `search_nih_grants` | `grant` | [RePORTER API terms](https://api.reporter.nih.gov/) |
 

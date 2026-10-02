@@ -288,8 +288,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="record this code state's fingerprint in JSONL provenance (needs git)")
     args = parser.parse_args(argv)
     if not Path(args.catalog).exists():
-        print(f"No research catalog at {args.catalog}. Fill one with: python research_fetch.py --help",
-              file=sys.stderr)
+        print(f"No research catalog at {args.catalog}. Fill one with:\n"
+              f'  python dna_shell.py research-search "your terms" --confirm-public-query\n'
+              f"or by answering yes to a public search in: python rabbit.py chat", file=sys.stderr)
         return 1
     catalog = ResearchCatalog(args.catalog)
     if args.backfill:

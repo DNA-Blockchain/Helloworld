@@ -291,3 +291,22 @@ def test_the_documented_commands_and_links_exist():
         rabbit.main(["export", "--help"])
     assert "--backfill" in tutorial and "--fingerprint" in tutorial
     assert "research-search" in tutorial and "--confirm-public-query" in tutorial
+
+
+def test_the_documented_adapters_exist_where_the_docs_say():
+    """docs/sources/ names a module and function per source. A doc that points at the wrong module sends
+    a contributor hunting, so the claim is checked rather than trusted."""
+    import importlib
+    import re
+
+    root = __import__("pathlib").Path(__file__).resolve().parent.parent
+    page = (root / "docs" / "sources" / "README.md").read_text(encoding="utf-8")
+    rows = re.findall(r"\|\s*\[`([a-z_]+\.py)`\]\([^)]+\)\s*`?(\w+)`?", page)
+    assert len(rows) >= 5, rows
+    for module_name, function in rows:
+        module = importlib.import_module(module_name[:-3])
+        assert hasattr(module, function), f"{module_name} has no {function}"
+    # And the hint printed when there is no catalog must name a command that really fills one.
+    import research_export
+    source = (root / "research_export.py").read_text(encoding="utf-8")
+    assert "research-search" in source and "research_fetch.py --help" not in source
