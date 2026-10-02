@@ -70,8 +70,22 @@ def _post_json(url: str, payload: dict) -> dict:
     return data
 
 
-def _ncbi_prepare(params: dict[str, str]) -> dict[str, str]:
-    """Wait out NCBI's request-rate guideline and add the optional API key."""
+NCBI_HOSTS = frozenset({"eutils.ncbi.nlm.nih.gov"})
+
+
+def is_ncbi(url: str) -> bool:
+    """Whether a URL's host really is NCBI's E-utilities. The host is parsed and compared exactly, so the
+    API key cannot reach a look-alike host such as https://eutils.ncbi.nlm.nih.gov.evil.example/ or
+    https://evil.example/?x=eutils.ncbi.nlm.nih.gov."""
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower() in NCBI_HOSTS
+    except ValueError:
+        return False
+
+
+def _ncbi_prepare(params: dict[str, str], url: str = "") -> dict[str, str]:
+    """Wait out NCBI's request-rate guideline and add the optional API key, which is attached only when
+    the URL's host really is NCBI's: the key is a secret, so it never travels to anywhere else."""
     now = time.monotonic()
     wait = 0.11 if os.environ.get("NCBI_API_KEY", "").strip() else 0.36
     delay = wait - (now - _NCBI_LAST_REQUEST)
@@ -79,14 +93,14 @@ def _ncbi_prepare(params: dict[str, str]) -> dict[str, str]:
         time.sleep(delay)
     api_key = os.environ.get("NCBI_API_KEY", "").strip()
     request_params = dict(params)
-    if api_key:
+    if api_key and is_ncbi(url):
         request_params["api_key"] = api_key
     return request_params
 
 
 def _ncbi_get_json(url: str, params: dict[str, str]) -> dict:
     global _NCBI_LAST_REQUEST
-    data = _get_json(f"{url}?{urllib.parse.urlencode(_ncbi_prepare(params))}")
+    data = _get_json(f"{url}?{urllib.parse.urlencode(_ncbi_prepare(params, url))}")
     _NCBI_LAST_REQUEST = time.monotonic()
     return data
 
@@ -103,7 +117,8 @@ def fetch_nuccore_fasta(accession: str) -> bytes:
     global _NCBI_LAST_REQUEST
     if not _NUCCORE_ACCESSION_RE.fullmatch(accession):
         raise ValueError("accession must be a versioned NCBI nucleotide accession such as NM_007294.4")
-    params = _ncbi_prepare({"db": "nuccore", "id": accession, "rettype": "fasta", "retmode": "text"})
+    params = _ncbi_prepare({"db": "nuccore", "id": accession, "rettype": "fasta", "retmode": "text"},
+                           NCBI_EFETCH)
     request = urllib.request.Request(
         f"{NCBI_EFETCH}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT}
     )

@@ -148,3 +148,39 @@ def test_summary_records_missing_for_some_pmids_are_skipped(monkeypatch):
     })
     papers = msr.search_pubmed("x")
     assert [p["pmid"] for p in papers] == ["1"]
+
+
+def test_the_ncbi_api_key_goes_only_to_ncbis_real_host(monkeypatch):
+    """The key is a secret. A substring or prefix test would leak it to a look-alike host, so the host
+    is parsed and compared exactly."""
+    assert msr.is_ncbi("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi")
+    assert msr.is_ncbi("https://EUTILS.NCBI.NLM.NIH.GOV/entrez/eutils/esearch.fcgi")
+    for impostor in ("https://evil.example/?x=eutils.ncbi.nlm.nih.gov",
+                     "https://eutils.ncbi.nlm.nih.gov.evil.example/x",
+                     "https://evil.example/eutils.ncbi.nlm.nih.gov",
+                     "https://eutils.ncbi.nlm.nih.gov@evil.example/x",
+                     "https://www.ncbi.nlm.nih.gov/home/about/policies/", "", "not a url"):
+        assert not msr.is_ncbi(impostor), impostor
+
+    monkeypatch.setenv("NCBI_API_KEY", "secret-key")
+    sent = {}
+
+    class Response:
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, **kwargs):
+        sent["url"] = request.full_url
+        return Response()
+
+    monkeypatch.setattr(msr.urllib.request, "urlopen", fake_urlopen)
+    msr._http_get_json("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", {"db": "pubmed"})
+    assert "api_key=secret-key" in sent["url"]
+    msr._http_get_json("https://evil.example/?x=eutils.ncbi.nlm.nih.gov", {"db": "pubmed"})
+    assert "secret-key" not in sent["url"]

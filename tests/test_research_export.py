@@ -122,7 +122,7 @@ def test_csv_has_a_header_and_quotes_commas(tmp_path):
     article = next(r for r in rows if r["source"] == "pubmed")
     assert article["authors"] == "Chen Y; Chen F; Luo R" and article["year"] == "2026"
     assert article["citation_key"] == "chen2026pubmed42789486" and article["record_type"] == "article"
-    assert article["terms_url"].startswith("https://www.ncbi.nlm.nih.gov") and "\n" not in article["abstract"]
+    assert article["terms_url"] == ARTICLE["terms_url"] and "\n" not in article["abstract"]
     assert next(r for r in rows if r["source"] == "clinicaltrials.gov")["record_type"] == "clinical_trial"
 
 

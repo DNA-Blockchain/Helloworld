@@ -163,3 +163,44 @@ def test_a_clinvar_summary_keeps_its_classification_under_either_field_name():
     # dbSNP still uses the old name, so it must keep working.
     assert "Benign" in sources._safe_summary(
         {"snp_id": "rs1", "clinical_significance": {"description": "Benign"}}, database="snp")
+
+
+def test_the_ncbi_api_key_is_attached_only_for_ncbis_own_host(monkeypatch):
+    """The key is a secret, so it is attached by exact host match, never unconditionally."""
+    monkeypatch.setenv("NCBI_API_KEY", "secret-key")
+    monkeypatch.setattr(sources.time, "sleep", lambda _: None)
+    for url in (sources.NCBI_ESEARCH, sources.NCBI_ESUMMARY, sources.NCBI_EFETCH):
+        assert sources.is_ncbi(url), url
+        assert sources._ncbi_prepare({"db": "clinvar"}, url).get("api_key") == "secret-key", url
+    for impostor in ("https://eutils.ncbi.nlm.nih.gov.evil.example/x",
+                     "https://evil.example/?x=eutils.ncbi.nlm.nih.gov",
+                     "https://eutils.ncbi.nlm.nih.gov@evil.example/x", "", "not a url"):
+        assert not sources.is_ncbi(impostor), impostor
+        assert "api_key" not in sources._ncbi_prepare({"db": "clinvar"}, impostor), impostor
+    # A caller that forgets the URL gets no key rather than leaking one.
+    assert "api_key" not in sources._ncbi_prepare({"db": "clinvar"})
+
+
+def test_the_fasta_fetch_still_sends_the_key(monkeypatch):
+    """A host check must not silently stop the key reaching NCBI's own efetch endpoint."""
+    monkeypatch.setenv("NCBI_API_KEY", "secret-key")
+    monkeypatch.setattr(sources.time, "sleep", lambda _: None)
+    seen = {}
+
+    class Response:
+        def read(self, size=None):          # fetch_nuccore_fasta reads with a byte limit
+            return b">NM_007294.4 test\nACGT\n"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, **kw):
+        seen["url"] = request.full_url
+        return Response()
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
+    assert sources.fetch_nuccore_fasta("NM_007294.4").startswith(b">")
+    assert "api_key=secret-key" in seen["url"] and "eutils.ncbi.nlm.nih.gov" in seen["url"]
