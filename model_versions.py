@@ -116,6 +116,14 @@ def remote_sha256(api, repo: str, filename: str, revision: str) -> str | None:
     return None
 
 
+def _operations():
+    """Hugging Face's commit operations (add a file, copy one). Tests swap in stand-ins, so they run where
+    huggingface_hub isn't installed, as on CI."""
+    from huggingface_hub import CommitOperationAdd, CommitOperationCopy
+
+    return CommitOperationAdd, CommitOperationCopy
+
+
 def released_tags(api, repo: str) -> set[str]:
     return {t.name for t in api.list_repo_refs(repo).tags}
 
@@ -134,7 +142,7 @@ def add_candidate(api, repo: str, manifest: dict, gguf: Path, version: str, rele
         raise ValueError(f"{version} must be newer than {manifest['versions'][-1]['version']}")
     if not RELEASE_TAG.match(release):
         raise ValueError(f"the release that ships it looks like v0.10.0, not {release!r}")
-    from huggingface_hub import CommitOperationAdd
+    CommitOperationAdd, _ = _operations()
 
     sha = file_sha256(gguf)
     if any(v["sha256"] == sha for v in manifest["versions"]):
@@ -180,7 +188,7 @@ def promote(api, repo: str, manifest: dict, release: str, card: Path = MODEL_CAR
     """For every version whose release is this tag: copy its file to main on Hugging Face (a server-side
     copy, no re-upload), update the card, tag the commit model-v<version>, and check the SHA-256 on main.
     Already-promoted versions are checked and left alone. Returns the versions promoted or confirmed."""
-    from huggingface_hub import CommitOperationAdd, CommitOperationCopy
+    CommitOperationAdd, CommitOperationCopy = _operations()
 
     shipped = [v for v in manifest["versions"] if v.get("release") == release]
     if not shipped:

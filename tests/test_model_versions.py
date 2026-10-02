@@ -6,7 +6,6 @@ import types
 from pathlib import Path
 
 import pytest
-from huggingface_hub import CommitOperationAdd, CommitOperationCopy
 
 import model_versions as mv
 import rabbit
@@ -15,6 +14,22 @@ from tests.test_hf_publish import hf_publish
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "owner/Llama-3.2-3B-RabbitSoftware-GGUF"
 FILE = "nos-lora.Q4_K_M.gguf"
+
+
+class CommitOperationAdd:
+    def __init__(self, path_in_repo, path_or_fileobj):
+        self.path_in_repo, self.path_or_fileobj = path_in_repo, path_or_fileobj
+
+
+class CommitOperationCopy:
+    def __init__(self, src_path_in_repo, path_in_repo, src_revision=None):
+        self.src_path_in_repo, self.path_in_repo, self.src_revision = src_path_in_repo, path_in_repo, src_revision
+
+
+@pytest.fixture(autouse=True)
+def no_huggingface_hub_needed(monkeypatch):
+    """Stand-ins with huggingface_hub's constructor signatures, so these tests run on CI without it."""
+    monkeypatch.setattr(mv, "_operations", lambda: (CommitOperationAdd, CommitOperationCopy))
 
 
 class FakeHub:
