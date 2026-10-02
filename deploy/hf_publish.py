@@ -3,8 +3,8 @@
 Three steps, each run on its own and each asking before it does anything:
 
   1. python deploy/hf_publish.py model
-        Uploads the merged model (ollama/nos-lora/nos-lora.Q4_K_M.gguf, about 1.9 GB) to a PRIVATE
-        model repo on your account. Free.
+        Uploads the merged model (ollama/nos-lora/nos-lora.Q4_K_M.gguf, about 1.9 GB) to the model
+        repo on your account, which is public since the 0.11.0 launch. Free.
 
   2. Create the Inference Endpoint in the Hugging Face website (this is the part that costs money,
      so you choose the hardware and see the price there). `python deploy/hf_publish.py endpoint`
@@ -71,9 +71,14 @@ def publish_model() -> int:
     client, user = api()
     repo = f"{user}/{MODEL_REPO}"
     size = GGUF.stat().st_size / 1e9
-    if not confirm(f"Upload {GGUF.name} ({size:.1f} GB) to the PRIVATE model repo {repo}? (free)"):
+    if not confirm(f"Upload {GGUF.name} ({size:.1f} GB) to the PUBLIC model repo {repo}? (free)"):
         return 1
-    client.create_repo(repo, repo_type="model", private=True, exist_ok=True)
+    # The model repo is public since launch. create_repo(exist_ok=True) does not change an existing
+    # repo's visibility, but asking for private here would make a first-time upload private by
+    # surprise, so the visibility is stated once and read from the repo when it already exists.
+    existing = {r.id for r in client.list_models(author=user)}
+    if repo not in existing:
+        client.create_repo(repo, repo_type="model", private=False, exist_ok=True)
     client.upload_file(path_or_fileobj=str(MODEL_CARD), path_in_repo="README.md", repo_id=repo)
     client.upload_file(path_or_fileobj=str(GGUF), path_in_repo=GGUF.name, repo_id=repo)
     print(f"Uploaded: https://huggingface.co/{repo}\nNext: python deploy/hf_publish.py endpoint")
@@ -159,7 +164,7 @@ def publish_candidate(args, ask=None) -> int:
     manifest = mv.load()
     training = {"method": args.method, "examples": args.examples, "where": args.where}
     if not (ask or confirm)(f"Upload {gguf.name} ({gguf.stat().st_size / 1e9:.1f} GB) as candidate model "
-                            f"{args.version} for {args.release} to the '{mv.CANDIDATES}' branch of the PRIVATE repo "
+                            f"{args.version} for {args.release} to the '{mv.CANDIDATES}' branch of "
                             f"{repo}? (free)"):
         return 1
     updated, new = mv.add_candidate(client, repo, manifest, gguf, args.version, args.release, _git_commit(),
@@ -222,7 +227,7 @@ def list_versions() -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
     sub = p.add_subparsers(dest="step", required=True)
-    sub.add_parser("model", help="upload the model to a private repo (free)")
+    sub.add_parser("model", help="upload the model to its public repo (free)")
     sub.add_parser("cards", help="update the model and dataset cards from deploy/huggingface/ (free)")
     sub.add_parser("endpoint", help="print the settings for creating the paid endpoint")
     g = sub.add_parser("gateway", help="create the public gateway Space (free)")

@@ -60,9 +60,9 @@ python rabbit.py model install            # or --version 1.0.0
 ollama run rabbitsoftware
 ```
 
-**With Ollama alone:** a private repo needs Ollama's public key (`~/.ollama/id_ed25519.pub`) added
-under Settings → SSH Keys on Hugging Face. Use the full host name; `hf.co/` fails with a "realm host"
-error on private repos:
+**With Ollama alone:** use the full host name, because `hf.co/` can fail with a "realm host" error. (If
+you are pulling a *private* repo of your own, Ollama also needs its public key,
+`~/.ollama/id_ed25519.pub`, added under Settings → SSH Keys on Hugging Face.)
 
 ```
 ollama run huggingface.co/<your-hf-username>/Llama-3.2-3B-RabbitSoftware-GGUF:Q4_K_M
@@ -82,7 +82,7 @@ records, so give it the facts in the prompt rather than asking it to recall them
 
 - **Server:** a Hugging Face Inference Endpoint (`rabbitsoftware-model`) running the llama.cpp server on one NVIDIA T4. It scales to zero after 15 minutes idle.
 - **API:** OpenAI-compatible `POST /v1/chat/completions`, model name `rabbitsoftware`. Answers are capped at 400 tokens.
-- **Access:** the endpoint is private. The owner's installation authenticates with its own Hugging Face login. Other installations go through a gateway on Cloudflare Workers, which holds the token and enforces per-user and daily limits.
+- **Access:** the **model weights are public** and anyone may download and run them locally (see Download and use). The hosted *endpoint* in front of them stays token-protected, so running it is the owner's cost, not an open service.
 - **Consent:** RabbitSoftware.inc asks before **every** question it sends to the server. Declining answers with the model on the local machine.
 - **Throughput:** about 84 tokens/s when warm; 30–60 s cold start after scale-to-zero.
 

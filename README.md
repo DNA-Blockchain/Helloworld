@@ -103,8 +103,9 @@ server doesn't answer, this PC's model takes over. `rabbit model-server --off` s
 
 The model (Llama-3.2-3B-RabbitSoftware, a LoRA fine-tune of Llama 3.2 3B Instruct, GGUF Q4_K_M, 2.0 GB)
 is versioned in [`deploy/huggingface/model-versions.json`](deploy/huggingface/model-versions.json) and
-stored in a private Hugging Face repo. Access is limited to the owner's account until launch. With
-access, one command downloads a version, checks its SHA-256 against that record and adds it to Ollama:
+published on Hugging Face as
+[Llama-3.2-3B-RabbitSoftware-GGUF](https://huggingface.co/Therealsickonechase-bit/Llama-3.2-3B-RabbitSoftware-GGUF).
+One command downloads a released version, checks its SHA-256 against that record and adds it to Ollama:
 
 ```powershell
 ollama pull llama3.2:3b                          # once: its chat format goes with the weights
