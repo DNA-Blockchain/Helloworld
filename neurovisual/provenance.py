@@ -54,13 +54,13 @@ def load_or_create_key(path: Path) -> bytes:
 class ProvenanceLedger:
     FIELDS = ("index", "timestamp", "kind", "data_digest", "model_sha256", "config_sha256", "metrics", "previous")
 
-    def __init__(self, key: bytes, path: Path | None = None):
+    def __init__(self, key: bytes, path: Path | None = None, name: str = "neurovisual"):
         self.key, self.path = key, path
         self.entries: list[dict] = []
         if path and path.exists():
             self.entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
         if not self.entries:
-            self.append("genesis", data=None, model_sha256="", config={"ledger": "neurovisual", "version": 1}, metrics={})
+            self.append("genesis", data=None, model_sha256="", config={"ledger": name, "version": 1}, metrics={})
 
     @staticmethod
     def entry_hash(entry: dict) -> str:
