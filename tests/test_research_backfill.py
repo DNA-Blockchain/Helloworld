@@ -179,8 +179,8 @@ def test_pubmed_summaries_requests_bare_ids(monkeypatch):
     monkeypatch.setattr(multi_source_research, "_http_get_json", fake)
     papers = multi_source_research.pubmed_summaries(["101", "102", "not-a-pmid"])
     assert seen["id"] == "101,102"
-    assert papers == [{"pmid": "101", "title": "Paper", "pub_date": "2024 Jan",
-                       "url": "https://pubmed.ncbi.nlm.nih.gov/101/"}]
+    assert [(p["pmid"], p["title"], p["pub_date"], p["url"]) for p in papers] == [
+        ("101", "Paper", "2024 Jan", "https://pubmed.ncbi.nlm.nih.gov/101/")]
 
 
 def test_trials_by_id_parses_title_and_start_date(monkeypatch):

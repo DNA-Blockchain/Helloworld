@@ -124,8 +124,14 @@ def fetch_nuccore_fasta(accession: str) -> bytes:
 
 
 def _safe_summary(summary: dict, *, database: str) -> str:
+    # ClinVar renamed clinical_significance to germline_classification and added
+    # oncogenicity_classification and clinical_impact_classification. Both names are allowed: the new
+    # one for live responses, the old one so a cached or archived summary still keeps its classification.
+    # Without the new name the summary silently lost the one fact that matters most about a variant.
     if database == "clinvar":
-        allowed = ("accession", "clinical_significance", "variation_type", "genes", "trait_set")
+        allowed = ("accession", "germline_classification", "oncogenicity_classification",
+                   "clinical_impact_classification", "clinical_significance", "variation_type",
+                   "genes", "trait_set")
     else:
         allowed = ("snp_id", "snp_class", "clinical_significance", "genes", "allele_origin")
     values = {key: summary[key] for key in allowed if key in summary}

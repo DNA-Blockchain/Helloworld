@@ -1,2 +1,7 @@
 # Shell scripts run on Linux/WSL even when checked out on Windows: keep their line endings as LF.
 *.sh text eol=lf
+
+# The example research dataset is checksummed byte for byte (examples/research/checksums.json), so its
+# files must keep LF endings on every platform or `fetch_example.py --check` would fail after a Windows
+# checkout. (scripts/code_fingerprint.py has no such problem: it hashes git objects, not the worktree.)
+examples/research/* text eol=lf

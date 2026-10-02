@@ -141,3 +141,25 @@ def test_gnomad_rejects_free_text_query():
 
     with pytest.raises(ValueError, match="variant ID"):
         sources.lookup_gnomad_variant("BRCA1 cancer")
+
+
+def test_a_clinvar_summary_keeps_its_classification_under_either_field_name():
+    """ClinVar renamed clinical_significance to germline_classification (and added oncogenicity and
+    clinical-impact classifications). The allow-list behind a record's abstract must know the new names:
+    with only the old one, every ClinVar abstract silently lost its classification, which is the single
+    most important fact about a variant."""
+    live = {"accession": "VCV004935332", "title": "NM_007294.4(BRCA1):c.441+1G>T",
+            "germline_classification": {"description": "Likely pathogenic",
+                                        "review_status": "criteria provided, single submitter"},
+            "oncogenicity_classification": {"description": "Oncogenic"},
+            "genes": [{"symbol": "BRCA1"}], "secret": "must not appear"}
+    summary = sources._safe_summary(live, database="clinvar")
+    assert "Likely pathogenic" in summary and "criteria provided" in summary
+    assert "Oncogenic" in summary and "VCV004935332" in summary
+    assert "secret" not in summary                      # the allow-list still excludes everything else
+
+    archived = {"accession": "VCV1", "clinical_significance": {"description": "Pathogenic"}}
+    assert "Pathogenic" in sources._safe_summary(archived, database="clinvar")
+    # dbSNP still uses the old name, so it must keep working.
+    assert "Benign" in sources._safe_summary(
+        {"snp_id": "rs1", "clinical_significance": {"description": "Benign"}}, database="snp")

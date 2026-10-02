@@ -60,12 +60,30 @@ def test_happy_path_parses_title_date_and_url(monkeypatch):
         }},
     })
     papers = msr.search_pubmed("breast cancer", biomarker="BRCA1", max_results=5)
-    assert papers == [
-        {"pmid": "111", "title": "First paper", "pub_date": "2024 Jan",
-         "url": "https://pubmed.ncbi.nlm.nih.gov/111/"},
-        {"pmid": "222", "title": "Second paper", "pub_date": "2023 Dec",
-         "url": "https://pubmed.ncbi.nlm.nih.gov/222/"},
+    assert [(p["pmid"], p["title"], p["pub_date"], p["url"]) for p in papers] == [
+        ("111", "First paper", "2024 Jan", "https://pubmed.ncbi.nlm.nih.gov/111/"),
+        ("222", "Second paper", "2023 Dec", "https://pubmed.ncbi.nlm.nih.gov/222/"),
     ]
+    assert all(p["authors"] == [] and p["doi"] == "" for p in papers)   # absent in this summary
+
+
+def test_pubmed_carries_citation_fields_from_the_same_summary(monkeypatch):
+    """esummary already returns authors, journal, volume, pages and the DOI, so exports (BibTeX, RIS)
+    need no extra request."""
+    _install_fake_urlopen(monkeypatch, {
+        "esearch.fcgi": {"esearchresult": {"idlist": ["111"]}},
+        "esummary.fcgi": {"result": {"111": {
+            "title": "A paper", "pubdate": "2026 Sep 25", "fulljournalname": "The journal",
+            "source": "J Abbrev", "volume": "27", "issue": "3", "pages": "e952933",
+            "authors": [{"name": "Chen Y", "authtype": "Author"},
+                        {"name": "Smith J", "authtype": "CollectiveName"}],
+            "articleids": [{"idtype": "pubmed", "value": "111"}, {"idtype": "doi", "value": "10.1/x"}],
+        }}},
+    })
+    [paper] = msr.search_pubmed("x")
+    assert paper["authors"] == ["Chen Y"]                 # a collective name is not an author
+    assert paper["container"] == "The journal" and paper["volume"] == "27" and paper["issue"] == "3"
+    assert paper["pages"] == "e952933" and paper["doi"] == "10.1/x" and paper["record_type"] == "article"
 
 
 def test_biomarker_is_anded_into_the_search_term(monkeypatch):

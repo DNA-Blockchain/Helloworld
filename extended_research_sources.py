@@ -95,6 +95,16 @@ def search_europepmc(query: str, max_results: int = 5) -> list[dict]:
             "title": rec.get("title"),
             "pub_year": rec.get("pubYear"),
             "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else rec.get("doi", ""),
+            # Citation fields from the same response. The default "lite" result type already carries
+            # them flat (journalTitle, journalVolume, issue, pageInfo), so no resultType=core is needed:
+            # that would return about nine times the bytes for fields we don't use.
+            "authors": [name.strip(" .") for name in (rec.get("authorString") or "").split(",") if name.strip(" .")],
+            "container": rec.get("journalTitle", "") or "",
+            "volume": rec.get("journalVolume", "") or "",
+            "issue": rec.get("issue", "") or "",
+            "pages": rec.get("pageInfo", "") or "",
+            "doi": rec.get("doi", "") or "",
+            "record_type": "preprint" if (rec.get("source") or "").upper() == "PPR" else "article",
         })
     return results
 

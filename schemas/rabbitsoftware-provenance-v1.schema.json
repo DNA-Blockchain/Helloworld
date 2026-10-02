@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.rabbitsoftware.local/rabbitsoftware-provenance-v1.schema.json",
+  "title": "RabbitSoftware research provenance v1",
+  "description": "How a research record's origin travels with it: the source and its identifier, when it was retrieved and exported, the terms it came under, and optionally the fingerprint of the code that produced the export and the audit entry that recorded it. Any tool can emit or read this; it does not require a blockchain, and nothing in it is specific to RabbitSoftware's chain. The chain, where it is used, stores only the fingerprints in `codeFingerprint` and `auditEvent` (docs/api/provenance.md).",
+  "$defs": {
+    "recordProvenance": {
+      "type": "object",
+      "description": "The provenance block attached to one exported record (research_export.py JSONL).",
+      "required": [
+        "schema",
+        "source",
+        "source_id",
+        "exported_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rabbitsoftware-provenance.v1"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "the source's short name, e.g. pubmed, europe_pmc, clinicaltrials.gov, clinvar, nih_reporter"
+        },
+        "source_id": {
+          "type": "string",
+          "pattern": "^[^:]+:.+$",
+          "description": "source and the source's own identifier, e.g. \"pubmed:42789486\". The pair is what makes a record traceable; neither half alone is."
+        },
+        "source_url": {
+          "type": "string",
+          "description": "the record's page at the source, so a reader can open the original"
+        },
+        "retrieved_at": {
+          "type": "number",
+          "description": "unix seconds when this copy was fetched from the source. A record is a snapshot: sources correct and withdraw entries, so the time matters."
+        },
+        "exported_at": {
+          "type": "number",
+          "description": "unix seconds when this file was written"
+        },
+        "exported_by": {
+          "type": "string",
+          "description": "the tool and version that wrote it"
+        },
+        "rights_status": {
+          "type": "string",
+          "description": "what is known about reuse terms; \"unknown; review source and record terms\" when that is the honest answer"
+        },
+        "terms_url": {
+          "type": "string",
+          "description": "the source's terms of use"
+        },
+        "code_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 over every file of the exporting code state (scripts/code_fingerprint.py), so an export can be tied to the exact software that made it"
+        },
+        "audit_event": {
+          "$ref": "#/$defs/auditReference"
+        }
+      }
+    },
+    "auditReference": {
+      "type": "object",
+      "description": "A pointer to the local audit entry that recorded the action, for anyone holding that log.",
+      "required": [
+        "hash"
+      ],
+      "properties": {
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "the audit entry's own hash"
+        },
+        "module": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "number"
+        }
+      }
+    },
+    "auditEntry": {
+      "type": "object",
+      "description": "One entry of the hash-chained audit log (audit_trail.py). Each entry's hash covers its own content and the previous entry's hash, so changing, deleting or reordering any entry breaks verification from that point on. A reader needs no chain to check it: recompute SHA-256 over {timestamp, module, action, node_id, details, prev_hash}, canonically serialized with sorted keys.",
+      "required": [
+        "timestamp",
+        "module",
+        "action",
+        "node_id",
+        "details",
+        "prev_hash",
+        "hash"
+      ],
+      "properties": {
+        "timestamp": {
+          "type": "number"
+        },
+        "module": {
+          "type": "string",
+          "description": "which part of the software acted"
+        },
+        "action": {
+          "type": "string",
+          "description": "what it did, e.g. research_retrieved, knowledge_published"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "description": "action-specific fields. Never raw personal data: a fingerprint or a count instead."
+        },
+        "prev_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "64 zeroes for the first entry"
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "codeFingerprint": {
+      "type": "object",
+      "description": "The manifest of a code state (scripts/code_fingerprint.py): the SHA-256 of every file keyed by its path, plus one fingerprint over all of them. It hashes git objects rather than the working tree, so the result is identical on every platform whatever the line-ending settings. Attached to every GitHub release and optionally recorded on a chain.",
+      "required": [
+        "schema",
+        "fingerprint",
+        "commit",
+        "file_count",
+        "files"
+      ],
+      "properties": {
+        "schema": {
+          "const": "rabbitsoft-code.v1"
+        },
+        "project": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 over every path and file hash"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$"
+        },
+        "version": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files": {
+          "type": "object",
+          "description": "repository path -> SHA-256 of that file's git object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "datasetRelease": {
+      "type": "object",
+      "description": "A dataset as it was used, so an analysis can be repeated against the same bytes: the file's SHA-256, where it came from, and its licence. Used by twinos/genomics.py `record` and by the example dataset's checksums.",
+      "required": [
+        "dataset",
+        "sha256",
+        "url"
+      ],
+      "properties": {
+        "dataset": {
+          "type": "string",
+          "description": "the dataset's short name"
+        },
+        "title": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "access": {
+          "enum": [
+            "open",
+            "registered",
+            "controlled"
+          ],
+          "description": "what a user must do to obtain it"
+        },
+        "personal_data": {
+          "type": "boolean"
+        },
+        "publishable": {
+          "type": "boolean",
+          "description": "true only when the licence allows redistribution and the data holds nothing personal"
+        },
+        "retrieved_at": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

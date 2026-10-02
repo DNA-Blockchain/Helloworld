@@ -88,11 +88,20 @@ def _papers(pmids: list[str], summary: dict) -> list[dict]:
         rec = result.get(pmid, {})
         if not rec:
             continue
+        doi = next((i.get("value", "") for i in rec.get("articleids", []) if i.get("idtype") == "doi"), "")
         papers.append({
             "pmid": pmid,
             "title": rec.get("title"),
             "pub_date": rec.get("pubdate"),
             "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+            # Citation fields from the same esummary response, for exports (research_export.py).
+            "authors": [a.get("name", "") for a in rec.get("authors", []) if a.get("authtype") == "Author"],
+            "container": rec.get("fulljournalname") or rec.get("source") or "",
+            "volume": rec.get("volume") or "",
+            "issue": rec.get("issue") or "",
+            "pages": rec.get("pages") or "",
+            "doi": doi,
+            "record_type": "article",
         })
     return papers
 
