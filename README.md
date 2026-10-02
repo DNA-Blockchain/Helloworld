@@ -10,6 +10,22 @@ a verifiable hash of the exact code state (`project_identifier.py`).
 It runs on plain Python. It does not require Claude, an internet account, a subscription, or GitHub to run;
 see [Owning your copy](#owning-your-copy).
 
+### Using the research data in other tools
+
+Records retrieved here export to **BibTeX, RIS, CSV or JSONL**, each carrying the source's own identifier
+and URL, so a citation traces back to the record it came from:
+
+```bash
+python rabbit.py export --format ris --out records.ris      # for Zotero, Mendeley, EndNote
+python rabbit.py export --format jsonl --out records.jsonl  # with provenance, for a notebook
+```
+
+- **[Integration guide](docs/integration.md)** — what this offers other tools, and the versions it's tested against
+- **[Source adapters](docs/sources/README.md)** — the real request, response, attribution and failure behaviour for PubMed, Europe PMC, ClinicalTrials.gov, ClinVar and NIH RePORTER
+- **[Provenance format](docs/api/provenance.md)** — plain JSON for where a record came from; no blockchain needed to use it
+- **[Tutorial](docs/tutorials/literature-to-reference-manager.md)** — public records into a reference manager and a notebook, with provenance intact
+- **[Example dataset](examples/research/README.md)** — 15 real records with checksums and a script that regenerates them
+
 ### Authorship, license and privacy
 
 | | |

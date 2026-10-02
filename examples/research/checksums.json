@@ -1,0 +1,40 @@
+{
+  "description": "A few public research records per source, with their provenance, for trying the exports. Regenerate with: python examples/research/fetch_example.py --fetch",
+  "fetched_at": 1790935242.832,
+  "fetched_at_human": "2026-10-02 10:00 UTC",
+  "files": {
+    "records.bib": {
+      "bytes": 7151,
+      "sha256": "4478d5830d585c50147cbc43d7fec46f12a186510eba0e86dd4020dcdb8cb00c"
+    },
+    "records.csv": {
+      "bytes": 8060,
+      "sha256": "0370d15ba217df267227e518bf3c367ddc2574c94acfd398cd6ccf0bd1515d7a"
+    },
+    "records.jsonl": {
+      "bytes": 16907,
+      "sha256": "fcc8e1137dcbbb2b3ed3598b52e9063709b609c9c59649eb0cda6dfd8af7f91a"
+    },
+    "records.ris": {
+      "bytes": 9242,
+      "sha256": "63141b24c61eaa2acc2009f517035603dd8e975bdd808ecb96fa03a9136c6628"
+    }
+  },
+  "queries": {
+    "clinicaltrials.gov": "BRCA1 breast cancer",
+    "clinvar": "BRCA1[gene] AND pathogenic",
+    "europe_pmc": "BRCA1 breast cancer",
+    "nih_reporter": "BRCA1 breast cancer",
+    "pubmed": "BRCA1 breast cancer remission"
+  },
+  "records": 15,
+  "records_found": {
+    "clinicaltrials.gov": 3,
+    "clinvar": 3,
+    "europe_pmc": 3,
+    "nih_reporter": 3,
+    "pubmed": 3
+  },
+  "records_per_source": 3,
+  "schema": "rabbitsoftware-example-dataset.v1"
+}

@@ -60,12 +60,30 @@ def test_happy_path_parses_title_date_and_url(monkeypatch):
         }},
     })
     papers = msr.search_pubmed("breast cancer", biomarker="BRCA1", max_results=5)
-    assert papers == [
-        {"pmid": "111", "title": "First paper", "pub_date": "2024 Jan",
-         "url": "https://pubmed.ncbi.nlm.nih.gov/111/"},
-        {"pmid": "222", "title": "Second paper", "pub_date": "2023 Dec",
-         "url": "https://pubmed.ncbi.nlm.nih.gov/222/"},
+    assert [(p["pmid"], p["title"], p["pub_date"], p["url"]) for p in papers] == [
+        ("111", "First paper", "2024 Jan", "https://pubmed.ncbi.nlm.nih.gov/111/"),
+        ("222", "Second paper", "2023 Dec", "https://pubmed.ncbi.nlm.nih.gov/222/"),
     ]
+    assert all(p["authors"] == [] and p["doi"] == "" for p in papers)   # absent in this summary
+
+
+def test_pubmed_carries_citation_fields_from_the_same_summary(monkeypatch):
+    """esummary already returns authors, journal, volume, pages and the DOI, so exports (BibTeX, RIS)
+    need no extra request."""
+    _install_fake_urlopen(monkeypatch, {
+        "esearch.fcgi": {"esearchresult": {"idlist": ["111"]}},
+        "esummary.fcgi": {"result": {"111": {
+            "title": "A paper", "pubdate": "2026 Sep 25", "fulljournalname": "The journal",
+            "source": "J Abbrev", "volume": "27", "issue": "3", "pages": "e952933",
+            "authors": [{"name": "Chen Y", "authtype": "Author"},
+                        {"name": "Smith J", "authtype": "CollectiveName"}],
+            "articleids": [{"idtype": "pubmed", "value": "111"}, {"idtype": "doi", "value": "10.1/x"}],
+        }}},
+    })
+    [paper] = msr.search_pubmed("x")
+    assert paper["authors"] == ["Chen Y"]                 # a collective name is not an author
+    assert paper["container"] == "The journal" and paper["volume"] == "27" and paper["issue"] == "3"
+    assert paper["pages"] == "e952933" and paper["doi"] == "10.1/x" and paper["record_type"] == "article"
 
 
 def test_biomarker_is_anded_into_the_search_term(monkeypatch):
@@ -130,3 +148,39 @@ def test_summary_records_missing_for_some_pmids_are_skipped(monkeypatch):
     })
     papers = msr.search_pubmed("x")
     assert [p["pmid"] for p in papers] == ["1"]
+
+
+def test_the_ncbi_api_key_goes_only_to_ncbis_real_host(monkeypatch):
+    """The key is a secret. A substring or prefix test would leak it to a look-alike host, so the host
+    is parsed and compared exactly."""
+    assert msr.is_ncbi("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi")
+    assert msr.is_ncbi("https://EUTILS.NCBI.NLM.NIH.GOV/entrez/eutils/esearch.fcgi")
+    for impostor in ("https://evil.example/?x=eutils.ncbi.nlm.nih.gov",
+                     "https://eutils.ncbi.nlm.nih.gov.evil.example/x",
+                     "https://evil.example/eutils.ncbi.nlm.nih.gov",
+                     "https://eutils.ncbi.nlm.nih.gov@evil.example/x",
+                     "https://www.ncbi.nlm.nih.gov/home/about/policies/", "", "not a url"):
+        assert not msr.is_ncbi(impostor), impostor
+
+    monkeypatch.setenv("NCBI_API_KEY", "secret-key")
+    sent = {}
+
+    class Response:
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, **kwargs):
+        sent["url"] = request.full_url
+        return Response()
+
+    monkeypatch.setattr(msr.urllib.request, "urlopen", fake_urlopen)
+    msr._http_get_json("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", {"db": "pubmed"})
+    assert "api_key=secret-key" in sent["url"]
+    msr._http_get_json("https://evil.example/?x=eutils.ncbi.nlm.nih.gov", {"db": "pubmed"})
+    assert "secret-key" not in sent["url"]
