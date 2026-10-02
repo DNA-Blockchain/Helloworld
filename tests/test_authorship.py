@@ -87,6 +87,24 @@ def test_no_phone_number_is_published(name):
     assert "845-0940" not in (ROOT / name).read_text(encoding="utf-8")
 
 
+def test_the_citation_file_matches_the_release_and_the_authorship():
+    """GitHub's "Cite this repository" panel reads CITATION.cff, so a stale version there is a wrong
+    citation in someone else's paper. It must agree with VERSION, the licence and NOTICE.md."""
+    import yaml
+
+    citation = yaml.safe_load((ROOT / "CITATION.cff").read_text(encoding="utf-8"))
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert citation["version"] == version, f"CITATION.cff says {citation['version']}, VERSION says {version}"
+    assert citation["cff-version"] == "1.2.0" and citation["type"] == "software"
+    assert citation["license"] == "UPL-1.0"                       # the same licence as LICENSE/NOTICE.md
+    [author] = citation["authors"]
+    assert author["family-names"] == "Ringquist" and author["given-names"] == "Chase Allen"
+    assert "DNA-Blockchain/Helloworld" in citation["repository-code"]
+    assert str(citation["date-released"]) and citation["abstract"].strip()
+    # No contact details: the repository publishes neither the owner's phone number nor their town.
+    assert not {"email", "address", "tel", "post-code", "city"} & set(author)
+
+
 def test_the_public_profile_page_names_the_current_version():
     """The page at github.com/DNA-Blockchain is the first thing the public reads, so a release must not
     leave its version behind (it said 0.9.0 two releases on)."""

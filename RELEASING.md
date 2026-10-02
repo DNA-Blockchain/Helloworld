@@ -11,6 +11,7 @@ install master with `RABBIT_CHANNEL=dev`.
 3. **On a branch `release-X.Y.Z`:**
    - Put `X.Y.Z` in `VERSION`.
    - Update the version line in `deploy/github/profile/README.md`, the organization's public page (a test checks it matches), and add a row for anything new the public should see.
+   - Put `X.Y.Z` and the release date in `CITATION.cff`, which GitHub's citation panel reads (a test checks it matches `VERSION`).
    - In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, and add a fresh empty `## [Unreleased]` above it.
    - Run `python -m pytest`. Everything must pass, including the schema contract tests once they exist.
 4. **Open the PR "Release X.Y.Z"** and merge it once `verify` passes.

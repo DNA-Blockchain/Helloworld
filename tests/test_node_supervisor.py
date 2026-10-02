@@ -7,6 +7,7 @@ import os
 import time
 
 import node_supervisor as sup
+from tests.test_rabbitsoft import wait_for
 
 
 def test_next_report_time():
@@ -95,7 +96,10 @@ def test_real_nodes_restart_after_crash_and_daily_report(tmp_path):
     s.load_keys()
     try:
         s.check_nodes(time.time())                 # starts both
-        time.sleep(12)
+        # Wait for what the next step needs rather than a fixed sleep: under full-suite load the nodes
+        # take longer to write their first status, and a fixed wait made this test flaky.
+        assert wait_for(lambda: all(os.path.exists(os.path.join(cfg.node_dir(i), "status.json"))
+                                    for i in range(cfg.node_count)), timeout=90), "nodes wrote no status"
         s.collect_status()
         victim = s.nodes[1]
         victim.proc.kill()                         # simulate a crash
@@ -104,7 +108,12 @@ def test_real_nodes_restart_after_crash_and_daily_report(tmp_path):
         assert victim.proc is None and s.state["crashes"][-1]["node"] == 1
         s.check_nodes(time.time() + 6)             # past the 5s backoff -> restarted
         assert victim.proc is not None and victim.proc.poll() is None
-        time.sleep(8)
+        # The report and the archive need each node's chain (in its own directory) and its log (in the
+        # shared logs directory) on disk.
+        assert wait_for(lambda: all(
+            os.path.exists(os.path.join(cfg.node_dir(i), f"chain_node-{i}.json"))
+            and os.path.exists(os.path.join(cfg.logs_dir, f"node-{i}.log"))
+            for i in range(cfg.node_count)), timeout=90), "nodes wrote no chain or log"
 
         path = s.daily(dt.datetime.now())          # stops nodes, reports, rotates
         report = open(path, encoding="utf-8").read()

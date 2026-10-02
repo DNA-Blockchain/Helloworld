@@ -14,3 +14,4 @@ huggingface_hub>=0.24    # rabbitsoft/knowledge.py: private knowledge-base datas
 pytest>=9.1.0
 pytest-asyncio>=1.4.0
 jsonschema>=4.23       # API contract tests (schemas/*.json)
+PyYAML>=6.0            # reading CITATION.cff in tests (also arrives with huggingface_hub)
