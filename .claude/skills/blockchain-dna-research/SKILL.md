@@ -1,6 +1,6 @@
 ---
 name: blockchain-dna-research
-description: Run source-backed research through the project's JSON interface, interpret structured research records, and optionally run user-approved local Python.
+description: Search the project knowledge base (docs/research), run source-backed research through the project's JSON interface, interpret structured research records, and optionally run user-approved local Python.
 ---
 
 # Blockchain-DNA research skill
@@ -9,6 +9,28 @@ Use the repository's `blockchain_dna_tool.py` as the JSON input/output
 interface when the host provides a local Python/terminal tool. Validate
 requests against `schemas/blockchain-dna-tool-input.schema.json` and
 responses against `schemas/blockchain-dna-tool-output.schema.json`.
+
+## Project knowledge base: check first
+
+Finished, source-linked reports live in `docs/research/<topic>.md`, with the
+notes they were written from in `docs/research/<topic>/notes/` and a row in
+`docs/research/README.md`. Before researching a topic, search them and build
+on an existing report instead of repeating it:
+
+```bash
+python rabbit.py knowledge search "what can EEG decode"
+python rabbit.py knowledge status    # sections, vectors, fingerprint, Hugging Face state
+```
+
+A search hit is a lead into the report; open the section and its cited
+sources before relying on it. To add a report, write it and its notes in the
+layout above, add the README row, then run `python rabbit.py knowledge sync`
+so RabbitSoftware.inc can answer from it with `[K1]`-style citations. Do not
+run `knowledge publish` yourself: it uploads to the private Hugging Face
+dataset `rabbitsoftware-knowledge` and the owner approves it. Reports hold
+public research only, never personal data. Draft in the gitignored
+`/research_notes/` and `/reports/` folders and copy into `docs/research/`
+once final.
 
 ## Research
 

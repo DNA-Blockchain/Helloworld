@@ -199,6 +199,39 @@ def model_server(url: str | None, off: bool, settings_file=None, always: str | N
     return 0
 
 
+def knowledge(action: str, query: str = "", session: Session | None = None, ask=input, hub=None) -> int:
+    """The project knowledge base (rabbitsoft/knowledge.py)."""
+    from rabbitsoft import knowledge as kb
+
+    session = session or Session()
+    if action == "status":
+        print(session.knowledge_status())
+    elif action == "sync":
+        r = session.knowledge.sync()
+        print(f"Knowledge base: {r['sections']} sections ({r['changed']} new or changed, {r['removed']} removed, "
+              f"{r['embedded']} embedded); search method {r['method']}; version {r['fingerprint'][:12]}."
+              + (f"\nThe meaning model didn't embed: {r['embed_error']}" if r["embed_error"] else "")
+              + (f"\nThe index file was unreadable and was rebuilt ({r['rebuilt']})." if r["rebuilt"] else ""))
+    elif action == "search":
+        if not query:
+            print("Give some words to search for.")
+            return 1
+        hits = session.knowledge.search(query)
+        for h in hits:
+            print(f"{h['similarity']:.2f}  {h['title']}  ({h['url']})")
+        print(f"{len(hits)} section(s) match" + ("" if hits else " above the similarity cutoff."))
+    else:
+        try:
+            print(kb.publish(session.paths.root, hub=hub, ask=ask, log=session._log)["message"])
+        except ImportError as error:
+            print(f"Not published: a library is missing ({error.name}); pip install -r requirements.txt")
+            return 1
+        except (OSError, RuntimeError, ValueError) as error:   # network, Hugging Face (HfHubHTTPError), bad manifest
+            print(f"Not published: {type(error).__name__}: {error}")
+            return 1
+    return 0
+
+
 def training(action: str, ids: list[str], daily: str | None = None, session: Session | None = None, ask=input,
              hub=None) -> int:
     """The owner's commands for shared answers (rabbitsoft/training_export.py)."""
@@ -263,6 +296,10 @@ def main(argv: list[str] | None = None) -> int:
     fp = sub.add_parser("publish-code-fingerprint",
                         help="record a release's code fingerprint (its authorship) on the chain (asks first)")
     fp.add_argument("tag", help="the release tag, e.g. v0.9.0")
+    kn = sub.add_parser("knowledge", help="the project knowledge base (docs/research/): status, search, sync, "
+                                          "publish to the private HF dataset")
+    kn.add_argument("action", choices=["status", "search", "sync", "publish"])
+    kn.add_argument("query", nargs="*", help="for search")
     pr = sub.add_parser("pipeline-report", help="the research data pipeline report: sources, corpus, model, "
                                                 "chain, nodes, integrity (read-only)")
     pr.add_argument("--hours", type=float, default=24, help="the period for the \"new\" figures (default 24)")
@@ -295,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
         return publish_code_fingerprint(args.tag)
     if args.command == "training":
         return training(args.action, args.ids, args.daily)
+    if args.command == "knowledge":
+        return knowledge(args.action, " ".join(args.query))
     if args.command == "pipeline-report":
         from rabbitsoft import pipeline_report
 

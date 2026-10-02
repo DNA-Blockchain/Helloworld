@@ -12,7 +12,7 @@ configs:
 # RabbitSoftware.inc shared answers (private)
 
 Questions and answers that RabbitSoftware.inc users **chose to share** to help train the next version of
-[Llama-3.2-3B-RabbitSoftware](https://huggingface.co/Therealsickonechase-bit/Llama-3.2-3B-RabbitSoftware-GGUF).
+the model Llama-3.2-3B-RabbitSoftware (`Llama-3.2-3B-RabbitSoftware-GGUF`, in the same account).
 
 ## How an answer gets here
 
@@ -40,13 +40,13 @@ Questions and answers that RabbitSoftware.inc users **chose to share** to help t
 
 ```python
 from datasets import load_dataset
-ds = load_dataset("Therealsickonechase-bit/rabbitsoftware-training", split="train")   # needs your HF login
+ds = load_dataset("<your-hf-username>/rabbitsoftware-training", split="train")   # needs your HF login
 ```
 
 Or query it with SQL from DuckDB:
 
 ```sql
-SELECT status, rating, COUNT(*) FROM 'hf://datasets/Therealsickonechase-bit/rabbitsoftware-training/data/*.parquet' GROUP BY ALL;
+SELECT status, rating, COUNT(*) FROM 'hf://datasets/<your-hf-username>/rabbitsoftware-training/data/*.parquet' GROUP BY ALL;
 ```
 
 The dataset is private: it holds only the owner's training material for future LoRA rounds. Before training, check answers against their sources. A shared answer isn't necessarily correct, which is what the `rating`, the review status and the review itself are for.

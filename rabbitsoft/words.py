@@ -34,6 +34,7 @@ INTENTS: dict[str, tuple[str, ...]] = {
     "jobs": ("jobs", "job", "what's running", "whats running", "background", "still running"),
     "pipeline": ("pipeline", "pipeline report", "data pipeline", "data mining", "mining report", "data report",
                  "ingestion", "how much data", "research data", "data flow"),
+    "knowledge": ("knowledge", "knowledge base", "project knowledge"),
     "research": ("research", "study", "studies", "paper", "papers", "trial", "trials", "gene", "genes",
                  "disease", "treatment", "therapy", "cancer", "mutation", "editing", "crispr", "search",
                  "find", "look up", "question", "evidence"),
@@ -54,6 +55,7 @@ LABELS = {
     "tools": "Tools this OS needs (what's missing)",
     "jobs": "What's running in the background",
     "pipeline": "Research data pipeline report",
+    "knowledge": "Project knowledge base (research reports)",
 }
 # Reading the shared chain: "what's on the chain", "find BRCA1 on the chain", "show entry 3".
 CHAIN_CONTENTS = re.compile(r"\bwhat('s|s| is| does)?\b.*\b(on|in)\b.*\bchain\b|\bchain (contents|holds)\b|"
@@ -85,13 +87,13 @@ INSTALL = re.compile(r"\b(?:install|add|get)\s+(?:the\s+)?(?P<tool>[a-z0-9][\w+.
 NOTES_OFF = re.compile(r"\b(turn|switch)\s+off\b.*\bnotes?\b|\b(disable|block)\b.*\bnotes?\b", re.I)
 
 
-def split_note(text: str, vocab: set[str]) -> tuple[str, str, str] | None:
+def split_note(text: str, vocab: set[str], known: frozenset[str] | set[str] = frozenset()) -> tuple[str, str, str] | None:
     """(kind, entry reference, note text) for "challenge entry 2: <text>". Only the part before the colon
     is spelling-fixed; the note itself is kept exactly as written."""
     head, colon, body = text.partition(":")
     if not colon:
         return None
-    match = NOTE.match(fix_spelling(head, vocab))
+    match = NOTE.match(fix_spelling(head, vocab, known))
     if not match:
         return None
     return NOTE_KINDS[match.group("verb").split()[0].lower()], match.group("ref").lower(), body.strip()
@@ -129,13 +131,20 @@ def vocabulary(extra: tuple[str, ...] = ()) -> set[str]:
     return words | set(DOMAIN_TERMS) | set(COMMAND_WORDS) | {w.lower() for w in extra}
 
 
-def fix_spelling(text: str, vocab: set[str]) -> str:
-    """Each word that isn't known but is close to a known one is replaced by it ("sikle cel" -> "sickle
-    cell"). Short words and numbers are left alone: too many ordinary words are one letter from a term."""
+def fix_spelling(text: str, vocab: set[str], known: frozenset[str] | set[str] = frozenset()) -> str:
+    """Each word that isn't known but is close to a word in `vocab` is replaced by it ("sikle cel" -> "sickle
+    cell"). Short words and numbers are left alone: too many ordinary words are one letter from a term.
+
+    `known` words (from the research reports) are left as they are but never used as corrections: a report's
+    acronyms and rare words would otherwise capture everyday words ("use" -> "muse", "want" -> "ant")."""
+    caps_lock = text.isupper()                     # everything in capitals: typed with caps lock, still fixable
+
     def fix(match: re.Match) -> str:
         word = match.group(0)
         low = word.lower()
-        if low in vocab or len(low) < 3 or any(c.isdigit() for c in low):
+        if low in vocab or low in known or len(low) < 3 or any(c.isdigit() for c in low):
+            return word
+        if word.isupper() and len(word) <= 6 and not caps_lock:   # an acronym as typed (EEG, MEG, NIH)
             return word
         # Longer words can be further off and still be unmistakable ("tokins" -> "tokens").
         cutoff = 0.8 if len(low) >= 6 else 0.84 if len(low) == 5 else 0.85

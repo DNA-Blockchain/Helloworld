@@ -8,6 +8,12 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **Project knowledge base** (`rabbitsoft/knowledge.py`) built from `docs/research/`:
+  - **Sections:** reports and notes are split into sections at their headings (long sections at paragraph boundaries), each with a stable ID, its SHA-256 and the sources it cites, and indexed by meaning in their own store (nomic-embed-text, or TF-IDF until that's available). Changed sections are re-indexed and deleted ones dropped. A fingerprint identifies each version.
+  - **Answers:** RabbitSoftware.inc answers questions the reports cover from the matching sections, with `[K1]` citations listing each report section, its file and similarity. The passages go to your model under the usual consent and privacy rules. Research questions with no saved records check the reports before offering a public search. A "knowledge base" status command is added to chat and the menu.
+  - **Hugging Face:** `python rabbit.py knowledge publish` uploads the sections (Parquet, zstd), a SHA-256 manifest and a card to the private dataset `rabbitsoftware-knowledge`. It asks first, uploads only when the fingerprint changed, and refuses a public repo.
+  - **Spelling correction** now knows the reports' vocabulary (words of six or more letters, their base forms, and acronyms), and leaves acronyms typed in capitals (EEG, MEG) alone. Before this, "imagining" was corrected to "mining".
+  - **Agents:** `CLAUDE.md` and both agents point to `docs/research/` before building.
 - **Research report: EEG to image reconstruction (2026)** in `docs/research/`, with its source notes (methods and models, datasets and benchmarks, imagery/memory/real-time, law and ethics). It gives the evidence base and design guidance for `neurovisual/` and is linked from the SDK guide. Deep-research working folders (`/research_notes/`, `/reports/`) are gitignored.
 - **The AI everywhere in RabbitSoftware.inc** (opt-in with `python rabbit.py model-server --always on`):
   - **No yes/no each time:** AI steps go straight to the configured model server. If it doesn't answer, this PC's model does, and the reply says so. `--always off` restores asking; `model-server` shows the mode.

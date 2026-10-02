@@ -15,6 +15,7 @@ RabbitSoftware is a research OS, an AI model and a blockchain in one repository
 | APIs | `schemas/rabbitsoftware-*-v1.schema.json`, `docs/api/` | contract-tested; v1 only grows, breaking changes need `-v2` |
 | OS | `os/` (no_std Rust kernel, QEMU only), `linux/` (Alpine image), `os/tasks/` (generated bundles) | never write images to physical disks |
 | Neural → visual prototype | `neurovisual/` (core: `signals.py`, `model.py`, `system.py`, `provenance.py`; open slots: `interfaces.py`, `sensors.py`, `generators.py`, `conditioning.py`, `stream.py`, `datasets.py`, `profiles.py`); `python -m neurovisual run/sessions/export/train/chain/lineage`; docs in `docs/neurovisual/` | sensors via BrainFlow/LSL or simulated; session datasets AES-GCM-encrypted under `autonomous/neurovisual/`; remote generators need https and a yes; the ledger holds keyed digests only |
+| Research and knowledge | `docs/research/` (source-linked reports + their notes) → `rabbitsoft/knowledge.py` (sections indexed by meaning in `dna_shell_data/knowledge_vectors.json`; answered from with [K1] citations; `python rabbit.py knowledge status/search/sync/publish`) | published to the private HF dataset `rabbitsoftware-knowledge` (asks first); read the matching report before changing what it covers (e.g. `eeg-to-image-reconstruction.md` for `neurovisual/`) |
 | UI kit | `ui/` (tokens.css, Web Components, no build step) | |
 | Releases | `VERSION`, `CHANGELOG.md`, `RELEASING.md`, `.github/workflows/release.yml`, `scripts/code_fingerprint.py` | tag `vX.Y.Z` must match `VERSION` |
 
