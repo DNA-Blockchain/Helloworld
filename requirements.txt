@@ -8,6 +8,7 @@ opentimestamps>=0.4.5
 brainflow>=5.22.0        # signal_lab.py EEG boards, including the simulated one
 scikit-learn>=1.5        # corpus_vector_store.py: TF-IDF search until the local meaning model is downloaded
 pyarrow>=25.0            # rabbitsoft/training_export.py: shared answers to the HF dataset as Parquet
+huggingface_hub>=0.24    # rabbitsoft/knowledge.py: private knowledge-base dataset publishing
 
 # testing
 pytest>=9.1.0

@@ -38,6 +38,7 @@ project_manifest.json
 # Python bytecode cache
 __pycache__/
 *.pyc
+.venv/
 
 # pytest cache
 .pytest_cache/

@@ -234,6 +234,12 @@ separately; one does not imply the other.
 
 ## Project rules and quality gates
 
+Before designing or changing a component, read the research report that
+covers it in `docs/research/` (or run
+`python rabbit.py knowledge search "<topic>"`). For example, read
+`eeg-to-image-reconstruction.md` before changing `neurovisual/`. Follow its
+design guidance, or say why not.
+
 Read the repository's `CLAUDE.md` first; its rules (ask before installs,
 costs, deploys and outbound data; no secrets; public chain holds no personal
 data; no per-file license headers; PR conventions) apply to this agent.

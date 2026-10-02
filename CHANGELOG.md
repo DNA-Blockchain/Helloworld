@@ -8,6 +8,12 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **Project knowledge base** (`rabbitsoft/knowledge.py`) built from `docs/research/`:
+  - **Sections:** reports and notes are split into sections at their headings (long sections at paragraph boundaries), each with a stable ID, its SHA-256 and the sources it cites, and indexed by meaning in their own store (nomic-embed-text, or TF-IDF until that's available). Changed sections are re-indexed and deleted ones dropped. A fingerprint identifies each version.
+  - **Answers:** RabbitSoftware.inc answers questions the reports cover from the matching sections, with `[K1]` citations listing each report section, its file and similarity. The passages go to your model under the usual consent and privacy rules. Research questions with no saved records check the reports before offering a public search. A "knowledge base" status command is added to chat and the menu.
+  - **Hugging Face:** `python rabbit.py knowledge publish` uploads the sections (Parquet, zstd), a SHA-256 manifest and a card to the private dataset `rabbitsoftware-knowledge`. It asks first, uploads only when the fingerprint changed, and refuses a public repo.
+  - **Spelling correction** now knows the reports' vocabulary (words of six or more letters, their base forms, and acronyms), and leaves acronyms typed in capitals (EEG, MEG) alone. Before this, "imagining" was corrected to "mining".
+  - **Agents:** `CLAUDE.md` and both agents point to `docs/research/` before building.
 - **TwinOS universal agent network, part 2: sensing, real handlers and learning** (`twinos/sensors.py`, `state.py`, `handlers.py`):
   - **Sources:** EEG through `neurovisual`'s BrainFlow, LSL or simulated sensors (log band powers, quality per channel). RF, audio or any other driver plugs in by `package.module:Driver`. An unconnected source says so instead of reporting "connected".
   - **State:** every source against the person's own running baseline. A change needs 3 readings beyond 3 SD after warm-up, and becomes a *proposed* `update_context` task for the owner, never an action. The ledger keeps a keyed digest of the state only.
