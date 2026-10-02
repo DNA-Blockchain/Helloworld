@@ -76,6 +76,39 @@ each question is sent there. Only your words and the public records they're answ
 sent, never anything personal. Say no and this PC's own model (Ollama) answers instead; if the
 server doesn't answer, this PC's model takes over. `rabbit model-server --off` stops using it.
 
+### Use RabbitSoftware's model on your PC
+
+The model (Llama-3.2-3B-RabbitSoftware, a LoRA fine-tune of Llama 3.2 3B Instruct, GGUF Q4_K_M, 2.0 GB)
+is versioned in [`deploy/huggingface/model-versions.json`](deploy/huggingface/model-versions.json) and
+stored in a private Hugging Face repo. Access is limited to the owner's account until launch. With
+access, one command downloads a version, checks its SHA-256 against that record and adds it to Ollama:
+
+```powershell
+ollama pull llama3.2:3b                          # once: its chat format goes with the weights
+hf auth login                                    # once: your token is typed here, never in chat
+python rabbit.py model versions                  # every version, released or not, with its scores
+python rabbit.py model install                   # the newest released version
+python rabbit.py model install --version 1.0.0 --candidate   # a version before its release
+```
+
+It creates `rabbitsoftware:<version>` and `rabbitsoftware:latest`. A copy already on the PC with the
+right SHA-256 is used instead of downloading, and a download that doesn't match is never installed.
+Then use it:
+
+```powershell
+ollama run rabbitsoftware                        # chat in the terminal
+```
+
+```bash
+curl http://127.0.0.1:11434/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model": "rabbitsoftware", "messages": [{"role": "user", "content": "What is a blockchain?"}]}'
+```
+
+The second form is Ollama's OpenAI-compatible API on this PC, the same request shape the hosted model
+takes (`hosted_ai.py`). It answers on the CPU in about 30 s for a short reply and up to about 4 minutes
+for a full one. How versions are trained in Colab, recorded in GitHub and published by a release is in
+[docs/model/README.md](docs/model/README.md).
+
 Publishing the model and its gateway is in [`deploy/`](deploy/). The model goes in a private Hugging
 Face repo, behind a paid Inference Endpoint that sleeps when unused (`python deploy/hf_publish.py`
 shows the steps). The public reaches it through a gateway on Cloudflare Workers' free plan

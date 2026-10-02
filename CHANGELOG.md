@@ -8,6 +8,11 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **Model versions across GitHub, Hugging Face and your PC** (`model_versions.py`, `docs/model/README.md`):
+  - **Record:** `deploy/huggingface/model-versions.json` lists every version of the model: its GGUF SHA-256 and size, the Hugging Face commit, the GitHub commit it was built from, the base model, training and scores. Entries are only added. Version 1.0.0 (the current model, `8aa05e28…`) is recorded with notes on what was reconstructed.
+  - **Candidates:** the Colab notebook's step 11 runs `python deploy/hf_publish.py candidate --version X --release vY`, which uploads to a `candidates` branch of the private repo with the version's entry. `hf_publish.py record X` adds that entry to the manifest on a PC, for a PR.
+  - **Release:** a GitHub release promotes the versions it ships (`hf_publish.py promote`). The file is copied to `main` on Hugging Face's servers (no re-upload), tagged `model-v<version>`, its SHA-256 checked, and listed in the release notes. It needs an `HF_TOKEN` repository secret only when a model ships.
+  - **Install:** `python rabbit.py model versions | install [--version X] [--candidate]` downloads with your Hugging Face login (no SSH key), uses a matching local copy when there is one, refuses a file whose SHA-256 doesn't match, and creates `rabbitsoftware:<version>` and `rabbitsoftware:latest` in Ollama with Llama 3.2's chat format.
 - **Project knowledge base** (`rabbitsoft/knowledge.py`) built from `docs/research/`:
   - **Sections:** reports and notes are split into sections at their headings (long sections at paragraph boundaries), each with a stable ID, its SHA-256 and the sources it cites, and indexed by meaning in their own store (nomic-embed-text, or TF-IDF until that's available). Changed sections are re-indexed and deleted ones dropped. A fingerprint identifies each version.
   - **Answers:** RabbitSoftware.inc answers questions the reports cover from the matching sections, with `[K1]` citations listing each report section, its file and similarity. The passages go to your model under the usual consent and privacy rules. Research questions with no saved records check the reports before offering a public search. A "knowledge base" status command is added to chat and the menu.

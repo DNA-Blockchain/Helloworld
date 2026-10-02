@@ -1,0 +1,27 @@
+{
+  "repo": "Llama-3.2-3B-RabbitSoftware-GGUF",
+  "file": "nos-lora.Q4_K_M.gguf",
+  "versions": [
+    {
+      "version": "1.0.0",
+      "release": "v0.10.0",
+      "sha256": "8aa05e2879f4e1e37395a238497726c2454fc0dc66661f989996e1b0dca473ef",
+      "size": 2019377216,
+      "hf_revision": "0b03dfe06807cdefe29e40ce83a2d9e2cc40457b",
+      "git_commit": "a23ec0547b60d8832545f5d861134401c99f7080",
+      "base_model": "meta-llama/Llama-3.2-3B-Instruct",
+      "training": {
+        "method": "LoRA round 2 (rank 16, 2 epochs, lr 2e-4) on Llama-3.2-3B-Instruct, distilled from Qwen2.5-7B-Instruct answers filtered by local_ai_tuning.py checks; merged and quantized to GGUF Q4_K_M with llama.cpp",
+        "examples": 205,
+        "where": "Google Colab, colab/local_ai_lora_colab.ipynb",
+        "note": "Recorded after the fact: uploaded 2026-09-30 23:49 UTC; git_commit is the last change to colab/local_ai_lora.py before the upload."
+      },
+      "evaluation": {
+        "suite": "python local_ai_tuning.py run --variants system,lora",
+        "explain": "8/8 (nos-explain-lora; nos-explain without LoRA 6/8)",
+        "summary": "2/12 (nos-summary-lora; nos-summary without LoRA 8/12)",
+        "run": "2026-09-30 15:23 UTC, before the final conversion fix in git_commit, so it may not be this exact file"
+      }
+    }
+  ]
+}

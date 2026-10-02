@@ -7,6 +7,7 @@ or a web page.
     python rabbit.py ask "how are the nodes"       # one question, one answer
     python rabbit.py model-server https://...      # answer with your model on a server (asks each time)
     python rabbit.py model-server --off            # answer only with this PC's model
+    python rabbit.py model versions | install [--version 1.1.0]   # your model from Hugging Face into Ollama
     python rabbit.py model-server --always on      # use the server without asking; AI summaries and general answers
     python rabbit.py account create|pair|join CODE|recover|devices   # one account across your devices
     python rabbit.py sync                          # research and encrypted history, with your other devices
@@ -21,11 +22,13 @@ from __future__ import annotations
 import argparse
 import sys
 import webbrowser
+from pathlib import Path
 
 from rabbitsoft import GREETING, NAME
 from rabbitsoft.assistant import Reply, Session
 
 QUIT = {"quit", "exit", "bye", "goodbye", "q"}
+ROOT = Path(__file__).resolve().parent
 
 
 def show(reply: Reply) -> None:
@@ -272,6 +275,48 @@ def training(action: str, ids: list[str], daily: str | None = None, session: Ses
     return 0
 
 
+def model(action: str, version: str | None = None, candidate: bool = False, api=None, download=None,
+          run=None) -> int:
+    """Your model's versions on Hugging Face (model_versions.py): list them, or install one into Ollama."""
+    import subprocess
+
+    import model_versions as mv
+
+    manifest = mv.load()
+    try:
+        if api is None:
+            from huggingface_hub import HfApi, hf_hub_download
+
+            api, download = HfApi(), hf_hub_download
+        repo = f"{api.whoami()['name']}/{manifest['repo']}"
+        tags = mv.released_tags(api, repo)
+    except ImportError:
+        print("The Hugging Face library is missing: pip install huggingface_hub")
+        return 1
+    except Exception as error:          # not logged in, offline, or no access to the private repo
+        print(f"Couldn't reach your model on Hugging Face ({type(error).__name__}: {error}). "
+              f"Log in with: hf auth login")
+        return 1
+    if action == "versions":
+        for v in manifest["versions"]:
+            state = "released" if mv.tag_for(v["version"]) in tags else f"candidate for {v['release']}"
+            print(f"{v['version']:<8} {state:<24} {v['size'] / 1e9:.1f} GB  built from {v['git_commit'][:7]}  "
+                  f"{v['evaluation'].get('explain', '')}")
+        return 0
+    try:
+        v, revision = mv.choose(manifest, tags, version, candidate)
+        print(f"Model {v['version']} ({v['size'] / 1e9:.1f} GB) from {repo} at {revision}...")
+        gguf = mv.obtain(v, manifest["file"], repo, revision, [ROOT / "ollama" / "nos-lora" / manifest["file"]],
+                         download)
+        names = mv.ollama_install(gguf, v["version"], ROOT / "autonomous" / "ai-tuning", run or subprocess.run)
+    except (ValueError, KeyError, RuntimeError, OSError) as error:
+        print(f"Not installed: {error}")
+        return 1
+    print(f"Installed {' and '.join(names)} (SHA-256 {v['sha256'][:12]}... matches the release record). "
+          f"Try it: ollama run {names[1]}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):          # the Windows console isn't UTF-8 by default
         if hasattr(stream, "reconfigure"):
@@ -308,6 +353,10 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("action", choices=["stats", "pending", "approve", "reject", "export"])
     tr.add_argument("ids", nargs="*", help="answer IDs, for approve and reject")
     tr.add_argument("--daily", choices=["on", "off"], help="with export: let the supervisor export once a day")
+    mo = sub.add_parser("model", help="your model's versions on Hugging Face: list them, or install one into Ollama")
+    mo.add_argument("action", choices=["versions", "install"])
+    mo.add_argument("--version", dest="model_version", help="e.g. 1.1.0 (default: the newest released)")
+    mo.add_argument("--candidate", action="store_true", help="allow a version that isn't released yet")
     m = sub.add_parser("model-server", help="show, set or turn off the model server outside this PC")
     m.add_argument("url", nargs="?", help="the server's https address")
     m.add_argument("--off", action="store_true", help="stop using a model server")
@@ -319,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
         return chat()
     if args.command == "web":
         return web(args.port, not args.no_browser)
+    if args.command == "model":
+        return model(args.action, args.model_version, args.candidate)
     if args.command == "model-server":
         return model_server(args.url, args.off, always=args.always)
     if args.command == "account":
