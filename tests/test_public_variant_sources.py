@@ -203,4 +203,8 @@ def test_the_fasta_fetch_still_sends_the_key(monkeypatch):
 
     monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
     assert sources.fetch_nuccore_fasta("NM_007294.4").startswith(b">")
-    assert "api_key=secret-key" in seen["url"] and "eutils.ncbi.nlm.nih.gov" in seen["url"]
+    from urllib.parse import parse_qs, urlsplit
+
+    parts = urlsplit(seen["url"])
+    assert parts.hostname == "eutils.ncbi.nlm.nih.gov"          # the host, not a substring of the URL
+    assert parse_qs(parts.query)["api_key"] == ["secret-key"]
