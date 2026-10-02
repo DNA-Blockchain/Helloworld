@@ -141,3 +141,70 @@ def test_gnomad_rejects_free_text_query():
 
     with pytest.raises(ValueError, match="variant ID"):
         sources.lookup_gnomad_variant("BRCA1 cancer")
+
+
+def test_a_clinvar_summary_keeps_its_classification_under_either_field_name():
+    """ClinVar renamed clinical_significance to germline_classification (and added oncogenicity and
+    clinical-impact classifications). The allow-list behind a record's abstract must know the new names:
+    with only the old one, every ClinVar abstract silently lost its classification, which is the single
+    most important fact about a variant."""
+    live = {"accession": "VCV004935332", "title": "NM_007294.4(BRCA1):c.441+1G>T",
+            "germline_classification": {"description": "Likely pathogenic",
+                                        "review_status": "criteria provided, single submitter"},
+            "oncogenicity_classification": {"description": "Oncogenic"},
+            "genes": [{"symbol": "BRCA1"}], "secret": "must not appear"}
+    summary = sources._safe_summary(live, database="clinvar")
+    assert "Likely pathogenic" in summary and "criteria provided" in summary
+    assert "Oncogenic" in summary and "VCV004935332" in summary
+    assert "secret" not in summary                      # the allow-list still excludes everything else
+
+    archived = {"accession": "VCV1", "clinical_significance": {"description": "Pathogenic"}}
+    assert "Pathogenic" in sources._safe_summary(archived, database="clinvar")
+    # dbSNP still uses the old name, so it must keep working.
+    assert "Benign" in sources._safe_summary(
+        {"snp_id": "rs1", "clinical_significance": {"description": "Benign"}}, database="snp")
+
+
+def test_the_ncbi_api_key_is_attached_only_for_ncbis_own_host(monkeypatch):
+    """The key is a secret, so it is attached by exact host match, never unconditionally."""
+    monkeypatch.setenv("NCBI_API_KEY", "secret-key")
+    monkeypatch.setattr(sources.time, "sleep", lambda _: None)
+    for url in (sources.NCBI_ESEARCH, sources.NCBI_ESUMMARY, sources.NCBI_EFETCH):
+        assert sources.is_ncbi(url), url
+        assert sources._ncbi_prepare({"db": "clinvar"}, url).get("api_key") == "secret-key", url
+    for impostor in ("https://eutils.ncbi.nlm.nih.gov.evil.example/x",
+                     "https://evil.example/?x=eutils.ncbi.nlm.nih.gov",
+                     "https://eutils.ncbi.nlm.nih.gov@evil.example/x", "", "not a url"):
+        assert not sources.is_ncbi(impostor), impostor
+        assert "api_key" not in sources._ncbi_prepare({"db": "clinvar"}, impostor), impostor
+    # A caller that forgets the URL gets no key rather than leaking one.
+    assert "api_key" not in sources._ncbi_prepare({"db": "clinvar"})
+
+
+def test_the_fasta_fetch_still_sends_the_key(monkeypatch):
+    """A host check must not silently stop the key reaching NCBI's own efetch endpoint."""
+    monkeypatch.setenv("NCBI_API_KEY", "secret-key")
+    monkeypatch.setattr(sources.time, "sleep", lambda _: None)
+    seen = {}
+
+    class Response:
+        def read(self, size=None):          # fetch_nuccore_fasta reads with a byte limit
+            return b">NM_007294.4 test\nACGT\n"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, **kw):
+        seen["url"] = request.full_url
+        return Response()
+
+    monkeypatch.setattr(sources.urllib.request, "urlopen", fake_urlopen)
+    assert sources.fetch_nuccore_fasta("NM_007294.4").startswith(b">")
+    from urllib.parse import parse_qs, urlsplit
+
+    parts = urlsplit(seen["url"])
+    assert parts.hostname == "eutils.ncbi.nlm.nih.gov"          # the host, not a substring of the URL
+    assert parse_qs(parts.query)["api_key"] == ["secret-key"]

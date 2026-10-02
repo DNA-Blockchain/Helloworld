@@ -87,11 +87,25 @@ def test_europepmc_uses_pubmed_url_when_pmid_present(monkeypatch):
     _install_fake_urlopen(monkeypatch, {"ebi.ac.uk": {"resultList": {"result": [
         {"id": "MED123", "title": "With PMID", "pubYear": "2024", "pmid": "123"},
     ]}}})
-    results = ers.search_europepmc("x")
-    assert results == [
-        {"id": "MED123", "title": "With PMID", "pub_year": "2024",
-         "url": "https://pubmed.ncbi.nlm.nih.gov/123/"},
-    ]
+    [result] = ers.search_europepmc("x")
+    assert result["id"] == "MED123" and result["title"] == "With PMID" and result["pub_year"] == "2024"
+    assert result["url"] == "https://pubmed.ncbi.nlm.nih.gov/123/"
+
+
+def test_europepmc_carries_citation_fields_for_exports(monkeypatch):
+    """The default "lite" result type already has them flat, so no extra request is made."""
+    _install_fake_urlopen(monkeypatch, {"ebi.ac.uk": {"resultList": {"result": [
+        {"id": "MED123", "title": "With citation data", "pubYear": "2024", "pmid": "123",
+         "authorString": "Pal B, Anderson RL.", "journalTitle": "Oncotarget", "journalVolume": "9",
+         "issue": "87", "pageInfo": "35717-35718", "doi": "10.18632/oncotarget.26297"},
+        {"id": "PPR456", "title": "A preprint", "pubYear": "2026", "source": "PPR", "doi": "10.1101/x"},
+    ]}}})
+    article, preprint = ers.search_europepmc("x")
+    assert article["authors"] == ["Pal B", "Anderson RL"]        # authorString is comma-separated
+    assert article["container"] == "Oncotarget" and article["volume"] == "9" and article["issue"] == "87"
+    assert article["pages"] == "35717-35718" and article["doi"] == "10.18632/oncotarget.26297"
+    assert article["record_type"] == "article" and preprint["record_type"] == "preprint"
+    assert preprint["authors"] == [] and preprint["container"] == ""
 
 
 def test_europepmc_falls_back_to_doi_without_pmid(monkeypatch):

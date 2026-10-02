@@ -8,6 +8,7 @@ or a web page.
     python rabbit.py model-server https://...      # answer with your model on a server (asks each time)
     python rabbit.py model-server --off            # answer only with this PC's model
     python rabbit.py model versions | install [--version 1.1.0]   # your model from Hugging Face into Ollama
+    python rabbit.py export --format bibtex --out refs.bib        # records for Zotero, a notebook, a spreadsheet
     python rabbit.py model-server --always on      # use the server without asking; AI summaries and general answers
     python rabbit.py account create|pair|join CODE|recover|devices   # one account across your devices
     python rabbit.py sync                          # research and encrypted history, with your other devices
@@ -353,6 +354,15 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("action", choices=["stats", "pending", "approve", "reject", "export"])
     tr.add_argument("ids", nargs="*", help="answer IDs, for approve and reject")
     tr.add_argument("--daily", choices=["on", "off"], help="with export: let the supervisor export once a day")
+    ex = sub.add_parser("export", help="research records as BibTeX, RIS, CSV or JSONL, with their source IDs and URLs")
+    ex.add_argument("--format", required=True, choices=["bibtex", "ris", "csv", "jsonl"])
+    ex.add_argument("--out", help="write here instead of showing it")
+    ex.add_argument("--query", default="", help="only records matching these words")
+    ex.add_argument("--source", default="", help="only this source, e.g. pubmed")
+    ex.add_argument("--limit", type=int, default=200)
+    ex.add_argument("--backfill", action="store_true",
+                    help="first fetch citation metadata for records that have none (contacts the source)")
+    ex.add_argument("--fingerprint", action="store_true", help="record this code state's fingerprint (JSONL)")
     mo = sub.add_parser("model", help="your model's versions on Hugging Face: list them, or install one into Ollama")
     mo.add_argument("action", choices=["versions", "install"])
     mo.add_argument("--version", dest="model_version", help="e.g. 1.1.0 (default: the newest released)")
@@ -368,6 +378,15 @@ def main(argv: list[str] | None = None) -> int:
         return chat()
     if args.command == "web":
         return web(args.port, not args.no_browser)
+    if args.command == "export":
+        import research_export
+
+        argv = ["--format", args.format, "--catalog", str(Session().paths.catalog), "--query", args.query,
+                "--source", args.source, "--limit", str(args.limit)]
+        argv += ["--out", args.out] if args.out else []
+        argv += ["--backfill"] if args.backfill else []
+        argv += ["--fingerprint"] if args.fingerprint else []
+        return research_export.main(argv)
     if args.command == "model":
         return model(args.action, args.model_version, args.candidate)
     if args.command == "model-server":

@@ -33,6 +33,11 @@ SOURCE_TERMS = {
 }
 
 
+# Optional citation fields, stored as text (authors as a JSON array). A source supplies what it has.
+CITATION_COLUMNS = ("authors", "container", "publisher", "volume", "issue", "pages", "doi", "record_type")
+RECORD_TYPES = ("article", "preprint", "clinical_trial", "grant", "variant", "dataset", "other")
+
+
 class ResearchCatalog:
     def __init__(self, path: str | Path = DEFAULT_CATALOG):
         self.path = Path(path)
@@ -57,6 +62,13 @@ class ResearchCatalog:
                 )
                 """
             )
+            # Citation fields, for exports to reference managers (research_export.py). They were added
+            # after the first databases were written, so an existing catalog is migrated in place; every
+            # one is optional, because most sources supply only some of them.
+            existing = {row["name"] for row in connection.execute("PRAGMA table_info(research_records)")}
+            for column in CITATION_COLUMNS:
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE research_records ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -76,8 +88,9 @@ class ResearchCatalog:
                     """
                     INSERT INTO research_records (
                         record_key, source, external_id, title, abstract, source_url,
-                        published_at, retrieved_at, classification, rights_status, terms_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        published_at, retrieved_at, classification, rights_status, terms_url,
+                        authors, container, publisher, volume, issue, pages, doi, record_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(record_key) DO UPDATE SET
                         title=excluded.title,
                         abstract=excluded.abstract,
@@ -86,13 +99,24 @@ class ResearchCatalog:
                         retrieved_at=excluded.retrieved_at,
                         classification=excluded.classification,
                         rights_status=excluded.rights_status,
-                        terms_url=excluded.terms_url
+                        terms_url=excluded.terms_url,
+                        -- a later retrieval may carry citation fields the first one lacked; never
+                        -- overwrite one we already have with an empty string
+                        authors=CASE WHEN excluded.authors != '' THEN excluded.authors ELSE research_records.authors END,
+                        container=CASE WHEN excluded.container != '' THEN excluded.container ELSE research_records.container END,
+                        publisher=CASE WHEN excluded.publisher != '' THEN excluded.publisher ELSE research_records.publisher END,
+                        volume=CASE WHEN excluded.volume != '' THEN excluded.volume ELSE research_records.volume END,
+                        issue=CASE WHEN excluded.issue != '' THEN excluded.issue ELSE research_records.issue END,
+                        pages=CASE WHEN excluded.pages != '' THEN excluded.pages ELSE research_records.pages END,
+                        doi=CASE WHEN excluded.doi != '' THEN excluded.doi ELSE research_records.doi END,
+                        record_type=CASE WHEN excluded.record_type != '' THEN excluded.record_type ELSE research_records.record_type END
                     """,
                     (
                         key, normalized["source"], normalized["external_id"], normalized["title"],
                         normalized["abstract"], normalized["source_url"], normalized["published_at"],
                         now, normalized["classification"], normalized["rights_status"],
                         normalized["terms_url"],
+                        *(normalized[name] for name in CITATION_COLUMNS),
                     ),
                 )
                 inserted += 1
@@ -123,6 +147,7 @@ class ResearchCatalog:
             rows = connection.execute(
                 f"""
                 SELECT source, external_id, title, abstract, source_url, published_at,
+                       retrieved_at, authors, container, publisher, volume, issue, pages, doi, record_type,
                        classification, rights_status, terms_url
                 FROM research_records
                 WHERE classification = ? AND ({conditions})
@@ -178,11 +203,36 @@ class ResearchCatalog:
         """Every record of one classification, oldest first (for building the search-by-meaning corpus)."""
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT source, external_id, title, abstract, source_url, published_at FROM research_records "
+                f"SELECT source, external_id, title, abstract, source_url, published_at, retrieved_at, "
+                f"classification, rights_status, terms_url, authors, container, publisher, volume, issue, "
+                f"pages, doi, record_type FROM research_records "
                 "WHERE classification = ? ORDER BY retrieved_at, source, external_id",
                 (classification,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def missing_citations(self, *, limit: int = 200) -> list[tuple[str, str]]:
+        """Public records with no authors recorded, newest first: what a citation backfill should fetch.
+        Records retrieved before the citation fields existed have none."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT source, external_id FROM research_records WHERE classification = 'public' "
+                "AND authors = '' ORDER BY retrieved_at DESC LIMIT ?",
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+        return [(row["source"], row["external_id"]) for row in rows]
+
+    def set_citation(self, source: str, external_id: str, fields: dict) -> bool:
+        """Fills in citation fields for one record, leaving anything already recorded alone."""
+        values = citation_fields(fields)
+        assignments = ", ".join(f"{name} = CASE WHEN {name} = '' THEN ? ELSE {name} END"
+                                for name in CITATION_COLUMNS)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE research_records SET {assignments} WHERE source = ? AND external_id = ?",
+                (*(values[name] for name in CITATION_COLUMNS), source, external_id),
+            )
+        return cursor.rowcount > 0
 
     def missing_abstracts(self, *, limit: int = 200) -> list[tuple[str, str]]:
         """(source, external_id) of public records saved without an abstract."""
@@ -223,7 +273,41 @@ def normalize_record(record: dict) -> dict[str, str]:
         "classification": classification,
         "rights_status": str(record.get("rights_status", "unknown; check source terms")).strip(),
         "terms_url": str(record.get("terms_url", "")).strip(),
+        **citation_fields(record),
     }
+
+
+def citation_fields(record: dict) -> dict[str, str]:
+    """The optional citation fields, normalized to text. `authors` is a JSON array so a list survives
+    SQLite and JSONL unchanged; everything else is a trimmed string. A source supplies what it has, and
+    an exporter leaves out whatever is empty."""
+    authors = record.get("authors") or []
+    if isinstance(authors, str):
+        authors = [part.strip() for part in authors.split(";") if part.strip()] if authors.strip() else []
+    names = [str(name).strip() for name in authors if str(name).strip()]
+    record_type = str(record.get("record_type", "")).strip().lower()
+    if record_type and record_type not in RECORD_TYPES:
+        raise ValueError(f"record_type must be one of {sorted(RECORD_TYPES)}, not {record_type!r}")
+    doi = str(record.get("doi", "")).strip()
+    for prefix in ("doi:", "https://doi.org/", "http://doi.org/", "doi.org/"):
+        if doi.lower().startswith(prefix):
+            doi = doi[len(prefix):].strip()
+    return {"authors": json.dumps(names) if names else "", "container": str(record.get("container", "")).strip(),
+            "publisher": str(record.get("publisher", "")).strip(), "volume": str(record.get("volume", "")).strip(),
+            "issue": str(record.get("issue", "")).strip(), "pages": str(record.get("pages", "")).strip(),
+            "doi": doi, "record_type": record_type}
+
+
+def author_list(record: dict) -> list[str]:
+    """The authors of a catalog row or a normalized record, as a list."""
+    authors = record.get("authors") or ""
+    if isinstance(authors, list):
+        return [str(a) for a in authors]
+    try:
+        parsed = json.loads(authors) if authors else []
+    except ValueError:
+        return []
+    return [str(a) for a in parsed] if isinstance(parsed, list) else []
 
 
 def search_public_sources(
@@ -306,6 +390,8 @@ def search_public_sources(
                 "classification": "public",
                 "rights_status": "unknown; review source and record terms",
                 "terms_url": SOURCE_TERMS[source],
+                # Whatever citation fields the adapter supplied; normalize_record trims and checks them.
+                **{name: record.get(name, "") for name in CITATION_COLUMNS if record.get(name)},
             })
     return normalized
 

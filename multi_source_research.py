@@ -35,10 +35,24 @@ _NCBI_MIN_INTERVAL_S = 0.35  # NCBI's <=3 req/s guideline without an API key
 _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
+NCBI_HOSTS = frozenset({"eutils.ncbi.nlm.nih.gov"})
+
+
+def is_ncbi(url: str) -> bool:
+    """Whether a URL's host really is NCBI's E-utilities. The host is parsed and compared exactly: a
+    substring test would send the API key to https://evil.example/?x=eutils.ncbi.nlm.nih.gov, and
+    `startswith` would send it to https://eutils.ncbi.nlm.nih.gov.evil.example/."""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in NCBI_HOSTS
+
+
 def _http_get_json(url: str, params: dict) -> dict:
     request_params = dict(params)
     api_key = os.environ.get("NCBI_API_KEY", "").strip()
-    if api_key and "eutils.ncbi.nlm.nih.gov" in url:
+    if api_key and is_ncbi(url):            # never attach the key to any other host
         request_params["api_key"] = api_key
     full_url = f"{url}?{urllib.parse.urlencode(request_params)}"
     req = urllib.request.Request(full_url, headers={"User-Agent": _USER_AGENT})
@@ -88,11 +102,20 @@ def _papers(pmids: list[str], summary: dict) -> list[dict]:
         rec = result.get(pmid, {})
         if not rec:
             continue
+        doi = next((i.get("value", "") for i in rec.get("articleids", []) if i.get("idtype") == "doi"), "")
         papers.append({
             "pmid": pmid,
             "title": rec.get("title"),
             "pub_date": rec.get("pubdate"),
             "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+            # Citation fields from the same esummary response, for exports (research_export.py).
+            "authors": [a.get("name", "") for a in rec.get("authors", []) if a.get("authtype") == "Author"],
+            "container": rec.get("fulljournalname") or rec.get("source") or "",
+            "volume": rec.get("volume") or "",
+            "issue": rec.get("issue") or "",
+            "pages": rec.get("pages") or "",
+            "doi": doi,
+            "record_type": "article",
         })
     return papers
 

@@ -6,7 +6,7 @@ Ollama. Each part has one job:
 | | Holds | Where |
 |---|---|---|
 | **GitHub** | The training code, the checks that filter training answers, the model card, and the **record of every version**: [`deploy/huggingface/model-versions.json`](../../deploy/huggingface/model-versions.json) | this repository |
-| **Hugging Face** | The model files: new versions on the `candidates` branch, released versions on `main`, each tagged `model-v<version>` | the private repo `Llama-3.2-3B-RabbitSoftware-GGUF` |
+| **Hugging Face** | The model files: new versions on the `candidates` branch, released versions on `main`, each tagged `model-v<version>` | the **public** repo `Llama-3.2-3B-RabbitSoftware-GGUF` (public since the 0.11.0 launch) |
 | **Google Colab** | The GPU that trains it (free T4) | [`colab/local_ai_lora_colab.ipynb`](../../colab/local_ai_lora_colab.ipynb) |
 | **Your PC** | Ollama, running any version | `rabbitsoftware:<version>` and `rabbitsoftware:latest` |
 
@@ -52,7 +52,7 @@ ollama run rabbitsoftware
 
 `install` first looks for a file on this PC with the right SHA-256 (`ollama/nos-lora/`). Otherwise it
 downloads the file from Hugging Face with your login. No SSH key is needed, unlike
-`ollama pull huggingface.co/...` for a private repo. A file whose SHA-256 doesn't match the manifest is
+`ollama pull huggingface.co/...`, which needs an SSH key for a private repo. A file whose SHA-256 doesn't match the manifest is
 never installed. Ollama also needs `llama3.2:3b` (`ollama pull llama3.2:3b`), whose chat template and stop
 tokens go with the weights.
 
