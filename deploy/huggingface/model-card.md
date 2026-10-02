@@ -80,7 +80,14 @@ records, so give it the facts in the prompt rather than asking it to recall them
 
 ## Evaluation and limits
 
-- On the project's explanation checks it scores 6 of 8, matching the prompt-engineered `nos-explain` model. Round 2 improved exact preservation of numbers. Summaries remain the weakest task.
+- Measured on this exact file (SHA-256 `8aa05e28…`) on 2 October 2026 with `python local_ai_tuning.py run --variants system,lora`, at temperature 0:
+
+  | Task | This model | Same base model without the fine-tune | Most common problems |
+  |---|---|---|---|
+  | Explaining computed DNA-analysis facts | **6/8** | 6/8 | 2 answers contradicted the facts |
+  | Summarizing a research title | **2/12** | 8/12 | 8 copied the title, 2 dropped names |
+
+  On explanations it matches the prompt-engineered model. Round 2 improved exact preservation of numbers. On summaries the fine-tune is worse than no fine-tune, so RabbitSoftware writes summaries with the prompt-engineered `nos-summary` (no fine-tune) and uses this model for explanations only.
 - It's a 3B model and **can be wrong even when it cites a record**. Known errors from testing:
   - it reversed the direction of the sickle-cell substitution (the correct direction is glutamic acid → valine at β-globin position 6);
   - it over-read a survey paper as a treatment approval.

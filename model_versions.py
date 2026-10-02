@@ -15,7 +15,8 @@ and any PC can install a version into Ollama.
 
 The manifest is the record: for each version, the GGUF's SHA-256 and size, the HF commit it was uploaded
 in, the GitHub commit it was built from, the base model, how it was trained and how it scored. Entries
-are only added, never edited. Whether a version is released is read from Hugging Face (its model-v tag),
+are only added, never removed, and a version's identity (version, sha256, size, hf_revision, git_commit) never
+changes; its evaluation may be corrected, with the earlier figure kept in a "corrected" note. Whether a version is released is read from Hugging Face (its model-v tag),
 so the manifest never has to be changed after the release.
 """
 from __future__ import annotations

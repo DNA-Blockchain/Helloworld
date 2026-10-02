@@ -17,10 +17,11 @@
         "note": "Recorded after the fact: uploaded 2026-09-30 23:49 UTC; git_commit is the last change to colab/local_ai_lora.py before the upload."
       },
       "evaluation": {
-        "suite": "python local_ai_tuning.py run --variants system,lora",
-        "explain": "8/8 (nos-explain-lora; nos-explain without LoRA 6/8)",
-        "summary": "2/12 (nos-summary-lora; nos-summary without LoRA 8/12)",
-        "run": "2026-09-30 15:23 UTC, before the final conversion fix in git_commit, so it may not be this exact file"
+        "suite": "python local_ai_tuning.py run --variants system,lora (temperature 0)",
+        "explain": "6/8 (nos-explain-lora: 2 contradicted the facts; nos-explain without LoRA 6/8)",
+        "summary": "2/12 (nos-summary-lora: 8 copied the title, 2 dropped names; nos-summary without LoRA 8/12)",
+        "run": "2026-10-02 04:36 UTC, on this exact file (8aa05e28...)",
+        "corrected": "Replaces the first record (explain 8/8, summary 2/12) from a 2026-09-30 15:23 UTC run on the file before the final conversion fix."
       }
     }
   ]

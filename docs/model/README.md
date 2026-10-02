@@ -76,8 +76,8 @@ A release that ships no model version doesn't use the token, so releases work be
 ## Limits
 
 - **Version 1.0.0 was recorded after the fact.** Its GitHub commit is the last change to the training
-  script before the upload, and its scores come from a local run a few hours before the final
-  conversion fix (the manifest says so).
+  script before the upload. Its scores were first taken from a run on an earlier file, then corrected
+  from a run on the exact released file (explain 6/8, summary 2/12); the entry notes both.
 - **Training needs a GPU.** GitHub's runners have none, so training stays in Colab (or on any NVIDIA PC
   with the same script); GitHub only records and publishes.
 - **The Inference Endpoint doesn't switch automatically.** It keeps serving the revision it was created
