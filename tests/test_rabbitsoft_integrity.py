@@ -77,6 +77,19 @@ def test_a_maxwell_web_app_export_is_checked_by_its_links(tmp_path):
     assert check.status == integrity.PROBLEM and "can't be read as a Maxwell chain" in check.lines[0]
 
 
+def test_test_fixtures_in_the_supervisors_scratch_folder_are_not_checked(tmp_path):
+    paths = make_os(tmp_path, time.time())
+    fixture = tmp_path / "autonomous" / "pytest-tmp" / "test_a_tampered_maxwell_chain_0" / "maxwell_chain.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("not json")                  # broken on purpose, like the real test fixtures
+    assert integrity.maxwell_chains(paths).status == integrity.SKIPPED
+    real = tmp_path / "autonomous" / "maxwell" / "maxwell_chain.json"
+    real.parent.mkdir(parents=True)
+    _maxwell_chain(real)
+    check = integrity.maxwell_chains(paths)
+    assert check.status == integrity.OK and len(check.lines) == 1
+
+
 def _saved_report(paths):
     report = {"schema": "rabbitsoft-integrity.v1", "created_at": "2026-10-01T08:00:00+00:00", "ok": True, "checks": []}
     json_path, _, fingerprint = integrity.write_report(report, paths.autonomous / "integrity")
