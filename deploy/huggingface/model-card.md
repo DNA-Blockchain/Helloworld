@@ -35,6 +35,41 @@ answers from the retrieved records, and it reports on the OS's own chain, swarm 
    Every claim is cited `[n]`. Citations to records that weren't supplied are removed after generation.
 4. **Reporting:** the answer is returned with its sources and a retrieval line covering match methods, similarity range and cutoff, sources, years and abstract coverage.
 
+## Download and use
+
+Each version is recorded in GitHub, in
+[`deploy/huggingface/model-versions.json`](https://github.com/DNA-Blockchain/Helloworld/blob/master/deploy/huggingface/model-versions.json):
+its SHA-256, the commit it was built from, its training and its scores. Released versions are tagged
+`model-v<version>` here. New ones wait on the `candidates` branch until the RabbitSoftware release that
+ships them.
+
+**With RabbitSoftware** (downloads with your Hugging Face login, checks the SHA-256, adds it to Ollama):
+
+```
+hf auth login
+ollama pull llama3.2:3b
+python rabbit.py model install            # or --version 1.0.0
+ollama run rabbitsoftware
+```
+
+**With Ollama alone:** a private repo needs Ollama's public key (`~/.ollama/id_ed25519.pub`) added
+under Settings → SSH Keys on Hugging Face. Use the full host name; `hf.co/` fails with a "realm host"
+error on private repos:
+
+```
+ollama run huggingface.co/<your-hf-username>/Llama-3.2-3B-RabbitSoftware-GGUF:Q4_K_M
+```
+
+**With llama.cpp:**
+
+```
+hf download <your-hf-username>/Llama-3.2-3B-RabbitSoftware-GGUF nos-lora.Q4_K_M.gguf --revision model-v1.0.0 --local-dir .
+llama-cli -m nos-lora.Q4_K_M.gguf -cnv
+```
+
+Use Llama 3.2's chat format (the GGUF carries it). The model was tuned to write from supplied facts and
+records, so give it the facts in the prompt rather than asking it to recall them.
+
 ## Serving
 
 - **Server:** a Hugging Face Inference Endpoint (`rabbitsoftware-model`) running the llama.cpp server on one NVIDIA T4. It scales to zero after 15 minutes idle.
