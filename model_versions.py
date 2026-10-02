@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -255,24 +256,47 @@ def obtain(v: dict, filename: str, repo: str, revision: str, known_paths: list[P
     return path
 
 
-def ollama_install(gguf: Path, version: str, workdir: Path, run=subprocess.run) -> list[str]:
+def in_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text().lower()
+    except OSError:
+        return False
+
+
+def ollama_command(which=shutil.which, wsl: bool | None = None, run=subprocess.run):
+    """The Ollama to install into, and how to name a file for it. In WSL that's Windows' Ollama (ollama.exe)
+    when it's there: it holds the models (llama3.2:3b) and is the one RabbitSoftware.inc uses, while a
+    Linux Ollama inside WSL keeps a separate, usually empty, store. Windows programs need Windows paths."""
+    if (in_wsl() if wsl is None else wsl) and which("ollama.exe"):
+        def windows_path(path: Path) -> str:
+            done = run(["wslpath", "-w", str(path)], capture_output=True, text=True)
+            if done.returncode != 0:
+                raise RuntimeError(f"can't give Windows a path for {path}: {done.stderr.strip()}")
+            return done.stdout.strip()
+        return "ollama.exe", windows_path
+    return "ollama", lambda path: Path(path).as_posix()
+
+
+def ollama_install(gguf: Path, version: str, workdir: Path, run=subprocess.run, ollama=None) -> list[str]:
     """Creates rabbitsoftware:<version> and rabbitsoftware:latest from the file, with Llama 3.2's chat format."""
+    command, file_name = ollama or ollama_command(run=run)
+
     def show(flag: str) -> str:
-        done = run(["ollama", "show", OLLAMA_BASE, flag], capture_output=True, text=True, encoding="utf-8")
+        done = run([command, "show", OLLAMA_BASE, flag], capture_output=True, text=True, encoding="utf-8")
         if done.returncode != 0:
-            raise RuntimeError(f"Ollama needs {OLLAMA_BASE} for the chat format: ollama pull {OLLAMA_BASE}")
+            raise RuntimeError(f"Ollama needs {OLLAMA_BASE} for the chat format: {command} pull {OLLAMA_BASE}")
         return done.stdout
 
     params = [line.split(None, 1) for line in show("--parameters").splitlines() if line.strip()]
-    text = (f"FROM {Path(gguf).as_posix()}\n" + f'TEMPLATE """{show("--template").strip()}"""\n'
+    text = (f"FROM {file_name(Path(gguf))}\n" + f'TEMPLATE """{show("--template").strip()}"""\n'
             + "".join(f"PARAMETER {k} {v.strip()}\n" for k, v in params))
     workdir.mkdir(parents=True, exist_ok=True)
     modelfile = workdir / f"{OLLAMA_NAME}-{version}.Modelfile"
     modelfile.write_text(text, encoding="utf-8")
     names = [f"{OLLAMA_NAME}:{version}", f"{OLLAMA_NAME}:latest"]
     for name in names:
-        done = run(["ollama", "create", name, "-f", str(modelfile)], capture_output=True, text=True,
+        done = run([command, "create", name, "-f", file_name(modelfile)], capture_output=True, text=True,
                    encoding="utf-8", errors="replace")
         if done.returncode != 0:
-            raise RuntimeError(f"ollama create {name} failed: {(done.stderr or done.stdout).strip()[-300:]}")
+            raise RuntimeError(f"{command} create {name} failed: {(done.stderr or done.stdout).strip()[-300:]}")
     return names

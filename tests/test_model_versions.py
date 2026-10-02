@@ -192,17 +192,24 @@ def test_a_version_already_on_main_is_only_tagged(hub, tmp_path):
 
 
 # -- 3. installing ------------------------------------------------------------------------------------
+LINUX = ("ollama", lambda path: Path(path).as_posix())
+
+
 class FakeOllama:
-    def __init__(self, has_base=True):
-        self.calls, self.has_base, self.modelfile = [], has_base, ""
+    def __init__(self, has_base=True, wslpath=None):
+        self.calls, self.has_base, self.modelfile, self.wslpath = [], has_base, "", wslpath
+        self.files = {}
 
     def __call__(self, command, **kw):
         self.calls.append(command)
+        if command[0] == "wslpath":
+            self.files[self.wslpath(command[2])] = command[2]
+            return types.SimpleNamespace(returncode=0, stdout=self.wslpath(command[2]) + "\n", stderr="")
         if command[1] == "show":
             ok = self.has_base
             out = {"--template": "{{ .Prompt }}", "--parameters": 'stop "<|eot_id|>"'}[command[3]] if ok else ""
             return types.SimpleNamespace(returncode=0 if ok else 1, stdout=out, stderr="")
-        self.modelfile = Path(command[-1]).read_text()
+        self.modelfile = Path(self.files.get(command[-1], command[-1])).read_text()
         return types.SimpleNamespace(returncode=0, stdout="success", stderr="")
 
 
@@ -232,15 +239,30 @@ def test_a_local_copy_with_the_right_sha_is_used_and_downloads_are_checked(hub, 
 
 def test_ollama_gets_the_versioned_and_latest_names_with_llama_chat_format(tmp_path):
     run = FakeOllama()
-    names = mv.ollama_install(tmp_path / "m.gguf", "1.1.0", tmp_path / "work", run)
+    names = mv.ollama_install(tmp_path / "m.gguf", "1.1.0", tmp_path / "work", run, ollama=LINUX)
     assert names == ["rabbitsoftware:1.1.0", "rabbitsoftware:latest"]
     assert run.modelfile.startswith(f"FROM {(tmp_path / 'm.gguf').as_posix()}\nTEMPLATE \"\"\"{{{{ .Prompt }}}}\"\"\"")
     assert 'PARAMETER stop "<|eot_id|>"' in run.modelfile
     with pytest.raises(RuntimeError, match="ollama pull llama3.2:3b"):
-        mv.ollama_install(tmp_path / "m.gguf", "1.1.0", tmp_path / "work", FakeOllama(has_base=False))
+        mv.ollama_install(tmp_path / "m.gguf", "1.1.0", tmp_path / "work", FakeOllama(has_base=False), ollama=LINUX)
+
+
+def test_in_wsl_windows_ollama_is_used_with_windows_paths(tmp_path):
+    run = FakeOllama(wslpath=lambda p: "C:\\models\\" + Path(p).name)
+    command = mv.ollama_command(which=lambda name: "/mnt/c/ollama.exe" if name == "ollama.exe" else None,
+                                wsl=True, run=run)
+    names = mv.ollama_install(tmp_path / "m.gguf", "1.1.0", tmp_path / "work", run, ollama=command)
+    assert names == ["rabbitsoftware:1.1.0", "rabbitsoftware:latest"]
+    assert {c[0] for c in run.calls if c[0] != "wslpath"} == {"ollama.exe"}
+    assert run.modelfile.startswith("FROM C:\\models\\m.gguf\n")
+    assert run.calls[-1][-1] == "C:\\models\\rabbitsoftware-1.1.0.Modelfile"
+    # Outside WSL, or with no Windows Ollama, it's the ordinary ollama with ordinary paths.
+    assert mv.ollama_command(which=lambda n: "/x/ollama.exe", wsl=False)[0] == "ollama"
+    assert mv.ollama_command(which=lambda n: None, wsl=True)[0] == "ollama"
 
 
 def test_rabbit_model_install_and_versions(hub, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(mv, "ollama_command", lambda **kw: LINUX)
     manifest, _ = candidate(hub, empty_manifest(), gguf(tmp_path))
     monkeypatch.setattr(mv, "load", lambda path=None: manifest)
     monkeypatch.setattr(rabbit, "ROOT", tmp_path)

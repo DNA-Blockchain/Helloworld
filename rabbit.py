@@ -313,7 +313,7 @@ def model(action: str, version: str | None = None, candidate: bool = False, api=
         print(f"Not installed: {error}")
         return 1
     print(f"Installed {' and '.join(names)} (SHA-256 {v['sha256'][:12]}... matches the release record). "
-          f"Try it: ollama run {names[1]}")
+          f"Try it: {mv.ollama_command()[0]} run {names[1]}")
     return 0
 
 
