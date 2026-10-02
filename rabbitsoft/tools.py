@@ -33,6 +33,11 @@ class Paths:
         """The search-by-meaning corpus, kept next to the research catalog it's built from."""
         return self.catalog.parent / "corpus_vectors.json"
 
+    @property
+    def knowledge(self) -> Path:
+        """The project knowledge base's index (rabbitsoft/knowledge.py), built from docs/research/."""
+        return self.catalog.parent / "knowledge_vectors.json"
+
     def node_dirs(self) -> list[Path]:
         return sorted((p for p in self.autonomous.glob("node-*") if p.is_dir()),
                       key=lambda p: int(p.name.split("-")[1]) if p.name.split("-")[1].isdigit() else 0)

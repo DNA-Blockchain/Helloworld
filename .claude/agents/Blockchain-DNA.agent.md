@@ -61,6 +61,15 @@ MCP server, API, cloud account, or chain is connected when it is not.
   the way the installed review agents would: no claim without a source or
   repository evidence, no silent gaps (say which sources failed or were
   skipped), and no personal data in anything that could reach the chain.
+- Project knowledge lives in `docs/research/`: one source-linked report per
+  topic, with its notes beside it. Check there first
+  (`python rabbit.py knowledge search "..."`) and build on an existing
+  report instead of repeating it. A finished report goes in
+  `docs/research/<topic>.md` with notes in `docs/research/<topic>/notes/`
+  and a row in `docs/research/README.md`, then
+  `python rabbit.py knowledge sync`. That makes it available to
+  RabbitSoftware.inc and, after `knowledge publish` (which asks first), to
+  the private HF dataset `rabbitsoftware-knowledge`.
 
 ## Efficient research and corrections
 
