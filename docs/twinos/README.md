@@ -16,9 +16,11 @@ other agent ──U-A2A──▶ this agent: verify signature, freshness, nonce 
                         queue ─▶ owner: python -m twinos approve|deny ─▶ run (on approve) ─▶ result kept for the sender
 ```
 
-The first part (this page) covers identity, messages, trust, approvals and the network. The next part
-adds the sensors (EEG through BrainFlow or LSL; RF, audio and MicroPython adapters), the handlers that do
-real work, and learning runs.
+```
+EEG (BrainFlow / LSL / simulated) ─┐
+RF, audio drivers (plugins) ───────┼─▶ observations ─▶ personal baseline ─▶ lasting change? ─▶ proposed update_context ─▶ owner
+                                   ┘                   (z-scores, per source)                     (never an action on its own)
+```
 
 ## Using it
 
@@ -39,6 +41,57 @@ python -m twinos approve task-...                         # runs it; written to 
 python -m twinos ledger                                   # the local ledger and whether it verifies
 ```
 
+## Sensing, handlers and learning
+
+```powershell
+python -m twinos sense                                    # simulated EEG, 30 s at 10 Hz
+python -m twinos sense --eeg brainflow --board-id -1      # BrainFlow's synthetic board (pip install brainflow)
+python -m twinos sense --eeg lsl --rf mypkg.radar:Driver  # an LSL EEG stream plus your RF driver
+python -m twinos context                                  # what the twin has recorded about itself
+python -m twinos learn --device auto                      # train on recorded neurovisual sessions
+python -m twinos serve --micropython-port COM3            # offer micropython_command tasks (pip install pyserial)
+```
+
+| Source | File | What it gives |
+|---|---|---|
+| EEG | `twinos/sensors.py` `EEGSource` | Log band powers, delta to gamma, averaged over channels, from `neurovisual`'s BrainFlow, LSL or simulated sensors. Quality is the share of channels carrying signal. |
+| RF, audio, anything else | `PluginSource("rf", "package.module:Driver")` | Whatever the driver's `read()` returns as `{feature: number}`. RF measures physical things (range, Doppler, motion, breathing rate); it doesn't read DNA or thoughts. |
+| Not connected | `Unavailable` | `available: false` and the reason. Nothing ever reports "connected" without a device. |
+
+**State** (`twinos/state.py`): each source's features are compared with that person's own running
+baseline (Welford mean and variance from `neurovisual/signals.py`). A change is reported when a source
+stays more than 3 SD away for 3 readings in a row, after 20 readings of warm-up. A single spike isn't a
+change. Deviating readings don't move the baseline until the change is confirmed; after that, the new
+level becomes the baseline. Confidence is the mean quality of the sources that are there, times how
+established the baselines are; with nothing connected it is 0. A change becomes a **proposed**
+`update_context` task, which waits for the owner unless `policy.json` allows `write_context`. The ledger
+gets a keyed digest of the state, never the feature values.
+
+| Task type | Capability | Handler (`twinos/handlers.py`) |
+|---|---|---|
+| `status` | `read_context` (automatic) | id, type, waiting tasks, offered task types |
+| `update_context` | `write_context` | appends `{category, summary}` (≤500 characters) to `autonomous/twinos/context.jsonl`. Anything `research_provenance.personal_information` flags is refused; it belongs in the encrypted vault (`dna_shell.py data-vault-store`). |
+| `run_tests` | `run_tests` | `python -m pytest` on up to 20 named files under `tests/` (no options, no `..`), with a time limit of up to 15 minutes. Returns pass/fail and the last 20 lines. |
+| `gpu_training` | `gpu_compute` (never automatic) | `neurovisual`'s training pipeline on `autonomous/neurovisual/datasets/*.nvds`, on CUDA when available. The dataset, training runs (with compute) and model version go to the neurovisual provenance ledger. With no sessions it fails and says so. |
+| `micropython_command` | `micropython` (never automatic) | only when a board is attached: sends `{"command": ..., ...}` as one JSON line and returns the board's JSON reply |
+
+The board runs a loop like this `main.py` (MicroPython):
+
+```python
+import sys, json, machine
+while True:
+    line = sys.stdin.readline()
+    try:
+        cmd = json.loads(line)
+        if cmd.get("command") == "status":
+            reply = {"ok": True, "freq_hz": machine.freq()}
+        else:
+            reply = {"ok": False, "error": "unknown command"}
+    except ValueError:
+        reply = {"ok": False, "error": "not JSON"}
+    sys.stdout.write(json.dumps(reply) + "\n")
+```
+
 ## How it works
 
 | Part | File | What it does |
@@ -48,7 +101,7 @@ python -m twinos ledger                                   # the local ledger and
 | Trust | `twinos/trust.py` | Peer keys pinned by the owner in `peers.json`. Anyone may ask who an agent is (`IDENTITY_REQUEST`); everything else needs a pinned sender signing with the pinned key. Nothing is ever pinned automatically. |
 | Policy | `twinos/tasks.py` | Each task type needs one capability. `policy.json` lists those that run without asking (default: `read_context` only). Running code, terminal commands, writing files, network operations, MicroPython and GPU jobs always wait for approval, whatever the file says. |
 | Tasks | `twinos/tasks.py` | The receiver builds each task from only its type, description (up to 2,000 characters) and parameters (up to 16 KiB), so a sender can't mark its own task approved. At most 100 tasks per peer may wait; one message makes at most one task. |
-| Node | `twinos/node.py` | Answers messages, runs or queues tasks, and serves TCP on `127.0.0.1:8790` (the node network uses 8765). It offers only task types it has a handler for; in this part that is `status`. |
+| Node | `twinos/node.py` | Answers messages, runs or queues tasks, and serves TCP on `127.0.0.1:8790` (the node network uses 8765). It offers only task types it has a handler for (see the table above). |
 | Ledger | `autonomous/twinos/ledger.jsonl` | The hash-chained ledger from `neurovisual/provenance.py`, with keyed digests (HMAC-SHA-256) of messages from pinned peers and of every task decision and result. It never holds their content, and it isn't published. |
 
 The server and the owner's commands are separate processes, so `tasks.json`, `peers.json` and the ledger
@@ -68,3 +121,18 @@ Changes to `policy.json` take effect when the server restarts.
 - **Trust is manual.** Check the key that `discover` prints through another channel before pinning,
   because whoever answers on that address could be an impostor.
 - **Clocks.** Both agents' clocks must be within 120 s of each other.
+- **Signals are not thoughts.** EEG band power and RF measurements describe signals and the body. The
+  state is a deviation from a personal baseline, which the owner can choose to act on. It doesn't decode
+  intentions or memories ([EEG to image reconstruction](../research/eeg-to-image-reconstruction.md) covers
+  what EEG can and can't decode).
+- **No mood or emotion.** The state is a deviation, never a label such as "stressed" or "calm". Inferring
+  affect from EEG is emotion recognition under the EU AI Act (transparency duties now, high-risk duties
+  from December 2027), so don't add it. A state signal is also all a forehead headset like the Muse can
+  give; decoding visual content needs occipital channels (see the report).
+- **EEG stays on this PC.** No handler returns features or the state to another agent. The context
+  entry a change creates says only which source deviated and by how much, and it waits for your approval.
+  The ledger's keyed digests are still personal data under the EDPB's 2026 guidance: deleting
+  `autonomous/twinos/ledger.key` makes them unlinkable (crypto-shredding).
+- **Not tested with hardware here.** BrainFlow's synthetic board and the simulated EEG exercise the live
+  path. The MicroPython link is tested against a fake serial port, not a real board.
+- **Code generation and terminal commands** have no handler, so they're rejected rather than faked.

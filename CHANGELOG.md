@@ -8,6 +8,11 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Added
+- **TwinOS universal agent network, part 2: sensing, real handlers and learning** (`twinos/sensors.py`, `state.py`, `handlers.py`):
+  - **Sources:** EEG through `neurovisual`'s BrainFlow, LSL or simulated sensors (log band powers, quality per channel). RF, audio or any other driver plugs in by `package.module:Driver`. An unconnected source says so instead of reporting "connected".
+  - **State:** every source against the person's own running baseline. A change needs 3 readings beyond 3 SD after warm-up, and becomes a *proposed* `update_context` task for the owner, never an action. The ledger keeps a keyed digest of the state only.
+  - **Handlers:** `update_context` (refuses personal information; that goes to the vault), `run_tests` (named files under `tests/` only, time-limited), `gpu_training` (`neurovisual`'s pipeline with compute provenance, on CUDA when available) and `micropython_command` (JSON lines over USB serial, only when a board is attached). Only `status` is automatic.
+  - **Commands:** `python -m twinos sense | context | learn`, and `serve --micropython-port`.
 - **TwinOS universal agent network, part 1** (`twinos/`, `python -m twinos`): a digital twin as one agent among coding, development, terminal, MicroPython, GPU and other agents, all speaking **U-A2A 1.0**:
   - **Identity:** a persistent Ed25519 key per agent. The agent id is derived from the key, so an id can't be claimed without the key.
   - **Messages:** each one is signed, and checked against `schemas/rabbitsoftware-agent-message-v1` (contract-tested, documented in `docs/api/agent-message.md`), a ±120 s clock window and a nonce against replays. Frames are length-prefixed, up to 1 MiB.
