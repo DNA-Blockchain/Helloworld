@@ -35,6 +35,14 @@ answers from the retrieved records, and it reports on the OS's own chain, swarm 
    Every claim is cited `[n]`. Citations to records that weren't supplied are removed after generation.
 4. **Reporting:** the answer is returned with its sources and a retrieval line covering match methods, similarity range and cutoff, sources, years and abstract coverage.
 
+## Where its answers come from
+
+Besides the public research corpus, the assistant answers from the project's own **knowledge base**: the
+source-linked research reports in `docs/research/`, split into sections and indexed by meaning. Those answers
+carry `[K1]`-style citations naming the report section and its file, so a claim can be traced to the report
+and from there to its primary source. The reports cover EEG decoding and DNA editing in cancer; they are
+research summaries, not medical advice.
+
 ## Download and use
 
 Each version is recorded in GitHub, in

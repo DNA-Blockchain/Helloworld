@@ -39,6 +39,11 @@ see [Owning your copy](#owning-your-copy).
 | Live data store | `live_store.py`, `live_feed.py` | Local SQLite mirror of everything saved, streamed live over loopback-only HTTP/SSE |
 | Entry points | `run_all.py`, `run_agent.py` | Launch everything, or just the research agent |
 | RabbitSoftware.inc assistant | `rabbit.py`, `rabbitsoft/` | Ask the OS about itself in your own words, in a terminal or a web page on this PC (RabbitSoftware, Inc.) |
+| Project knowledge base | `rabbitsoft/knowledge.py`, `docs/research/` | Source-linked research reports split into sections and indexed by meaning; questions they cover are answered from them with `[K1]` citations |
+| Agent network (TwinOS) | `twinos/` | A digital twin as one agent among coding, terminal, MicroPython and GPU agents, over signed U-A2A messages. Only peers whose keys you pin can send tasks, and code, terminal, file writes, network, MicroPython and GPU work always waits for your approval |
+| Cancer genomics tooling | `twinos/genomics.py`, `twinos/datasets.json` | Public cancer-genomics datasets with their licence and access tier, before/after variant comparison, and candidate Cas9 guides marked as untested laboratory hypotheses. **Research tooling, not a treatment tool** ([docs/genomics/](docs/genomics/)) |
+| Neural → visual prototype | `neurovisual/` | EEG capture (BrainFlow/LSL or simulated), AES-GCM-encrypted session datasets, and image-generation research, built on the evidence review in [docs/research/](docs/research/). Simulation: EEG cannot reconstruct images or read thoughts |
+| Model versions | `model_versions.py`, `deploy/huggingface/model-versions.json` | Every version of the model with its SHA-256, the commit it was built from, training and scores; `python rabbit.py model install` puts a released version into Ollama ([docs/model/](docs/model/)) |
 
 **Honest boundaries** (see [`KNOWN_GAPS.md`](KNOWN_GAPS.md) for the full list):
 - `token_ledger.py` balances are a **local score**, not a tradable currency — no consensus, no wallet.
@@ -46,6 +51,8 @@ see [Owning your copy](#owning-your-copy).
 - CRISPR results **never mine into the chain** — that boundary is enforced by construction (`node=None, dna=None`).
 - Image/video generation is off unless you set your own API keys, and video is deliberately unimplemented.
 - The node **connects to no peers on its own**. It reaches only the public research APIs listed above, and only when a topic is explored.
+- The genomics tooling computes **candidates for a laboratory**, never a treatment. A variant comparison is a difference between two files, not a diagnosis, and a candidate guide accounts for none of off-target sites, chromatin, delivery or biology. No software can edit DNA inside a body, and nothing here is medical advice.
+- `neurovisual/` and the twin's sensing are a **simulation**: EEG band power is a signal measurement, not a thought, a mood or an image.
 
 ---
 

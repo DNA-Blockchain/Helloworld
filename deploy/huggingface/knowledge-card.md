@@ -22,6 +22,16 @@ with each question. This copy keeps the knowledge base versioned on Hugging Face
 The reports summarize public research: peer-reviewed papers, preprints, dataset documentation, statutes and
 regulator guidance, each cited by link. **Nothing personal** is included.
 
+The reports so far, each with the source notes it was written from:
+
+| Report | What it covers | What it informs |
+|---|---|---|
+| EEG to image reconstruction | What EEG can and cannot decode, the benchmarks, real-time limits, and neural-data law | the `neurovisual/` prototype |
+| DNA editing and cancer remission | CRISPR clinical results in cancer, DNA-based remission monitoring (ctDNA/MRD), before/after datasets, oncology digital twins, and the evidence on RF and visualization claims | the twin's genomics tooling |
+
+Both reports are research summaries for software design, **not medical advice**. Treatment decisions belong
+with a clinician.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | string | stable section ID: `path#heading-slug`, numbered when a long section is split |
