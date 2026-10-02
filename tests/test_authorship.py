@@ -82,6 +82,15 @@ def test_every_release_attaches_its_code_manifest():
     assert "Code fingerprint" in workflow
 
 
-@pytest.mark.parametrize("name", ["NOTICE.md", "PRIVACY.md", "README.md"])
+@pytest.mark.parametrize("name", ["NOTICE.md", "PRIVACY.md", "README.md", "deploy/github/profile/README.md"])
 def test_no_phone_number_is_published(name):
     assert "845-0940" not in (ROOT / name).read_text(encoding="utf-8")
+
+
+def test_the_public_profile_page_names_the_current_version():
+    """The page at github.com/DNA-Blockchain is the first thing the public reads, so a release must not
+    leave its version behind (it said 0.9.0 two releases on)."""
+    page = (ROOT / "deploy" / "github" / "profile" / "README.md").read_text(encoding="utf-8")
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert f"| Version | {version} " in page, f"the profile page doesn't name version {version}"
+    assert "Therealsickonechase" not in page and "endpoints.huggingface.cloud" not in page
