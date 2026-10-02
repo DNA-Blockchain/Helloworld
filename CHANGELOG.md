@@ -7,6 +7,8 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-01
+
 ### Added
 - **Model versions across GitHub, Hugging Face and your PC** (`model_versions.py`, `docs/model/README.md`):
   - **Record:** `deploy/huggingface/model-versions.json` lists every version of the model: its GGUF SHA-256 and size, the Hugging Face commit, the GitHub commit it was built from, the base model, training and scores. Entries are only added. Version 1.0.0 (the current model, `8aa05e28…`) is recorded with notes on what was reconstructed.
@@ -89,6 +91,7 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   Each release continues from the verified previous checkpoint (v1.1 → v1.2 → v1.3). `chain` shows the blocks and `lineage` traces any version back to its data; `run --model latest` serves the newest verified release. PyTorch models train on CUDA when available.
 
 ### Fixed
+- **Release notes on Windows:** `scripts/release_notes.py` prints UTF-8, so notes with characters such as `→` no longer crash in a Windows console.
 - **Neurovisual:** training a model on sessions recorded by a different model now rebuilds that model's own input from the recorded features (the PyTorch model had been given the recording model's 7-value context instead of its 32-step window), and ratings are matched to steps within their own session.
 
 ### Changed
