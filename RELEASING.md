@@ -38,9 +38,11 @@ install master with `RABBIT_CHANNEL=dev`.
 
 Fix it on master and release a PATCH version. Don't move or delete a published tag: installs and `rabbit
 update` compare against it.
+
+
 ## Required GitHub release security controls
 
-Before tagging a release, configure these repository controls. The release workflow requires both controls to make its approval gate effective:
+Before tagging a release, configure these repository controls. The release workflow depends on the tag ruleset and publishing-environment protections below to make its approval gate effective:
 
 1. In **Settings → Rules → Rulesets**, create an active tag ruleset matching `v*.*.*`. Restrict tag creation, updates, and deletion to trusted release managers; do not grant broad bypass access.
 2. In **Settings → Environments**, create `release-publish`. Require approval from an independent trusted reviewer, enable **Prevent self-review**, and restrict deployments to tags matching `v*.*.*`.
