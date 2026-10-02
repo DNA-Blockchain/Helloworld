@@ -108,7 +108,8 @@ def pair(tmp_path):
 def test_peers_see_the_real_handlers_and_only_status_is_automatic(pair):
     twin, coder = pair
     caps = ask(coder, twin, "CAPABILITY_REQUEST", {})["payload"]
-    assert caps == {"task_types": ["gpu_training", "run_tests", "status", "update_context"], "automatic": ["status"]}
+    assert caps == {"task_types": ["gpu_training", "research_search", "run_tests", "status", "update_context"],
+                    "automatic": ["research_search", "status"]}
     reply = ask(coder, twin, "TASK_REQUEST", {"task_type": "run_tests", "description": "run them",
                                               "parameters": {"tests": "tests/test_twinos.py"}})
     assert reply["message_type"] == "APPROVAL_REQUIRED"

@@ -11,6 +11,8 @@
                                       neurovisual provenance ledger with their compute
   micropython_command  micropython    one JSON command to the attached board, and its reply (only offered
                                       when a board is attached)
+  research_search      read_context   the project's research reports (rabbitsoft/knowledge.py), by meaning,
+                                      with their file and similarity: public research only, nothing personal
 
 Every handler returns {"success": bool, ...}. Only status runs without the owner's approval by default.
 """
@@ -47,6 +49,28 @@ def update_context(path: Path):
             f.write(json.dumps({"time": time.time(), "category": category, "summary": summary.strip(),
                                 "source_agent": task.source_agent, "task_id": task.task_id}) + "\n")
         return {"success": True, "category": category}
+    return handler
+
+
+def research_search(root: Path):
+    """The project's own research reports, searched by meaning. Public research only: the reports in
+    docs/research/ hold no personal data, so an agent asking a question learns nothing about anyone."""
+    def handler(task) -> dict:
+        query = task.parameters.get("query") or task.description
+        if not isinstance(query, str) or not query.strip():
+            return {"success": False, "error": "give something to search for, e.g. {\"query\": \"CRISPR CAR-T remission\"}"}
+        try:
+            limit = min(10, max(1, int(task.parameters.get("limit", 5))))
+        except (TypeError, ValueError):
+            return {"success": False, "error": "limit must be a number"}
+        from rabbitsoft.assistant import Session
+        from rabbitsoft.tools import Paths
+
+        hits = Session(Paths(root=root)).knowledge.search(query.strip())[:limit]
+        return {"success": True, "query": query.strip(), "matches": len(hits),
+                "sections": [{"title": h["title"], "file": h.get("url", ""), "similarity": round(h["similarity"], 3)}
+                             for h in hits],
+                "note": "Public research summaries, not medical advice."}
     return handler
 
 

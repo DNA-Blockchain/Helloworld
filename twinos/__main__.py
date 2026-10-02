@@ -14,6 +14,14 @@
                                               becomes a proposed update_context task for you to approve
     context                                   the twin's context entries
     learn [--device auto|cpu|cuda]            train on the recorded neurovisual sessions (your command is the yes)
+    datasets [--all]                          public cancer-genomics datasets: licence, access tier, what for
+    fetch NAME                                where to get a dataset, and whether this twin may download it
+    record NAME --file PATH                   fingerprint a dataset file you downloaded, into the ledger
+    compare CANCER.vcf REFERENCE.vcf          variants gained, lost and shifted between two public variant files
+    guides SEQUENCE.fa --at OFFSET            candidate Cas9 guides near a position: laboratory hypotheses only
+
+Genomics commands work on public research data and are not a treatment tool: they compute candidates for a
+laboratory, and no software can edit DNA in a body (docs/genomics/README.md). Not medical advice.
 
 --home DIR runs a separate agent from DIR (default autonomous/twinos), e.g. a second agent for testing.
 Sending to another machine needs --allow-remote and is written to the activity log.
@@ -98,6 +106,89 @@ def _sense(node: AgentNode, args) -> int:
     return 0
 
 
+def _genomics(node: AgentNode, args) -> int:
+    """The genomics commands. They read public research data and compute candidates for a laboratory;
+    they are not a treatment tool and say so in their output."""
+    from . import genomics as g
+
+    if args.command == "datasets":
+        for d in g.catalogue():
+            if not args.all and d["access"] == "controlled":
+                continue
+            marks = [d["access"]]
+            marks += ["before/after"] if d["paired"] else []
+            marks += ["personal data: local only"] if d["personal_data"] else []
+            print(f"{d['name']:<34} {', '.join(marks)}\n    {d['title']} — {d['subjects']}\n"
+                  f"    {d['license']}{'' if d['redistribute'] else ' (no redistribution)'}\n    {d['use']}")
+        if not args.all:
+            print("(--all also lists controlled-access datasets, which need an institution's approval.)")
+        return 0
+
+    if args.command == "fetch":
+        entry = g.dataset(args.name)
+        allowed, why = g.fetch_plan(entry)
+        print(f"{entry['title']}\n  {entry['license']}\n  {why}")
+        if not allowed:
+            return 1
+        print("Download it, then record it here: python -m twinos record "
+              f"{entry['name']} --file <the file>")
+        return 0
+
+    if args.command == "record":
+        entry = g.dataset(args.name)
+        if not args.file.is_file():
+            print(f"No such file: {args.file}")
+            return 1
+        from model_versions import file_sha256
+
+        record = g.record_entry(entry, args.file, file_sha256(args.file))
+        node.record("dataset_recorded", record, {"dataset": record["dataset"], "sha256": record["sha256"],
+                                                 "publishable": record["publishable"]})
+        node.log("record dataset", {"dataset": record["dataset"], "sha256": record["sha256"]})
+        _show(record)
+        print("Recorded in this twin's ledger (keyed digest, local only). "
+              + ("Its release fingerprint may be published." if record["publishable"] else
+                 "Its licence or personal data means only aggregates may leave this PC."))
+        return 0
+
+    if args.command == "compare":
+        cancer, reference = g.read_variants(args.cancer), g.read_variants(args.reference)
+        result = g.compare(cancer, reference, args.shift)
+        print(f"{len(cancer)} variants in {args.cancer.name}, {len(reference)} in {args.reference.name}.")
+        _show(result.summary(args.shift))
+        for name, items in (("gained (in the cancer file only)", result.gained), ("lost", result.lost)):
+            if items:
+                print(f"\n{name}:")
+                for v in items[:args.limit]:
+                    print(f"  {v}" + (f"  AF {v.frequency:.2f}" if v.frequency is not None else ""))
+                if len(items) > args.limit:
+                    print(f"  ... and {len(items) - args.limit} more")
+        if result.shifted:
+            print("\nallele-frequency shifts:")
+            for before, after in result.shifted[:args.limit]:
+                print(f"  {after}  {before.frequency:.2f} -> {after.frequency:.2f}")
+        if args.megabases:
+            print(f"\nmutations per megabase: {g.mutational_burden(cancer, args.megabases)} (cancer file), "
+                  f"{g.mutational_burden(reference, args.megabases)} (reference)")
+        print("\nThese are differences between two files. They are not a diagnosis, not a target list, and "
+              "not medical advice.")
+        return 0
+
+    text = args.sequence.read_text(encoding="utf-8")
+    sequence = "".join(l.strip() for l in text.splitlines() if not l.startswith(">")).upper()
+    guides = g.candidate_guides(sequence, args.at, args.window)
+    print(f"{len(sequence)} bases; position {args.at} is {sequence[args.at] if args.at < len(sequence) else '?'}.")
+    if not guides:
+        print(f"No SpCas9 (NGG) site within {args.window} bases of that position.")
+        return 0
+    print(f"\n{len(guides)} candidate guide(s), nearest cut first:")
+    for guide in guides:
+        print(f"  {guide.protospacer} {guide.pam}  strand {guide.strand}  GC {guide.gc:.0%}  "
+              f"{guide.distance_to_target} base(s) from the target")
+    print(f"\n{g.HYPOTHESIS}\n{g.edit_outcome_note()}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m twinos", description="TwinOS universal agent network")
     parser.add_argument("--home", type=Path, help="this agent's folder (default autonomous/twinos)")
@@ -141,6 +232,23 @@ def main(argv: list[str] | None = None) -> int:
     sense.add_argument("--hz", type=float, default=10.0)
     sub.add_parser("context")
     sub.add_parser("learn").add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    ds = sub.add_parser("datasets")
+    ds.add_argument("--all", action="store_true", help="include datasets this twin can't download")
+    fe = sub.add_parser("fetch")
+    fe.add_argument("name")
+    rc = sub.add_parser("record")
+    rc.add_argument("name")
+    rc.add_argument("--file", type=Path, required=True, help="the dataset file you downloaded")
+    cmp_ = sub.add_parser("compare")
+    cmp_.add_argument("cancer", type=Path)
+    cmp_.add_argument("reference", type=Path)
+    cmp_.add_argument("--shift", type=float, default=0.2, help="allele-frequency change counted as a shift")
+    cmp_.add_argument("--megabases", type=float, help="sequenced size, for mutations per megabase")
+    cmp_.add_argument("--limit", type=int, default=15)
+    gd = sub.add_parser("guides")
+    gd.add_argument("sequence", type=Path, help="a FASTA file, or a file of plain A/C/G/T")
+    gd.add_argument("--at", type=int, required=True, help="0-based offset of the position of interest")
+    gd.add_argument("--window", type=int, default=30)
     args = parser.parse_args(argv)
 
     node = AgentNode(home=args.home, name=args.name, agent_type=args.agent_type)
@@ -201,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
             print("Ledger verifies." if ok else "Ledger problems:\n  " + "\n  ".join(problems))
         elif args.command == "sense":
             return _sense(node, args)
+        elif args.command in ("datasets", "fetch", "record", "compare", "guides"):
+            return _genomics(node, args)
         elif args.command == "context":
             try:
                 for line in node.context_path.read_text(encoding="utf-8").splitlines():

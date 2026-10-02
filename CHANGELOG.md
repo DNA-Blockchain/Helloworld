@@ -7,6 +7,15 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 
 ## [Unreleased]
 
+### Added
+- **Research report: DNA editing and cancer remission (2026)** in `docs/research/`, with its five source-note files (CRISPR clinical results, DNA-based remission monitoring, before/after datasets, oncology digital twins, RF and visualization claims). Its finding frames the code below: as of October 2026 every case of DNA research producing remission worked through a physical intervention, and no digital copy of a genome, radio link or AI visualizer can affect a body.
+- **Cancer genomics in the twin** (`twinos/genomics.py`, `twinos/datasets.json`, docs in `docs/genomics/`), research tooling only:
+  - **Dataset catalogue:** 13 public datasets from the report with their licence and access tier. `python -m twinos datasets [--all]`, `fetch` (open: offers the download; registered: prints the page to visit; **controlled: refuses**, with the application URL), and `record --file` to fingerprint a file you downloaded. A dataset is marked publishable only when its licence allows redistribution and it holds no personal data.
+  - **Variant comparison:** `compare cancer.vcf normal.vcf` reads VCF or MAF/TSV and reports variants gained, lost, shared and shifted in allele frequency, plus mutations per megabase. The output states that these are differences between two files, not a diagnosis.
+  - **Candidate Cas9 guides:** `guides region.fa --at N` lists SpCas9 (NGG) protospacers near a position on both strands, nearest cut first, each marked as an untested laboratory hypothesis, with a note on what it ignores (off-targets, chromatin, delivery, biology) and the public measured-outcome datasets.
+  - **`research_search` task:** other agents can search the project's research reports by meaning. It runs without approval, because the reports hold public research only.
+  - The docs and the code state plainly that nothing here treats disease and that treatment decisions belong with an oncologist.
+
 ## [0.10.1] - 2026-10-02
 
 ### Fixed
