@@ -7,11 +7,7 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 
 ## [Unreleased]
 
-### Changed
-- **READMEs and cards describe what the project now is:**
-  - `README.md` gains the project knowledge base, the TwinOS agent network, the cancer-genomics tooling, `neurovisual/` and model versions, plus two honest boundaries: the genomics tooling computes laboratory candidates and never treatments, and the neural work is a simulation.
-  - The organization's public page (`github.com/DNA-Blockchain`) is now versioned in the repository at `deploy/github/profile/README.md`, with publishing instructions in `deploy/github/README.md`. It had drifted to version 0.9.0 and missed three components; `tests/test_authorship.py` now fails when its version doesn't match `VERSION` or when it names a private repo, and `RELEASING.md` includes updating it.
-  - The Hugging Face knowledge card lists the reports it holds and says they are not medical advice; the model card explains that answers can come from the knowledge base with `[K1]` citations.
+## [0.11.0] - 2026-10-02
 
 ### Added
 - **Research report: DNA editing and cancer remission (2026)** in `docs/research/`, with its five source-note files (CRISPR clinical results, DNA-based remission monitoring, before/after datasets, oncology digital twins, RF and visualization claims). Its finding frames the code below: as of October 2026 every case of DNA research producing remission worked through a physical intervention, and no digital copy of a genome, radio link or AI visualizer can affect a body.
@@ -21,6 +17,12 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
   - **Candidate Cas9 guides:** `guides region.fa --at N` lists SpCas9 (NGG) protospacers near a position on both strands, nearest cut first, each marked as an untested laboratory hypothesis, with a note on what it ignores (off-targets, chromatin, delivery, biology) and the public measured-outcome datasets.
   - **`research_search` task:** other agents can search the project's research reports by meaning. It runs without approval, because the reports hold public research only.
   - The docs and the code state plainly that nothing here treats disease and that treatment decisions belong with an oncologist.
+
+### Changed
+- **READMEs and cards describe what the project now is:**
+  - `README.md` gains the project knowledge base, the TwinOS agent network, the cancer-genomics tooling, `neurovisual/` and model versions, plus two honest boundaries: the genomics tooling computes laboratory candidates and never treatments, and the neural work is a simulation.
+  - The organization's public page (`github.com/DNA-Blockchain`) is now versioned in the repository at `deploy/github/profile/README.md`, with publishing instructions in `deploy/github/README.md`. It had drifted to version 0.9.0 and missed three components; `tests/test_authorship.py` now fails when its version doesn't match `VERSION` or when it names a private repo, and `RELEASING.md` includes updating it.
+  - The Hugging Face knowledge card lists the reports it holds and says they are not medical advice; the model card explains that answers can come from the knowledge base with `[K1]` citations.
 
 ## [0.10.1] - 2026-10-02
 
