@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import platform
+import secrets
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
@@ -22,7 +24,7 @@ from typing import Callable
 from neurovisual.provenance import ProvenanceLedger, load_or_create_key
 from rabbitsoft.tools import Paths
 
-from . import protocol
+from . import handlers, protocol
 from .identity import AgentIdentity
 from .locking import locked
 from .protocol import ProtocolError, ReplayGuard
@@ -55,7 +57,19 @@ class AgentNode:
         self.replay = ReplayGuard()
         self.ledger_path = self.home / "ledger.jsonl"
         self.ledger_key = load_or_create_key(self.home / "ledger.key")
-        self.handlers: dict[str, Handler] = {"status": self._status_task}
+        self.context_path = self.home / "context.jsonl"
+        self.handlers: dict[str, Handler] = {
+            "status": self._status_task,
+            "update_context": handlers.update_context(self.context_path),
+            "run_tests": handlers.run_tests(self.paths.root),
+            "gpu_training": handlers.gpu_training(self.paths.autonomous / "neurovisual"),
+        }
+        self.device = None
+
+    def attach_micropython(self, device) -> None:
+        """Offers micropython_command tasks, sent to this board (sensors.MicroPythonSerial)."""
+        self.device = device
+        self.handlers["micropython_command"] = handlers.micropython_command(device)
 
     # -- records ------------------------------------------------------------------------------------------
     def ledger(self) -> ProvenanceLedger:
@@ -167,6 +181,51 @@ class AgentNode:
         self.record("task_result", result, {"task_id": task.task_id, "task_type": task.task_type,
                                             "status": task.status})
         return task
+
+    def run_local(self, task_type: str, description: str, parameters: dict) -> Task:
+        """The owner's own request on this PC (e.g. python -m twinos learn): their command is the approval."""
+        if task_type not in self.handlers:
+            raise TaskRejected(f"this agent can't run {task_type} tasks")
+        task = build_task(task_type, description, parameters, self.identity.agent_id, secrets.token_hex(16))
+        task.status = "approved"
+        self.tasks.add(task)
+        self.log("run task", {"task_id": task.task_id, "task_type": task_type, "capability": task.capability})
+        self.record("task_queued", asdict(task), {"task_type": task_type, "sender_agent": "owner", "automatic": False})
+        return self.run(task)
+
+    def propose(self, task_type: str, description: str, parameters: dict) -> Task:
+        """A task the twin suggests for itself (a state change): it runs only if the policy allows its
+        capability, otherwise it waits for the owner like any other agent's request."""
+        task = build_task(task_type, description, parameters, self.identity.agent_id, secrets.token_hex(16))
+        automatic = task_type in self.handlers and self.policy.allows(task.capability)
+        if automatic:
+            task.status = "approved"
+        self.tasks.add(task)
+        self.record("task_queued", asdict(task), {"task_type": task_type, "sender_agent": "self", "automatic": automatic})
+        return self.run(task) if automatic else task
+
+    def sense(self, sources: list, steps: int, interval: float, estimator=None, on_state=None) -> list:
+        """Reads every source `steps` times, `interval` seconds apart, and keeps the twin's state. A confirmed
+        change against the person's baseline becomes a proposed update_context task, never an action."""
+        from .state import StateEstimator
+
+        estimator = estimator or StateEstimator()
+        states = []
+        for step in range(steps):
+            state = estimator.update([source.observe() for source in sources])
+            states.append(state)
+            for name in state.changes:
+                s = state.sources[name]
+                summary = (f"{name} signals deviated {s.deviation:.1f} SD from this person's baseline for "
+                           f"{estimator.sustain} readings (quality {s.quality:.2f}, confidence {state.confidence:.2f})")
+                self.record("state_change", asdict(state), {"source": name, "confidence": state.confidence})
+                self.propose("update_context", f"record a {name} state change",
+                             {"category": "state_change", "summary": summary})
+            if on_state:
+                on_state(state)
+            if interval and step < steps - 1:
+                time.sleep(interval)
+        return states
 
     def decide(self, task_id: str, approve: bool) -> Task:
         """The owner's yes or no. A yes runs the task now; both go to the activity log and the ledger."""
