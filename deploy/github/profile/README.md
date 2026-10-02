@@ -9,7 +9,7 @@ OS kernel, a Linux image and a fine-tuned language model are developed in the sa
 | | |
 |---|---|
 | Main repository | [**Helloworld**](https://github.com/DNA-Blockchain/Helloworld) |
-| Version | 0.10.1 ([changelog](https://github.com/DNA-Blockchain/Helloworld/blob/master/CHANGELOG.md)) |
+| Version | 0.11.0 ([changelog](https://github.com/DNA-Blockchain/Helloworld/blob/master/CHANGELOG.md)) |
 | License | [UPL-1.0](https://github.com/DNA-Blockchain/Helloworld/blob/master/LICENSE) |
 | Author | Chase Allen Ringquist ([NOTICE.md](https://github.com/DNA-Blockchain/Helloworld/blob/master/NOTICE.md)) |
 | Privacy | [PRIVACY.md](https://github.com/DNA-Blockchain/Helloworld/blob/master/PRIVACY.md) |
