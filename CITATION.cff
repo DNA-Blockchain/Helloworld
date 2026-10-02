@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: RabbitSoftware
+authors:
+  - family-names: Ringquist
+    given-names: Chase Allen
+version: 0.10.1
+license: UPL-1.0
+type: software
+repository-code: https://github.com/DNA-Blockchain/Helloworld
+url: https://github.com/DNA-Blockchain/Helloworld
+keywords:
+  - biomedical research
+  - literature search
+  - research software
+  - data provenance
