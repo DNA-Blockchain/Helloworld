@@ -104,6 +104,7 @@ def activity_log(paths: Paths) -> Check:
 
 
 MAXWELL_FILES = ("maxwell_chain*.json", "maxwell_blockchain*.json")
+SCRATCH = "pytest-tmp"     # the supervisor's test runs (node_supervisor.py) keep their fixtures here, some broken on purpose
 
 
 def relay_export(blocks: list[dict]) -> tuple[bool, str]:
@@ -133,7 +134,8 @@ def maxwell_chains(paths: Paths) -> Check:
     from maxwell_chain_agent import MaxwellChainAgent
 
     found = sorted({Path(p) for name in MAXWELL_FILES for pattern in (name, f"autonomous/**/{name}")
-                    for p in glob.glob(str(paths.root / pattern), recursive=True)})
+                    for p in glob.glob(str(paths.root / pattern), recursive=True)
+                    if SCRATCH not in Path(p).relative_to(paths.root).parts})
     if not found:
         return Check("records and data", "Maxwell chain", SKIPPED, ["No Maxwell chain file on this PC."])
     lines, broken = [], False
