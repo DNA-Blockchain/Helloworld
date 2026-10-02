@@ -26,7 +26,9 @@ def test_the_changelog_has_notes_for_this_version():
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert "## [Unreleased]" in changelog
     notes = release_notes.section(changelog, __version__)
-    assert notes and "### Added" in notes and "## [" not in notes      # only this version's section
+    assert notes and "## [" not in notes                                 # only this version's section
+    # Any Keep a Changelog heading: a patch release has only "Fixed".
+    assert re.search(r"^### (Added|Changed|Deprecated|Removed|Fixed|Security)$", notes, re.M)
     assert release_notes.section(changelog, "99.0.0") is None
     assert release_notes.main(["v" + __version__]) == 0 and release_notes.main(["99.0.0"]) == 1
 
