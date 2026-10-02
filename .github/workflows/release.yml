@@ -1,6 +1,7 @@
 name: release
 
 # Only tags pointing at code already merged into the default branch may release.
+# Configure the tag ruleset and release-publish environment as described in RELEASING.md.
 on:
   push:
     tags: ["v*.*.*"]
