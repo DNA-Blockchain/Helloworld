@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: RabbitSoftware
+authors:
+  - family-names: Ringquist
+    given-names: Chase Allen
+version: 0.11.0
+date-released: '2026-10-02'
+license: UPL-1.0
+type: software
+repository-code: https://github.com/DNA-Blockchain/Helloworld
+url: https://github.com/DNA-Blockchain/Helloworld
+abstract: >-
+  RabbitSoftware is research operating-system, AI-model and blockchain software. Local nodes gather
+  public biomedical literature, record what they found on a replicated signed chain, and answer
+  technical questions from those records with citations. Research records export to BibTeX, RIS, CSV
+  and JSONL carrying each source's own identifier and terms, and a documented JSON provenance format
+  travels with them.
+keywords:
+  - biomedical research
+  - literature search
+  - research software
+  - data provenance
+  - reproducible research
+  - blockchain
