@@ -7,6 +7,9 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 
 ## [Unreleased]
 
+### Fixed
+- **`rabbit model install` in WSL:** it installs into Windows' Ollama (`ollama.exe`), which holds the models RabbitSoftware.inc uses, with file paths converted by `wslpath -w`. Before, it used whatever `ollama` came first on WSL's PATH, such as a snap install with its own empty model store, and failed asking for `llama3.2:3b`.
+
 ## [0.10.0] - 2026-10-01
 
 ### Added

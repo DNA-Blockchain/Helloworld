@@ -56,6 +56,11 @@ downloads the file from Hugging Face with your login. No SSH key is needed, unli
 never installed. Ollama also needs `llama3.2:3b` (`ollama pull llama3.2:3b`), whose chat template and stop
 tokens go with the weights.
 
+**In WSL**, `install` uses Windows' Ollama (`ollama.exe`), the one that holds your models, and gives it Windows
+paths. A Linux Ollama inside WSL (for example a snap install) keeps its own, separate model store and its
+own server on `127.0.0.1:11434` inside WSL. Run the model with `ollama.exe run rabbitsoftware` there, or
+from PowerShell. WSL also has its own Hugging Face login: run `hf auth login` once in WSL.
+
 ## One-time setup: the release token
 
 The release workflow needs a Hugging Face token that can write to the model repo. It's stored as a GitHub
