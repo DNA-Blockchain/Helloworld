@@ -8,6 +8,7 @@ changes that break an API in `schemas/`, MINOR for new features, and PATCH for f
 ## [Unreleased]
 
 ### Fixed
+- **Model 1.0.0's scores:** re-measured on the exact released file (`8aa05e28…`, temperature 0): explanations 6/8 (as the card said), summaries 2/12 (the base model without the fine-tune scores 8/12). The version record's first figure (8/8) came from a run on an earlier file; it's kept as a "corrected" note. The model card shows both tasks against the base model. A version's identity fields still never change; only a score can be corrected.
 - **`rabbit model install` in WSL:** it installs into Windows' Ollama (`ollama.exe`), which holds the models RabbitSoftware.inc uses, with file paths converted by `wslpath -w`. Before, it used whatever `ollama` came first on WSL's PATH, such as a snap install with its own empty model store, and failed asking for `llama3.2:3b`.
 
 ## [0.10.0] - 2026-10-01

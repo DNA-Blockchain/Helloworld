@@ -39,8 +39,8 @@ import swarm_analysis
 NOTE = "Machine-generated explanation of verified facts; may be wrong; not evidence and not medical advice."
 # The explanation model, best first. nos-explain-lora is llama3.2:3b with the round-2 LoRA merged in
 # (colab/local_ai_lora_colab.ipynb; built by python local_ai_tuning.py create when its GGUF is present):
-# on the 8 test subjects it restated every number correctly, where nos-explain put 4 on the wrong claim.
-# nos-explain (ollama/nos-explain.Modelfile) passed 6/8 checks where llama3.2:3b alone passed 0/8.
+# On the 8 test subjects (2026-10-02, the released file, temperature 0) both it and nos-explain pass 6/8:
+# its 2 failures contradict a fact, nos-explain's invent detail or overclaim. llama3.2:3b alone passed 0/8.
 MODEL = "nos-explain-lora"
 FALLBACK_MODEL = "nos-explain"
 
