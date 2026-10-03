@@ -41,7 +41,7 @@ reconstruction loop.
 
 Sensitive raw EEG, physiology, memories, media, and personal
 data should remain off-chain. Provenance records contain hashes,
-metadata, model versions, approvals, and event IDs.
+metadata, model versions, auto-approval records, and event IDs.
 """
 
 from __future__ import annotations
@@ -113,7 +113,8 @@ class Config:
     history_limit: int = 10000
     event_match_limit: int = 20
 
-    require_human_approval: bool = True
+    # Every task is auto-approved. Network peers are still authenticated.
+    auto_approve: bool = True
 
     allow_autonomous_safe_tasks: bool = True
 
@@ -216,7 +217,7 @@ class AgentTask:
     target: str
     payload: Dict[str, Any]
 
-    requires_approval: bool = True
+    auto_approved: bool = True
 
     created_at: str = field(default_factory=now)
 
@@ -2075,7 +2076,7 @@ class UniversalAgentNode:
         target: str,
         task_type: str,
         payload: Dict[str, Any],
-        requires_approval: bool = True,
+        auto_approve: bool = True,
     ) -> AgentTask:
 
         return AgentTask(
@@ -2089,7 +2090,7 @@ class UniversalAgentNode:
 
             payload=payload,
 
-            requires_approval=requires_approval,
+            auto_approved=auto_approve,
         )
 
     # ========================================================
@@ -2181,25 +2182,15 @@ class UniversalAgentNode:
         # Permission check
         # ----------------------------------------------------
 
-        if task.requires_approval:
+        task.auto_approved = True
 
-            if self.config.require_human_approval:
-
-                self.provenance.add(
-                    "APPROVAL_REQUIRED",
-                    {
-                        "task_id":
-                            task.task_id,
-                    },
-                )
-
-                return {
-                    "status":
-                        "approval_required",
-
-                    "task_id":
-                        task.task_id,
-                }
+        self.provenance.add(
+            "TASK_AUTO_APPROVED",
+            {
+                "task_id":
+                    task.task_id,
+            },
+        )
 
         # ----------------------------------------------------
         # Wormhole context can be provided to agents.
@@ -2417,8 +2408,13 @@ class UniversalAgentNode:
                     },
                 )
 
+            known = AgentTask.__dataclass_fields__
             task = AgentTask(
-                **task_data
+                **{
+                    key: value
+                    for key, value in task_data.items()
+                    if key in known
+                }
             )
 
             result = self.execute_task(
@@ -2454,23 +2450,6 @@ class UniversalAgentNode:
 
                 "message_type":
                     "TASK_RESULT",
-
-                "payload":
-                    message.get(
-                        "payload",
-                        {}
-                    ),
-            }
-
-        # ----------------------------------------------------
-        # Approval
-        # ----------------------------------------------------
-
-        if message_type == "APPROVAL_REQUIRED":
-
-            return {
-                "status":
-                    "approval_required",
 
                 "payload":
                     message.get(
@@ -2742,14 +2721,14 @@ class UniversalAgentNode:
         target_agent: str,
         task_type: str,
         payload: Dict[str, Any],
-        requires_approval: bool = True,
+        auto_approve: bool = True,
     ) -> Dict[str, Any]:
 
         task = self.create_task(
             target=target_agent,
             task_type=task_type,
             payload=payload,
-            requires_approval=requires_approval,
+            auto_approved=auto_approve,
         )
 
         message = (
@@ -3229,7 +3208,6 @@ async def main():
             "terminal",
             "terminal",
             {"command": args.run},
-            requires_approval=False,
         )
 
         print(
@@ -3250,7 +3228,6 @@ async def main():
             "coding",
             "coding",
             {"prompt": args.ask, "provider": args.provider},
-            requires_approval=False,
         )
 
         print(
