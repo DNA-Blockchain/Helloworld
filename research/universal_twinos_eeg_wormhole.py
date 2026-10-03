@@ -50,17 +50,22 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import os
 import platform
+import shlex
+import subprocess
 import socket
 import sys
 import time
+import urllib.request
 import uuid
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 
 # ============================================================
@@ -101,7 +106,8 @@ class Config:
     twin_name: str = "UniversalTwin"
     twin_id: str = field(default_factory=lambda: new_id("twin"))
 
-    host: str = "0.0.0.0"
+    # Loopback by default. Binding elsewhere requires auth_token.
+    host: str = "127.0.0.1"
     port: int = 8765
 
     history_limit: int = 10000
@@ -112,7 +118,13 @@ class Config:
     allow_autonomous_safe_tasks: bool = True
 
     # Keep dangerous actions disabled by default.
-    allow_terminal: bool = False
+    # Terminal access is on for local tasks. Tasks arriving over the
+    # network additionally need allow_terminal_network plus an auth_token.
+    allow_terminal: bool = True
+    allow_terminal_network: bool = False
+    terminal_timeout: float = 30.0
+    terminal_cwd: Optional[str] = None
+    terminal_allowlist: Optional[List[str]] = None
     allow_system_files: bool = False
     allow_external_messages: bool = False
     allow_code_execution: bool = False
@@ -127,6 +139,18 @@ class Config:
     video_api_url: Optional[str] = None
 
     provenance_file: str = "twin_provenance.jsonl"
+
+    # Shared secret for network peers. Read from the environment only.
+    auth_token: Optional[str] = field(
+        default_factory=lambda: os.environ.get("RABBIT_TWIN_TOKEN") or None
+    )
+
+    # Universal model adapter: any coding model / AI agent by name.
+    # API keys are never stored here, only the env var name (api_key_env).
+    default_model_provider: str = "local-echo"
+    model_providers: Dict[str, Dict[str, Any]] = field(
+        default_factory=lambda: {"local-echo": {"kind": "echo"}}
+    )
 
 
 # ============================================================
@@ -1090,38 +1114,222 @@ class ReconstructionEngine:
 # SPECIALIZED AGENTS
 # ============================================================
 
+def is_loopback_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
+class UniversalModelClient:
+    """
+    Provider-neutral chat client for any coding model or AI agent.
+
+    kind = "echo"       offline stub, no network
+    kind = "openai"     any OpenAI-compatible /chat/completions API
+                        (OpenAI, Azure-style gateways, OpenRouter, vLLM,
+                        LM Studio, llama.cpp server, Ollama /v1, ...)
+    kind = "anthropic"  Anthropic Messages API
+    kind = "ollama"     native Ollama /api/chat
+    """
+
+    DEFAULT_URLS = {
+        "openai": "https://api.openai.com/v1",
+        "anthropic": "https://api.anthropic.com",
+        "ollama": "http://127.0.0.1:11434",
+    }
+
+    def __init__(self, name: str, spec: Dict[str, Any]):
+        self.name = name
+        self.kind = spec.get("kind", "echo")
+        self.model = spec.get("model", "")
+        self.base_url = (
+            spec.get("base_url")
+            or self.DEFAULT_URLS.get(self.kind, "")
+        ).rstrip("/")
+        self.api_key_env = spec.get("api_key_env")
+        self.timeout = float(spec.get("timeout", 60))
+        self.max_tokens = int(spec.get("max_tokens", 1024))
+
+    @property
+    def is_local(self) -> bool:
+        return self.kind == "echo" or is_loopback_url(self.base_url)
+
+    def _post(self, url, body, headers):
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", **headers},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def complete(self, prompt: str, system: str = "") -> str:
+        if self.kind == "echo":
+            return f"[echo] {prompt}"
+
+        key = os.environ.get(self.api_key_env, "") if self.api_key_env else ""
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        if self.kind == "openai":
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+            data = self._post(
+                self.base_url + "/chat/completions",
+                {"model": self.model, "messages": messages},
+                headers,
+            )
+            return data["choices"][0]["message"]["content"]
+
+        if self.kind == "anthropic":
+            body = {
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if system:
+                body["system"] = system
+            data = self._post(
+                self.base_url + "/v1/messages",
+                body,
+                {"x-api-key": key, "anthropic-version": "2023-06-01"},
+            )
+            return "".join(b.get("text", "") for b in data.get("content", []))
+
+        if self.kind == "ollama":
+            data = self._post(
+                self.base_url + "/api/chat",
+                {"model": self.model, "messages": messages, "stream": False},
+                {},
+            )
+            return data["message"]["content"]
+
+        raise ValueError(f"Unknown model provider kind: {self.kind}")
+
+
 class CodingAgent:
+    """
+    Routes a prompt to any configured model provider.
+
+    The wormhole context and personal data are never sent to a model.
+    Non-loopback providers are blocked unless allow_external_messages
+    is enabled. Model output is returned as text and is never executed.
+    """
+
+    def __init__(self, config: "Config"):
+        self.config = config
 
     def handle(
         self,
         task: AgentTask,
     ) -> Dict[str, Any]:
 
-        return {
+        payload = task.payload or {}
+        name = payload.get("provider") or self.config.default_model_provider
+        base = {
             "agent": "coding",
             "task_id": task.task_id,
-            "status": "completed",
-            "output": (
-                "Coding task received. "
-                "A real implementation can connect "
-                "a coding model here."
-            ),
+            "provider": name,
         }
+
+        prompt = payload.get("prompt") or payload.get("message") or ""
+        if not prompt:
+            return {**base, "status": "invalid_task",
+                    "reason": "payload.prompt is required."}
+
+        spec = self.config.model_providers.get(name)
+        if spec is None:
+            return {**base, "status": "unknown_provider"}
+
+        client = UniversalModelClient(name, spec)
+
+        if not client.is_local and not self.config.allow_external_messages:
+            return {**base, "status": "blocked",
+                    "reason": "External model providers are disabled "
+                              "(allow_external_messages)."}
+
+        try:
+            output = client.complete(prompt, payload.get("system", ""))
+        except Exception as exc:
+            return {**base, "status": "error",
+                    "reason": f"{type(exc).__name__}: {exc}"}
+
+        return {**base, "status": "completed", "output": output}
 
 
 class TerminalAgent:
+    """
+    Runs one command without a shell (no pipes, redirects or expansion).
+
+    Enforces a timeout and an output cap. If terminal_allowlist is set,
+    only those executable names run. Commands arriving over the network
+    are blocked unless allow_terminal_network and auth_token are set.
+    """
+
+    MAX_OUTPUT = 20000
+
+    def __init__(self, config: "Config"):
+        self.config = config
 
     def handle(
         self,
         task: AgentTask,
+        origin: str = "local",
     ) -> Dict[str, Any]:
 
+        base = {"agent": "terminal", "task_id": task.task_id}
+
+        if not self.config.allow_terminal:
+            return {**base, "status": "blocked",
+                    "reason": "Terminal execution disabled."}
+
+        if origin == "network" and not (
+            self.config.allow_terminal_network and self.config.auth_token
+        ):
+            return {**base, "status": "blocked",
+                    "reason": "Network terminal tasks need "
+                              "allow_terminal_network and RABBIT_TWIN_TOKEN."}
+
+        command = (task.payload or {}).get("command", "")
+        try:
+            argv = (
+                list(command) if isinstance(command, list)
+                else shlex.split(command, posix=(os.name != "nt"))
+            )
+        except ValueError as exc:
+            return {**base, "status": "invalid_task", "reason": str(exc)}
+
+        if not argv:
+            return {**base, "status": "invalid_task",
+                    "reason": "payload.command is required."}
+
+        allow = self.config.terminal_allowlist
+        if allow is not None and os.path.basename(argv[0]) not in allow:
+            return {**base, "status": "blocked",
+                    "reason": f"{argv[0]} is not in terminal_allowlist."}
+
+        try:
+            done = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=self.config.terminal_timeout,
+                cwd=self.config.terminal_cwd,
+                shell=False,
+            )
+        except subprocess.TimeoutExpired:
+            return {**base, "status": "timeout"}
+        except Exception as exc:
+            return {**base, "status": "error",
+                    "reason": f"{type(exc).__name__}: {exc}"}
+
         return {
-            "agent": "terminal",
-            "task_id": task.task_id,
-            "status": "blocked",
-            "reason":
-                "Terminal execution is disabled by default.",
+            **base,
+            "status": "completed",
+            "returncode": done.returncode,
+            "stdout": done.stdout[: self.MAX_OUTPUT],
+            "stderr": done.stderr[: self.MAX_OUTPUT],
         }
 
 
@@ -1431,9 +1639,9 @@ class UniversalAgentNode:
         # AGENTS
         # ----------------------------------------------------
 
-        self.coding_agent = CodingAgent()
+        self.coding_agent = CodingAgent(config)
 
-        self.terminal_agent = TerminalAgent()
+        self.terminal_agent = TerminalAgent(config)
 
         self.development_agent = DevelopmentAgent()
 
@@ -1490,7 +1698,7 @@ class UniversalAgentNode:
 
             Capability(
                 "coding",
-                "Communicate with coding agents."
+                "Route prompts to any coding model or AI agent (OpenAI-compatible, Anthropic, Ollama, local)."
             ),
 
             Capability(
@@ -1830,6 +2038,7 @@ class UniversalAgentNode:
     def execute_task(
         self,
         task: AgentTask,
+        origin: str = "local",
     ) -> Dict[str, Any]:
 
         self.provenance.add(
@@ -1883,7 +2092,7 @@ class UniversalAgentNode:
         # Route task
         # ----------------------------------------------------
 
-        if task.task_type == "coding":
+        if task.task_type in ("coding", "model"):
 
             result = self.coding_agent.handle(
                 task
@@ -1897,21 +2106,10 @@ class UniversalAgentNode:
 
         elif task.task_type == "terminal":
 
-            if not self.config.allow_terminal:
-
-                result = {
-                    "status":
-                        "blocked",
-
-                    "reason":
-                        "Terminal execution disabled.",
-                }
-
-            else:
-
-                result = self.terminal_agent.handle(
-                    task
-                )
+            result = self.terminal_agent.handle(
+                task,
+                origin,
+            )
 
         elif task.task_type == "gpu":
 
@@ -2093,7 +2291,8 @@ class UniversalAgentNode:
             )
 
             result = self.execute_task(
-                task
+                task,
+                origin="network",
             )
 
             return UniversalA2A.message(
@@ -2158,6 +2357,102 @@ class UniversalAgentNode:
         }
 
     # ========================================================
+    # UNIVERSAL TOOL SCHEMAS AND HTTP GATEWAY
+    # ========================================================
+
+    TASK_TYPES = {
+        "terminal": "Run one command (no shell) with timeout.",
+        "coding": "Send a prompt to any configured coding model.",
+        "model": "Alias of coding for any AI model.",
+        "development": "Development task.",
+        "gpu": "GPU learning task.",
+        "micropython": "MicroPython task.",
+        "wormhole_query": "Read the redacted wormhole context.",
+        "reconstruct": "Reconstruct a scene from user guidance.",
+    }
+
+    def tool_schemas(self) -> List[Dict[str, Any]]:
+        """Framework-neutral tool list (name/description/input_schema).
+
+        Maps directly to MCP and Anthropic tools; wrap as
+        {"type": "function", "function": {...parameters...}} for OpenAI."""
+
+        return [
+            {
+                "name": f"twinos_{name}",
+                "description": description,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "provider": {"type": "string"},
+                        "user_guidance": {"type": "string"},
+                    },
+                },
+                "task_type": name,
+            }
+            for name, description in self.TASK_TYPES.items()
+        ]
+
+    def authorized(self, supplied: str) -> bool:
+        token = self.config.auth_token
+        if not token:
+            return True
+        return hmac.compare_digest(str(supplied), token)
+
+    async def http_handler(self, first_line, reader, writer):
+        try:
+            method, path, _ = first_line.decode("latin-1").split(" ", 2)
+        except ValueError:
+            return
+
+        headers = {}
+        while True:
+            line = await reader.readline()
+            if line in (b"\r\n", b"\n", b""):
+                break
+            key, _, value = line.decode("latin-1").partition(":")
+            headers[key.strip().lower()] = value.strip()
+
+        async def reply(code, body):
+            text = json.dumps(body, default=str).encode("utf-8")
+            writer.write(
+                f"HTTP/1.1 {code}\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {len(text)}\r\nConnection: close\r\n\r\n"
+                .encode("latin-1") + text
+            )
+            await writer.drain()
+
+        bearer = headers.get("authorization", "")
+        if bearer.lower().startswith("bearer "):
+            bearer = bearer[7:]
+        if not self.authorized(bearer):
+            await reply("401 Unauthorized", {"error": "unauthorized"})
+            return
+
+        path = path.split("?", 1)[0]
+
+        if method == "GET" and path == "/health":
+            await reply("200 OK", {"status": "ok"})
+        elif method == "GET" and path == "/.well-known/agent.json":
+            await reply("200 OK", {
+                "protocol": "UniversalA2A",
+                "version": UniversalA2A.VERSION,
+                "description": asdict(self.capabilities()),
+                "tools": self.tool_schemas(),
+            })
+        elif method == "POST" and path == "/a2a":
+            length = int(headers.get("content-length", "0") or 0)
+            if length <= 0 or length > 1_000_000:
+                await reply("413 Payload Too Large", {"error": "bad length"})
+                return
+            body = await reader.readexactly(length)
+            response = await self.handle_message(json.loads(body))
+            await reply("200 OK", response)
+        else:
+            await reply("404 Not Found", {"error": "not found"})
+
+    # ========================================================
     # NETWORK SERVER
     # ========================================================
 
@@ -2174,9 +2469,16 @@ class UniversalAgentNode:
             if not data:
                 return
 
+            if data.split(b" ", 1)[0] in (b"GET", b"POST"):
+                await self.http_handler(data, reader, writer)
+                return
+
             message = json.loads(
                 data.decode("utf-8")
             )
+
+            if not self.authorized(message.get("auth", "")):
+                raise PermissionError("unauthorized")
 
             response = await self.handle_message(
                 message
@@ -2223,6 +2525,13 @@ class UniversalAgentNode:
         self,
     ):
 
+        if not is_loopback_url(f"//{self.config.host}") \
+                and not self.config.auth_token:
+            raise SystemExit(
+                "Refusing to listen on a non-loopback address without "
+                "RABBIT_TWIN_TOKEN set."
+            )
+
         server = await asyncio.start_server(
             self.network_handler,
 
@@ -2254,6 +2563,9 @@ class UniversalAgentNode:
         port: int,
         message: Dict[str, Any],
     ) -> Dict[str, Any]:
+
+        if self.config.auth_token:
+            message = {**message, "auth": self.config.auth_token}
 
         reader, writer = await asyncio.open_connection(
             host,
@@ -2473,7 +2785,7 @@ async def main():
 
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
+        default="127.0.0.1",
     )
 
     parser.add_argument(
@@ -2523,12 +2835,52 @@ async def main():
         ),
     )
 
+    parser.add_argument(
+        "--ask",
+        type=str,
+        default=None,
+        help="Send a prompt to a model provider via the coding agent",
+    )
+
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        help="Model provider name (see --providers)",
+    )
+
+    parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        help="Run one local command through the terminal agent",
+    )
+
+    parser.add_argument(
+        "--allow-terminal-network",
+        action="store_true",
+        help="Let authenticated network peers run terminal tasks",
+    )
+
+    parser.add_argument(
+        "--providers",
+        type=str,
+        default=None,
+        help="JSON file: {name: {kind, model, base_url, api_key_env}}",
+    )
+
     args = parser.parse_args()
 
     config = Config(
         host=args.host,
         port=args.port,
     )
+
+    config.allow_terminal_network = args.allow_terminal_network
+
+    if args.providers:
+        with open(args.providers, encoding="utf-8") as handle:
+            config.model_providers.update(json.load(handle))
 
     node = UniversalAgentNode(
         config
@@ -2725,6 +3077,44 @@ async def main():
             json.dumps(
                 result["video"],
                 indent=2,
+            )
+        )
+
+    if args.run:
+
+        task = node.create_task(
+            "terminal",
+            "terminal",
+            {"command": args.run},
+            requires_approval=False,
+        )
+
+        print(
+            json.dumps(
+                node.execute_task(task),
+                indent=2,
+                default=str,
+            )
+        )
+
+    # --------------------------------------------------------
+    # ASK ANY MODEL
+    # --------------------------------------------------------
+
+    if args.ask:
+
+        task = node.create_task(
+            "coding",
+            "coding",
+            {"prompt": args.ask, "provider": args.provider},
+            requires_approval=False,
+        )
+
+        print(
+            json.dumps(
+                node.execute_task(task),
+                indent=2,
+                default=str,
             )
         )
 
