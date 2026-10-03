@@ -51,6 +51,14 @@ sensitive data stays off-chain; provenance records hold only hashes and
 metadata. Try it with `python research/universal_twinos_eeg_wormhole.py --demo`.
 If you use `--server`, bind it to localhost only.
 
+## Agent toolkit
+
+[`toolkit/`](toolkit/README.md) launches the Universal TwinOS agent and the other agents in
+`toolkit/agents.json` with auto-approval on. It needs only Python 3.7+ (no packages) and runs on
+Windows, macOS, Linux, WSL, Cloud Shell and Android (Termux): `python toolkit/run.py --tools`.
+Tools: files, git, commands, chain heads, model prompts and an agent registry. Network peers need
+`RABBIT_TWIN_TOKEN`.
+
 ## What it actually does
 
 | Piece | File | What's real |

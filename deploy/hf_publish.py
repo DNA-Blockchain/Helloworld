@@ -50,6 +50,9 @@ DATASET_CARD = CARDS / "dataset-card.md"
 
 
 def confirm(question: str) -> bool:
+    if os.environ.get("RABBIT_AUTO_APPROVE", "").strip().lower() in ("1", "true", "yes", "on"):
+        print(f"{question} -> auto-approved")
+        return True
     return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
 
 

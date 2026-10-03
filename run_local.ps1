@@ -46,7 +46,7 @@ function Read-Answer([string]$prompt) {
 
 function Exit-Launcher([int]$code) {
     Write-Host ""
-    if (-not $NoPause) { [void](Read-Host "Press Enter to close") }
+    if (-not $NoPause -and $env:RABBIT_AUTO_APPROVE -notin @("1","true","yes","on")) { [void](Read-Host "Press Enter to close") }
     exit $code
 }
 

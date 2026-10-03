@@ -1,0 +1,77 @@
+{
+  "agents": [
+    {
+      "name": "rabbit",
+      "description": "Rabbit.py OS interactive assistant",
+      "command": [
+        "{python}",
+        "rabbit.py"
+      ]
+    },
+    {
+      "name": "twinos",
+      "description": "TwinOS peer agent CLI (status, tasks, serve)",
+      "command": [
+        "{python}",
+        "-m",
+        "twinos"
+      ]
+    },
+    {
+      "name": "wiki-agent",
+      "description": "Code and public-research librarian",
+      "command": [
+        "{python}",
+        "wiki_agent.py"
+      ]
+    },
+    {
+      "name": "node-supervisor",
+      "description": "Run and supervise a network node",
+      "command": [
+        "{python}",
+        "node_supervisor.py"
+      ]
+    },
+    {
+      "name": "node-cli",
+      "description": "Network node command line",
+      "command": [
+        "{python}",
+        "run_node_cli.py"
+      ]
+    },
+    {
+      "name": "research-queue",
+      "description": "Rank and queue research records",
+      "command": [
+        "{python}",
+        "research_queue.py"
+      ]
+    },
+    {
+      "name": "research-backfill",
+      "description": "Backfill research records",
+      "command": [
+        "{python}",
+        "research_backfill.py"
+      ]
+    },
+    {
+      "name": "run-all",
+      "description": "Run the local network demo",
+      "command": [
+        "{python}",
+        "run_all.py"
+      ]
+    },
+    {
+      "name": "universal-twinos",
+      "description": "Universal TwinOS EEG/Hormone Wormhole agent",
+      "command": [
+        "{python}",
+        "research/universal_twinos_eeg_wormhole.py"
+      ]
+    }
+  ]
+}
