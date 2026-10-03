@@ -2161,6 +2161,12 @@ class UniversalAgentNode:
                 None
             )
 
+            # scene_state can carry event text, tags and user guidance.
+            response.pop(
+                "scene_state",
+                None
+            )
+
         return response
 
     # ========================================================

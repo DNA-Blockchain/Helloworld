@@ -40,12 +40,19 @@ SAFE_EXCLUDES=(
   --exclude "*credential*" --exclude "*secret*" --exclude "*token*" --exclude "*password*"
   --exclude "*.db" --exclude "*.sqlite" --exclude "*.sqlite3" --exclude "*.wallet"
   --exclude ".aws/*" --exclude "*/.aws/*"
-  --exclude "node_modules/*" --exclude "*/node_modules/*"
+  --exclude "PUBLIC_REVIEWED" --exclude "node_modules/*" --exclude "*/node_modules/*"
   --exclude "__pycache__/*" --exclude "*/__pycache__/*"
 )
 
 MODE=(--dryrun)
-[ "$APPLY" = "--apply" ] && MODE=()
+if [ "$APPLY" = "--apply" ]; then
+  # Public uploads need a human to confirm the folder holds only sanitized files.
+  if [ "$KIND" = "research" ] && [ ! -f "$SRC/PUBLIC_REVIEWED" ]; then
+    echo "Refusing public upload: review the files, then create $SRC/PUBLIC_REVIEWED" >&2
+    exit 1
+  fi
+  MODE=()
+fi
 
 echo "Source: $SRC"
 echo "Dest:   $DEST"
