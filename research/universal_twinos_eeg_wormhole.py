@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import hashlib
 import hmac
 import json
@@ -56,9 +55,7 @@ import os
 import platform
 import shlex
 import subprocess
-import socket
 import sys
-import time
 import urllib.request
 import uuid
 
@@ -1119,6 +1116,12 @@ class ReconstructionEngine:
 # SPECIALIZED AGENTS
 # ============================================================
 
+def require_http_url(url: str) -> str:
+    if urlparse(url).scheme not in ("http", "https"):
+        raise ValueError("Only http(s) URLs are allowed.")
+    return url
+
+
 def is_loopback_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host in ("localhost", "127.0.0.1", "::1")
@@ -1160,7 +1163,7 @@ class UniversalModelClient:
 
     def _post(self, url, body, headers):
         request = urllib.request.Request(
-            url,
+            require_http_url(url),
             data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json", **headers},
             method="POST",
@@ -1453,13 +1456,13 @@ class ChainReader:
     UA = {"User-Agent": "UniversalTwinOS/1.0"}
 
     def _get(self, url):
-        req = urllib.request.Request(url, headers=self.UA)
+        req = urllib.request.Request(require_http_url(url), headers=self.UA)
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return resp.read().decode("utf-8")
 
     def _rpc(self, method, params):
         request = urllib.request.Request(
-            self.url,
+            require_http_url(self.url),
             data=json.dumps({
                 "jsonrpc": "2.0", "id": 1,
                 "method": method, "params": params,
@@ -2524,7 +2527,9 @@ class UniversalAgentNode:
 
         headers = {}
         while True:
-            line = await reader.readline()
+            line = await asyncio.wait_for(reader.readline(), 15)
+            if len(headers) > 100:
+                break
             if line in (b"\r\n", b"\n", b""):
                 break
             key, _, value = line.decode("latin-1").partition(":")
@@ -2538,6 +2543,12 @@ class UniversalAgentNode:
                 .encode("latin-1") + text
             )
             await writer.drain()
+
+        if not self.config.auth_token and not is_loopback_url(
+            "//" + headers.get("host", "")
+        ):
+            await reply("403 Forbidden", {"error": "host not allowed"})
+            return
 
         bearer = headers.get("authorization", "")
         if bearer.lower().startswith("bearer "):
@@ -2558,11 +2569,14 @@ class UniversalAgentNode:
                 "tools": self.tool_schemas(),
             })
         elif method == "POST" and path == "/a2a":
-            length = int(headers.get("content-length", "0") or 0)
+            try:
+                length = int(headers.get("content-length", "0") or 0)
+            except ValueError:
+                length = 0
             if length <= 0 or length > 1_000_000:
                 await reply("413 Payload Too Large", {"error": "bad length"})
                 return
-            body = await reader.readexactly(length)
+            body = await asyncio.wait_for(reader.readexactly(length), 15)
             response = await self.handle_message(json.loads(body))
             await reply("200 OK", response)
         else:
@@ -2580,7 +2594,7 @@ class UniversalAgentNode:
 
         try:
 
-            data = await reader.readline()
+            data = await asyncio.wait_for(reader.readline(), 15)
 
             if not data:
                 return
