@@ -148,6 +148,10 @@ class Config:
     # Universal model adapter: any coding model / AI agent by name.
     # API keys are never stored here, only the env var name (api_key_env).
     default_model_provider: str = "local-echo"
+    # External chains to anchor provenance to (read-only, opt-in).
+    # Each: {"name","kind": evm|esplora|json, "url", ...}. Empty = offline.
+    chain_anchors: List[Dict[str, Any]] = field(default_factory=list)
+
     model_providers: Dict[str, Dict[str, Any]] = field(
         default_factory=lambda: {"local-echo": {"kind": "echo"}}
     )
@@ -1400,9 +1404,12 @@ class ProvenanceBlock:
 
     block_hash: str = ""
 
-    def seal(self) -> None:
+    # References to blocks on other chains observed when this was sealed.
+    anchors: List[Dict[str, Any]] = field(default_factory=list)
 
-        self.block_hash = sha256_object({
+    def compute_hash(self) -> str:
+
+        return sha256_object({
             "block_index":
                 self.block_index,
             "timestamp":
@@ -1413,51 +1420,188 @@ class ProvenanceBlock:
                 self.data_hash,
             "previous_hash":
                 self.previous_hash,
+            "anchors":
+                self.anchors,
         })
+
+    def seal(self) -> None:
+
+        self.block_hash = self.compute_hash()
+
+
+class ChainReader:
+    """
+    Read-only adapter that fetches the current head of ANY chain.
+
+    kind = "evm"      JSON-RPC (Ethereum, Polygon, Base, BSC, Avalanche C,
+                      Arbitrum, Optimism, ... any EVM chain)
+    kind = "esplora"  Esplora REST (Bitcoin, Liquid, via blockstream.info,
+                      mempool.space or your own node)
+    kind = "json"     Any HTTP JSON endpoint: set "height_path" and/or
+                      "hash_path" as dotted paths (e.g. "result.hash")
+    No keys are held and nothing is ever written to these chains.
+    """
+
+    def __init__(self, spec: Dict[str, Any]):
+        self.spec = spec
+        self.name = spec.get("name", spec.get("kind", "chain"))
+        self.kind = spec.get("kind", "json")
+        self.url = spec.get("url", "").rstrip("/")
+        self.timeout = float(spec.get("timeout", 10))
+
+    UA = {"User-Agent": "UniversalTwinOS/1.0"}
+
+    def _get(self, url):
+        req = urllib.request.Request(url, headers=self.UA)
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return resp.read().decode("utf-8")
+
+    def _rpc(self, method, params):
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps({
+                "jsonrpc": "2.0", "id": 1,
+                "method": method, "params": params,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", **self.UA},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))["result"]
+
+    @staticmethod
+    def _dig(value, path):
+        for part in path.split("."):
+            value = value[int(part)] if isinstance(value, list) \
+                else value[part]
+        return value
+
+    def head(self) -> Dict[str, Any]:
+
+        if self.kind == "evm":
+            block = self._rpc("eth_getBlockByNumber", ["latest", False])
+            height = int(block["number"], 16)
+            digest = block["hash"]
+
+        elif self.kind == "esplora":
+            digest = self._get(self.url + "/blocks/tip/hash").strip()
+            height = int(self._get(self.url + "/blocks/tip/height"))
+
+        else:
+            data = json.loads(self._get(self.url))
+            hp, dp = self.spec.get("height_path"), self.spec.get("hash_path")
+            height = self._dig(data, hp) if hp else None
+            digest = self._dig(data, dp) if dp else sha256_object(data)
+
+        return {
+            "chain": self.name,
+            "kind": self.kind,
+            "height": height,
+            "hash": str(digest),
+            "observed_at": now(),
+        }
 
 
 class ProvenanceBlockchain:
 
     """
-    Local append-only hash chain.
+    Append-only hash chain that CONTINUES an existing chain.
 
-    This is NOT a distributed consensus blockchain.
-    A distributed blockchain can be substituted later.
+    On start it resumes from the saved file; it never replaces it with a
+    new genesis block. Only when there is no history does it write a
+    first "ANCHOR" block, which references the current head of every
+    configured external chain (Bitcoin, any EVM chain, any JSON API).
+    Blocks keep "anchors" so history is tied to real, public chains.
+
+    This is NOT a distributed consensus blockchain. It reads from other
+    chains; it does not write to them.
     """
 
     def __init__(
         self,
         filename: str = "twin_provenance.jsonl",
+        anchors: Optional[List[Dict[str, Any]]] = None,
     ):
 
         self.filename = filename
+
+        self.readers = [ChainReader(spec) for spec in (anchors or [])]
 
         self.chain: List[
             ProvenanceBlock
         ] = []
 
-        self._create_genesis()
+        self._load()
 
-    def _create_genesis(self):
+        if not self.chain:
+            self._start()
 
-        genesis = ProvenanceBlock(
+    def _load(self) -> None:
+
+        try:
+            with open(self.filename, encoding="utf-8") as file:
+                for line in file:
+                    if line.strip():
+                        self.chain.append(
+                            ProvenanceBlock(**json.loads(line))
+                        )
+        except FileNotFoundError:
+            pass
+        except Exception:
+            self.chain = []
+
+        if self.chain and not self.verify():
+            raise SystemExit(
+                f"{self.filename} failed verification; refusing to extend it."
+            )
+
+    def observe_anchors(self) -> List[Dict[str, Any]]:
+
+        observed = []
+        for reader in self.readers:
+            try:
+                observed.append(reader.head())
+            except Exception as exc:
+                observed.append({
+                    "chain": reader.name,
+                    "error": f"{type(exc).__name__}",
+                })
+        return observed
+
+    def _persist(self, block: ProvenanceBlock) -> None:
+
+        try:
+            with open(self.filename, "a", encoding="utf-8") as file:
+                file.write(json.dumps(asdict(block)) + "\n")
+        except Exception:
+            pass
+
+    def _start(self) -> None:
+
+        anchors = self.observe_anchors()
+
+        block = ProvenanceBlock(
             block_index=0,
             timestamp=now(),
-            event_type="GENESIS",
-            data_hash=sha256_text(
-                "UniversalTwinOS"
+            event_type="ANCHOR" if anchors else "LOCAL_ROOT",
+            data_hash=sha256_text("UniversalTwinOS"),
+            previous_hash=(
+                anchors[0].get("hash", "0") if anchors else "0"
             ),
-            previous_hash="0",
+            anchors=anchors,
         )
 
-        genesis.seal()
+        block.seal()
 
-        self.chain.append(genesis)
+        self.chain.append(block)
+
+        self._persist(block)
 
     def add(
         self,
         event_type: str,
         data: Dict[str, Any],
+        anchor: bool = False,
     ) -> ProvenanceBlock:
 
         previous = self.chain[-1]
@@ -1468,41 +1612,27 @@ class ProvenanceBlockchain:
             event_type=event_type,
             data_hash=sha256_object(data),
             previous_hash=previous.block_hash,
+            anchors=self.observe_anchors() if anchor else [],
         )
 
         block.seal()
 
         self.chain.append(block)
 
-        try:
-
-            with open(
-                self.filename,
-                "a",
-                encoding="utf-8",
-            ) as file:
-
-                file.write(
-                    json.dumps(
-                        asdict(block)
-                    ) + "\n"
-                )
-
-        except Exception:
-            pass
+        self._persist(block)
 
         return block
 
     def verify(self) -> bool:
 
-        for index in range(1, len(self.chain)):
+        for index, current in enumerate(self.chain):
 
-            current = self.chain[index]
-            previous = self.chain[index - 1]
+            if current.block_hash != current.compute_hash():
+                return False
 
-            if (
+            if index and (
                 current.previous_hash
-                != previous.block_hash
+                != self.chain[index - 1].block_hash
             ):
                 return False
 
@@ -1654,7 +1784,8 @@ class UniversalAgentNode:
         # ----------------------------------------------------
 
         self.provenance = ProvenanceBlockchain(
-            config.provenance_file
+            config.provenance_file,
+            config.chain_anchors,
         )
 
         # ----------------------------------------------------
@@ -2863,6 +2994,14 @@ async def main():
     )
 
     parser.add_argument(
+        "--anchors",
+        type=str,
+        default=None,
+        help="JSON file: list of chains to anchor to "
+             '[{"name","kind":"evm|esplora|json","url"}]',
+    )
+
+    parser.add_argument(
         "--providers",
         type=str,
         default=None,
@@ -2877,6 +3016,10 @@ async def main():
     )
 
     config.allow_terminal_network = args.allow_terminal_network
+
+    if args.anchors:
+        with open(args.anchors, encoding="utf-8") as handle:
+            config.chain_anchors = json.load(handle)
 
     if args.providers:
         with open(args.providers, encoding="utf-8") as handle:
