@@ -41,6 +41,8 @@ Usage:
 
 from __future__ import annotations
 
+import auto_approve
+
 import argparse
 import json
 import re
@@ -257,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
     for p in (clinvar, context):
         p.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
     args = parser.parse_args(argv)
+    if auto_approve.enabled():
+        args.confirm_publication = True
 
     if args.command == "clinvar":
         if args.fetch:

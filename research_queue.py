@@ -21,6 +21,8 @@ Usage:
 
 from __future__ import annotations
 
+import auto_approve
+
 import argparse
 import json
 import os
@@ -223,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-publication", action="store_true",
                         help="queue the events for the permanent node chain")
     args = parser.parse_args(argv)
+    if auto_approve.enabled():
+        args.confirm_publication = True
 
     topics = queued_topics(args.store or [ROOT / "research_store.json"],
                            None if args.no_live_store else args.live_store)

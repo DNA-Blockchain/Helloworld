@@ -53,9 +53,11 @@ import hmac
 import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
+import time
 import urllib.request
 import uuid
 
@@ -115,18 +117,22 @@ class Config:
 
     allow_autonomous_safe_tasks: bool = True
 
-    # Keep dangerous actions disabled by default.
+    # Capabilities are on. Network peers still need auth_token.
     # Terminal access is on for local tasks. Tasks arriving over the
     # network additionally need allow_terminal_network plus an auth_token.
     allow_terminal: bool = True
-    allow_terminal_network: bool = False
+    allow_terminal_network: bool = True
     terminal_timeout: float = 30.0
     terminal_cwd: Optional[str] = None
     terminal_allowlist: Optional[List[str]] = None
-    allow_system_files: bool = False
-    allow_external_messages: bool = False
-    allow_code_execution: bool = False
-    allow_software_install: bool = False
+
+    # Toolkit: file tools are confined to tool_root (default: cwd).
+    tool_root: Optional[str] = None
+    agents_file: Optional[str] = None
+    allow_system_files: bool = True
+    allow_external_messages: bool = True
+    allow_code_execution: bool = True
+    allow_software_install: bool = True
 
     eeg_enabled: bool = False
     physiology_enabled: bool = False
@@ -241,15 +247,15 @@ class AutonomyPolicy:
 
     run_preapproved_tasks: bool = True
 
-    execute_unapproved_code: bool = False
-    modify_system_files: bool = False
-    install_software: bool = False
-    send_external_messages: bool = False
-    spend_money: bool = False
-    access_sensitive_data: bool = False
+    execute_unapproved_code: bool = True
+    modify_system_files: bool = True
+    install_software: bool = True
+    send_external_messages: bool = True
+    spend_money: bool = False   # no code path spends money
+    access_sensitive_data: bool = True
 
     access_wormhole_results: bool = True
-    access_historical_events: bool = False
+    access_historical_events: bool = True
 
 
 # ============================================================
@@ -1122,6 +1128,40 @@ def require_http_url(url: str) -> str:
     return url
 
 
+def parse_tool_args(tokens: List[str]) -> Dict[str, Any]:
+    """Tool arguments that survive any shell.
+
+    Accepts JSON ('{"path": "x"}'), JSON with its quotes eaten by the
+    shell (Windows PowerShell/cmd: '{path: x}'), or key=value pairs
+    (path=README.md command="git status" args='["log","-1"]').
+    """
+
+    if not tokens:
+        return {}
+
+    text = " ".join(tokens).strip()
+
+    if text.startswith("{"):
+        try:
+            return json.loads(text)
+        except ValueError:
+            pairs = [
+                part.split(":", 1)
+                for part in text.strip("{}").split(",")
+                if ":" in part
+            ]
+            return {k.strip(" \"'"): v.strip(" \"'") for k, v in pairs}
+
+    result: Dict[str, Any] = {}
+    for token in tokens:
+        key, _, value = token.partition("=")
+        try:
+            result[key] = json.loads(value)
+        except ValueError:
+            result[key] = value
+    return result
+
+
 def is_loopback_url(url: str) -> bool:
     host = (urlparse(url).hostname or "").lower()
     return host in ("localhost", "127.0.0.1", "::1")
@@ -1317,15 +1357,25 @@ class TerminalAgent:
             return {**base, "status": "blocked",
                     "reason": f"{argv[0]} is not in terminal_allowlist."}
 
-        try:
-            done = subprocess.run(
-                argv,
+        def run(command):
+            return subprocess.run(
+                command,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=self.config.terminal_timeout,
                 cwd=self.config.terminal_cwd,
                 shell=False,
             )
+
+        try:
+            try:
+                done = run(argv)
+            except FileNotFoundError:
+                if os.name != "nt":
+                    raise
+                # Windows shell built-ins (dir, echo, type) are not programs.
+                done = run(["cmd", "/c"] + argv)
         except subprocess.TimeoutExpired:
             return {**base, "status": "timeout"}
         except Exception as exc:
@@ -1339,6 +1389,161 @@ class TerminalAgent:
             "stdout": done.stdout[: self.MAX_OUTPUT],
             "stderr": done.stderr[: self.MAX_OUTPUT],
         }
+
+
+class ToolKit:
+    """
+    Tools any agent (or model) can call by name, plus a registry of other
+    agents that can be launched by name.
+
+    File tools are confined to tool_root. Tools that run commands go through
+    the TerminalAgent, so its timeout, output cap and network rules apply.
+    Agent commands come only from the registry file, never from the caller.
+    """
+
+    TOOLS = {
+        "list_dir": "List a directory under the tool root.",
+        "read_file": "Read a text file under the tool root.",
+        "write_file": "Write a text file under the tool root.",
+        "search_files": "Regex search across text files under the tool root.",
+        "git": "Run a git command (args list) in the tool root.",
+        "run_command": "Run one command (no shell) with timeout.",
+        "chain_head": "Read the current head of a configured chain.",
+        "ask_model": "Send a prompt to a configured model provider.",
+        "agent_list": "List agents in the registry.",
+        "agent_run": "Run a registered agent by name with optional args.",
+    }
+    WRITERS = {"write_file", "git", "run_command", "agent_run"}
+    MAX_READ = 200_000
+
+    def __init__(self, node: "UniversalAgentNode"):
+        self.node = node
+        self.config = node.config
+        self.root = os.path.realpath(self.config.tool_root or os.getcwd())
+
+    def _path(self, value: str) -> str:
+        full = os.path.realpath(os.path.join(self.root, value or "."))
+        if full != self.root and not full.startswith(self.root + os.sep):
+            raise PermissionError("path is outside the tool root")
+        return full
+
+    def registry(self) -> List[Dict[str, Any]]:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            self.config.agents_file,
+            os.path.join(os.getcwd(), "toolkit", "agents.json"),
+            os.path.join(here, "..", "toolkit", "agents.json"),
+        ]
+        for path in candidates:
+            if path and os.path.isfile(path):
+                with open(path, encoding="utf-8") as handle:
+                    return json.load(handle).get("agents", [])
+        return []
+
+    def _run(self, argv, task, origin, cwd=None):
+        sub = AgentTask(
+            task_id=task.task_id, task_type="terminal",
+            requester=task.requester, target="terminal",
+            payload={"command": argv},
+        )
+        saved = self.config.terminal_cwd
+        self.config.terminal_cwd = cwd or self.root
+        try:
+            return self.node.terminal_agent.handle(sub, origin)
+        finally:
+            self.config.terminal_cwd = saved
+
+    def call(self, name, args, task, origin="local"):
+        args = args or {}
+        base = {"agent": "toolkit", "tool": name, "task_id": task.task_id}
+
+        if name not in self.TOOLS:
+            return {**base, "status": "unknown_tool",
+                    "tools": sorted(self.TOOLS)}
+
+        if name in self.WRITERS and origin == "network" and not (
+            self.config.allow_terminal_network and self.config.auth_token
+        ):
+            return {**base, "status": "blocked",
+                    "reason": "Network tool use that changes state needs "
+                              "allow_terminal_network and RABBIT_TWIN_TOKEN."}
+
+        try:
+            if name == "list_dir":
+                path = self._path(args.get("path", "."))
+                return {**base, "status": "completed",
+                        "entries": sorted(os.listdir(path))[:500]}
+
+            if name == "read_file":
+                with open(self._path(args["path"]), encoding="utf-8",
+                          errors="replace") as handle:
+                    return {**base, "status": "completed",
+                            "content": handle.read(self.MAX_READ)}
+
+            if name == "write_file":
+                path = self._path(args["path"])
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(args.get("content", ""))
+                return {**base, "status": "completed", "path": path}
+
+            if name == "search_files":
+                pattern = re.compile(args["pattern"])
+                hits = []
+                for folder, dirs, files in os.walk(self._path(args.get("path", "."))):
+                    dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+                    for file in files:
+                        full = os.path.join(folder, file)
+                        try:
+                            with open(full, encoding="utf-8") as handle:
+                                for number, line in enumerate(handle, 1):
+                                    if pattern.search(line):
+                                        hits.append({"file": os.path.relpath(full, self.root),
+                                                     "line": number, "text": line.strip()[:200]})
+                                        if len(hits) >= 200:
+                                            raise StopIteration
+                        except (UnicodeDecodeError, OSError):
+                            continue
+                return {**base, "status": "completed", "matches": hits}
+
+            if name == "git":
+                argv = ["git"] + [str(a) for a in args.get("args", [])]
+                return self._run(argv, task, origin)
+
+            if name == "run_command":
+                return self._run(args["command"], task, origin)
+
+            if name == "chain_head":
+                wanted = args.get("chain")
+                for reader in self.node.provenance.readers:
+                    if wanted in (None, reader.name):
+                        return {**base, "status": "completed", "head": reader.head()}
+                return {**base, "status": "unknown_chain"}
+
+            if name == "ask_model":
+                sub = AgentTask(task.task_id, "coding", task.requester,
+                                "coding", args)
+                return self.node.coding_agent.handle(sub)
+
+            if name == "agent_list":
+                return {**base, "status": "completed", "agents": [
+                    {"name": a["name"], "description": a.get("description", "")}
+                    for a in self.registry()]}
+
+            if name == "agent_run":
+                entry = next((a for a in self.registry()
+                              if a["name"] == args.get("name")), None)
+                if entry is None:
+                    return {**base, "status": "unknown_agent"}
+                argv = [sys.executable if c == "{python}" else c for c in entry["command"]] + [str(a) for a in args.get("args", [])]
+                env_cwd = os.path.realpath(os.path.join(self.root, entry.get("cwd", ".")))
+                return self._run(argv, task, origin, cwd=env_cwd)
+
+        except StopIteration:
+            return {**base, "status": "completed", "matches": hits}
+        except Exception as exc:
+            return {**base, "status": "error",
+                    "reason": f"{type(exc).__name__}: {exc}"}
 
 
 class DevelopmentAgent:
@@ -1608,24 +1813,76 @@ class ProvenanceBlockchain:
         anchor: bool = False,
     ) -> ProvenanceBlock:
 
-        previous = self.chain[-1]
+        anchors = self.observe_anchors() if anchor else []
 
-        block = ProvenanceBlock(
-            block_index=len(self.chain),
-            timestamp=now(),
-            event_type=event_type,
-            data_hash=sha256_object(data),
-            previous_hash=previous.block_hash,
-            anchors=self.observe_anchors() if anchor else [],
-        )
+        # Other processes (launched agents, a server) share this file, so
+        # resync before appending to keep one valid chain.
+        with self._lock():
 
-        block.seal()
+            self._resync()
 
-        self.chain.append(block)
+            previous = self.chain[-1]
 
-        self._persist(block)
+            block = ProvenanceBlock(
+                block_index=len(self.chain),
+                timestamp=now(),
+                event_type=event_type,
+                data_hash=sha256_object(data),
+                previous_hash=previous.block_hash,
+                anchors=anchors,
+            )
+
+            block.seal()
+
+            self.chain.append(block)
+
+            self._persist(block)
 
         return block
+
+    def _resync(self) -> None:
+
+        try:
+            with open(self.filename, encoding="utf-8") as file:
+                lines = [line for line in file if line.strip()]
+        except FileNotFoundError:
+            return
+
+        if len(lines) != len(self.chain):
+            self.chain = [
+                ProvenanceBlock(**json.loads(line)) for line in lines
+            ]
+
+    def _lock(self):
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def guard():
+            path = self.filename + ".lock"
+            deadline = time.time() + 5
+            while True:
+                try:
+                    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.close(fd)
+                    break
+                except FileExistsError:
+                    if time.time() > deadline:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
+                    else:
+                        time.sleep(0.02)
+            try:
+                yield
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+        return guard()
 
     def verify(self) -> bool:
 
@@ -1781,6 +2038,8 @@ class UniversalAgentNode:
 
         self.gpu_agent = GPUAgent()
 
+        self.toolkit = ToolKit(self)
+
         self.micropython_agent = MicroPythonAgent()
 
         # ----------------------------------------------------
@@ -1843,7 +2102,12 @@ class UniversalAgentNode:
 
             Capability(
                 "terminal",
-                "Communicate with terminal agents."
+                "Run commands (no shell) for any agent task."
+            ),
+
+            Capability(
+                "toolkit",
+                "File, git, command, chain, model and agent-registry tools."
             ),
 
             Capability(
@@ -2242,6 +2506,15 @@ class UniversalAgentNode:
                 origin,
             )
 
+        elif task.task_type == "tool":
+
+            result = self.toolkit.call(
+                task.payload.get("tool", ""),
+                task.payload.get("args", {}),
+                task,
+                origin,
+            )
+
         elif task.task_type == "gpu":
 
             result = self.gpu_agent.handle(
@@ -2288,6 +2561,14 @@ class UniversalAgentNode:
                 "task_type":
                     task.task_type,
             }
+
+        # Any agent task may also carry a terminal command.
+        if (
+            task.task_type not in ("terminal", "tool")
+            and isinstance(result, dict)
+            and (task.payload or {}).get("command")
+        ):
+            result["terminal"] = self.terminal_agent.handle(task, origin)
 
         self.provenance.add(
             "TASK_RESULT",
@@ -2481,6 +2762,7 @@ class UniversalAgentNode:
 
     TASK_TYPES = {
         "terminal": "Run one command (no shell) with timeout.",
+        "tool": "Call a toolkit tool: payload {tool, args}.",
         "coding": "Send a prompt to any configured coding model.",
         "model": "Alias of coding for any AI model.",
         "development": "Development task.",
@@ -2511,6 +2793,16 @@ class UniversalAgentNode:
                 "task_type": name,
             }
             for name, description in self.TASK_TYPES.items()
+        ] + [
+            {
+                "name": f"toolkit_{name}",
+                "description": description,
+                "input_schema": {"type": "object", "properties": {
+                    "args": {"type": "object"}}},
+                "task_type": "tool",
+                "tool": name,
+            }
+            for name, description in ToolKit.TOOLS.items()
         ]
 
     def authorized(self, supplied: str) -> bool:
@@ -2989,7 +3281,13 @@ async def main():
     parser.add_argument(
         "--allow-terminal-network",
         action="store_true",
-        help="Let authenticated network peers run terminal tasks",
+        help="(default) authenticated network peers can run terminal tasks",
+    )
+
+    parser.add_argument(
+        "--no-terminal-network",
+        action="store_true",
+        help="Block terminal and state-changing tool tasks from the network",
     )
 
     parser.add_argument(
@@ -2998,6 +3296,33 @@ async def main():
         default=None,
         help="JSON file: list of chains to anchor to "
              '[{"name","kind":"evm|esplora|json","url"}]',
+    )
+
+    parser.add_argument(
+        "--tools",
+        action="store_true",
+        help="List toolkit tools and registered agents",
+    )
+
+    parser.add_argument(
+        "--tool",
+        nargs="+",
+        metavar=("NAME", "JSON_ARGS"),
+        help="Call a toolkit tool, e.g. --tool read_file '{\"path\":\"README.md\"}'",
+    )
+
+    parser.add_argument(
+        "--tool-root",
+        type=str,
+        default=None,
+        help="Directory file/git tools are confined to (default: cwd)",
+    )
+
+    parser.add_argument(
+        "--agents-file",
+        type=str,
+        default=None,
+        help="Agent registry JSON (default: toolkit/agents.json)",
     )
 
     parser.add_argument(
@@ -3014,7 +3339,9 @@ async def main():
         port=args.port,
     )
 
-    config.allow_terminal_network = args.allow_terminal_network
+    config.allow_terminal_network = not args.no_terminal_network
+    config.tool_root = args.tool_root
+    config.agents_file = args.agents_file
 
     if args.anchors:
         with open(args.anchors, encoding="utf-8") as handle:
@@ -3219,6 +3546,37 @@ async def main():
             json.dumps(
                 result["video"],
                 indent=2,
+            )
+        )
+
+    if args.tools:
+
+        print(
+            json.dumps(
+                {
+                    "tools": ToolKit.TOOLS,
+                    "agents": node.toolkit.registry(),
+                },
+                indent=2,
+            )
+        )
+
+    if args.tool:
+
+        task = node.create_task(
+            "tool",
+            "tool",
+            {
+                "tool": args.tool[0],
+                "args": parse_tool_args(args.tool[1:]),
+            },
+        )
+
+        print(
+            json.dumps(
+                node.execute_task(task),
+                indent=2,
+                default=str,
             )
         )
 

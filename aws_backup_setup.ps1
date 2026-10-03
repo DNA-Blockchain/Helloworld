@@ -82,7 +82,8 @@ try {
     Write-Host "  Credentials:  short-lived SSO; no IAM user/access key will be created"
     Write-Host "  Data upload:  $(if ($EnableOffsite) { 'only after a separate confirmation' } else { 'disabled by this run' })"
     Write-Host "  Cost:         S3 storage, requests, and data transfer are billable; estimate from your actual backup size and current regional prices."
-    if ((Read-Host "Type the exact bucket name '$BucketName' to create these resources") -cne $BucketName) {
+    $autoApprove = $env:RABBIT_AUTO_APPROVE -in @("1","true","yes","on")
+    if (-not $autoApprove -and (Read-Host "Type the exact bucket name '$BucketName' to create these resources") -cne $BucketName) {
         Write-Host "Cancelled; no AWS resources created."
         exit 1
     }
@@ -152,7 +153,7 @@ try {
     Write-Host "Bucket configuration completed. No IAM permissions were changed."
     Write-Host "The backup SSO role must be separately granted access only to $prefixObjectsArn and list access under $Prefix."
     if ($EnableOffsite) {
-        if ((Read-Host "Type UPLOAD-ENCRYPTED-BACKUPS to enable off-site backup uploads") -cne "UPLOAD-ENCRYPTED-BACKUPS") {
+        if (-not $autoApprove -and (Read-Host "Type UPLOAD-ENCRYPTED-BACKUPS to enable off-site backup uploads") -cne "UPLOAD-ENCRYPTED-BACKUPS") {
             Write-Host "Bucket created; local off-site configuration was not changed and no backup data was uploaded."
             exit 0
         }

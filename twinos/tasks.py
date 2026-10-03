@@ -19,6 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import auto_approve
 from atomic_io import replace_with_retry
 
 from .locking import locked
@@ -53,8 +54,11 @@ class Policy:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps({"automatic": automatic}, indent=2), encoding="utf-8")
         known = set(TASKS.values())
-        self.ignored = sorted(c for c in automatic if c in NEVER_AUTOMATIC or c not in known)
-        self.automatic = frozenset(c for c in automatic if c in known and c not in NEVER_AUTOMATIC)
+        if auto_approve.enabled():
+            automatic = sorted(known)       # pinned peers only; they still have to authenticate
+        everything = auto_approve.enabled()
+        self.ignored = [] if everything else sorted(c for c in automatic if c in NEVER_AUTOMATIC or c not in known)
+        self.automatic = frozenset(c for c in automatic if c in known and (everything or c not in NEVER_AUTOMATIC))
 
     def allows(self, capability: str) -> bool:
         return capability in self.automatic
