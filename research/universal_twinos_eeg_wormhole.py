@@ -1,0 +1,2830 @@
+#!/usr/bin/env python3
+"""
+Universal TwinOS + EEG/Hormone Wormhole
+=======================================
+
+A research/prototype architecture for:
+
+    Historical personal data
+        -> Digital Twin
+        -> EEG / physiology context
+        -> EEG-Hormone Wormhole
+        -> historical event matching
+        -> temporal transformer
+        -> scene reconstruction
+        -> image/video generation
+        -> human feedback
+        -> iterative refinement
+
+Also provides an OS/network-neutral agent protocol allowing:
+
+    Digital Twin agents
+    Coding agents
+    Terminal agents
+    Development agents
+    GPU agents
+    MicroPython agents
+    Generic agents
+
+to communicate using the same task/event representation.
+
+IMPORTANT:
+This is a research architecture.
+
+EEG and physiological signals are treated as probabilistic
+state/context information. The system does NOT assume that EEG
+directly reveals an exact private thought or memory.
+
+The historical event matcher provides candidate matches and
+confidence values. Human guidance/feedback remains part of the
+reconstruction loop.
+
+Sensitive raw EEG, physiology, memories, media, and personal
+data should remain off-chain. Provenance records contain hashes,
+metadata, model versions, approvals, and event IDs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import hashlib
+import json
+import os
+import platform
+import socket
+import sys
+import time
+import uuid
+
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+
+# ============================================================
+# UTILITIES
+# ============================================================
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def stable_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def sha256_object(value: Any) -> str:
+    return sha256_text(stable_json(value))
+
+
+def new_id(prefix: str = "id") -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+@dataclass
+class Config:
+    twin_name: str = "UniversalTwin"
+    twin_id: str = field(default_factory=lambda: new_id("twin"))
+
+    host: str = "0.0.0.0"
+    port: int = 8765
+
+    history_limit: int = 10000
+    event_match_limit: int = 20
+
+    require_human_approval: bool = True
+
+    allow_autonomous_safe_tasks: bool = True
+
+    # Keep dangerous actions disabled by default.
+    allow_terminal: bool = False
+    allow_system_files: bool = False
+    allow_external_messages: bool = False
+    allow_code_execution: bool = False
+    allow_software_install: bool = False
+
+    eeg_enabled: bool = False
+    physiology_enabled: bool = False
+    rf_enabled: bool = False
+    audio_enabled: bool = False
+
+    image_api_url: Optional[str] = None
+    video_api_url: Optional[str] = None
+
+    provenance_file: str = "twin_provenance.jsonl"
+
+
+# ============================================================
+# AGENT IDENTITY
+# ============================================================
+
+@dataclass
+class AgentIdentity:
+    agent_id: str
+    name: str
+    agent_type: str
+    owner_twin_id: Optional[str] = None
+    public_key_hash: Optional[str] = None
+
+    def fingerprint(self) -> str:
+        return sha256_object(asdict(self))
+
+
+class AgentType:
+    TWIN = "digital_twin"
+    CODING = "coding"
+    TERMINAL = "terminal"
+    DEVELOPMENT = "development"
+    GPU = "gpu"
+    MICROPYTHON = "micropython"
+    GENERIC = "generic"
+    OS = "os"
+
+
+@dataclass
+class Capability:
+    name: str
+    description: str
+    enabled: bool = True
+
+
+@dataclass
+class AgentDescription:
+    identity: AgentIdentity
+    capabilities: List[Capability] = field(default_factory=list)
+
+    def capability_names(self) -> List[str]:
+        return [
+            capability.name
+            for capability in self.capabilities
+            if capability.enabled
+        ]
+
+
+# ============================================================
+# AGENT TASK
+# ============================================================
+
+@dataclass
+class AgentTask:
+    task_id: str
+    task_type: str
+    requester: str
+    target: str
+    payload: Dict[str, Any]
+
+    requires_approval: bool = True
+
+    created_at: str = field(default_factory=now)
+
+    status: str = "pending"
+
+    result: Optional[Dict[str, Any]] = None
+
+    def digest(self) -> str:
+        return sha256_object(asdict(self))
+
+
+# ============================================================
+# PERMISSION SYSTEM
+# ============================================================
+
+@dataclass
+class AutonomyPolicy:
+    read_sensors: bool = True
+    update_context: bool = True
+    retrieve_memory: bool = True
+
+    generate_code: bool = True
+    review_code: bool = True
+
+    run_preapproved_tasks: bool = True
+
+    execute_unapproved_code: bool = False
+    modify_system_files: bool = False
+    install_software: bool = False
+    send_external_messages: bool = False
+    spend_money: bool = False
+    access_sensitive_data: bool = False
+
+    access_wormhole_results: bool = True
+    access_historical_events: bool = False
+
+
+# ============================================================
+# HISTORICAL MEMORY
+# ============================================================
+
+@dataclass
+class HistoricalEvent:
+    event_id: str
+    timestamp: str
+
+    title: str = ""
+
+    description: str = ""
+
+    # These are representations, not raw biometric data.
+    visual_embedding: List[float] = field(default_factory=list)
+    audio_embedding: List[float] = field(default_factory=list)
+    text_embedding: List[float] = field(default_factory=list)
+
+    eeg_embedding: List[float] = field(default_factory=list)
+    physiology_embedding: List[float] = field(default_factory=list)
+
+    tags: List[str] = field(default_factory=list)
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class HistoricalMemory:
+
+    def __init__(self, limit: int = 10000):
+        self.limit = limit
+        self.events: Dict[str, HistoricalEvent] = {}
+
+    def add(self, event: HistoricalEvent) -> None:
+
+        if len(self.events) >= self.limit:
+
+            oldest = sorted(
+                self.events.values(),
+                key=lambda x: x.timestamp
+            )[0]
+
+            self.events.pop(oldest.event_id, None)
+
+        self.events[event.event_id] = event
+
+    def get(self, event_id: str) -> Optional[HistoricalEvent]:
+        return self.events.get(event_id)
+
+    def all(self) -> List[HistoricalEvent]:
+        return list(self.events.values())
+
+    def search(
+        self,
+        query: str,
+        limit: int = 20,
+    ) -> List[HistoricalEvent]:
+
+        query_tokens = set(
+            query.lower().split()
+        )
+
+        scored = []
+
+        for event in self.events.values():
+
+            text = " ".join([
+                event.title,
+                event.description,
+                " ".join(event.tags),
+            ]).lower()
+
+            tokens = set(text.split())
+
+            overlap = len(
+                query_tokens.intersection(tokens)
+            )
+
+            scored.append(
+                (overlap, event)
+            )
+
+        scored.sort(
+            key=lambda x: x[0],
+            reverse=True
+        )
+
+        return [
+            event
+            for _, event in scored[:limit]
+        ]
+
+
+# ============================================================
+# PERSONAL DATASET
+# ============================================================
+
+class PersonalDataset:
+
+    def __init__(self):
+        self.records: List[Dict[str, Any]] = []
+
+    def add(self, record: Dict[str, Any]) -> str:
+
+        record_copy = dict(record)
+
+        record_copy.setdefault(
+            "record_id",
+            new_id("record")
+        )
+
+        record_copy.setdefault(
+            "timestamp",
+            now()
+        )
+
+        self.records.append(record_copy)
+
+        return record_copy["record_id"]
+
+    def digest(self) -> str:
+        return sha256_object(self.records)
+
+
+# ============================================================
+# EEG ADAPTER
+# ============================================================
+
+class EEGAdapter:
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def read(self) -> Dict[str, Any]:
+
+        if not self.enabled:
+            return {
+                "available": False,
+                "reason": "EEG disabled"
+            }
+
+        # Hardware-specific BrainFlow/device implementation
+        # can be connected here.
+
+        return {
+            "available": True,
+            "timestamp": now(),
+            "features": [],
+            "source": "EEG"
+        }
+
+
+# ============================================================
+# PHYSIOLOGY / HORMONE ADAPTER
+# ============================================================
+
+class PhysiologyAdapter:
+
+    """
+    Slow contextual channel.
+
+    A real implementation could consume validated physiological
+    measurements from supported hardware or laboratory datasets.
+
+    Hormone measurements should not be treated as instantaneous
+    commands to the AI.
+    """
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def read(self) -> Dict[str, Any]:
+
+        if not self.enabled:
+            return {
+                "available": False,
+                "reason": "physiology disabled"
+            }
+
+        return {
+            "available": True,
+            "timestamp": now(),
+            "features": [],
+            "source": "PHYSIOLOGY"
+        }
+
+
+# ============================================================
+# RF ADAPTER
+# ============================================================
+
+class RFAdapter:
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def read(self) -> Dict[str, Any]:
+
+        if not self.enabled:
+            return {
+                "available": False,
+                "reason": "RF disabled"
+            }
+
+        return {
+            "available": True,
+            "timestamp": now(),
+            "features": [],
+            "source": "RF"
+        }
+
+
+# ============================================================
+# AUDIO ADAPTER
+# ============================================================
+
+class AudioAdapter:
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def read(self) -> Dict[str, Any]:
+
+        if not self.enabled:
+            return {
+                "available": False,
+                "reason": "audio disabled"
+            }
+
+        return {
+            "available": True,
+            "timestamp": now(),
+            "features": [],
+            "source": "AUDIO"
+        }
+
+
+# ============================================================
+# STATE ESTIMATOR
+# ============================================================
+
+@dataclass
+class StateEstimate:
+
+    state_id: str
+
+    timestamp: str
+
+    eeg: Dict[str, Any]
+
+    physiology: Dict[str, Any]
+
+    rf: Dict[str, Any]
+
+    audio: Dict[str, Any]
+
+    user_guidance: str
+
+    context: Dict[str, Any] = field(default_factory=dict)
+
+    confidence: float = 0.0
+
+
+class StateEstimator:
+
+    def estimate(
+        self,
+        eeg: Dict[str, Any],
+        physiology: Dict[str, Any],
+        rf: Dict[str, Any],
+        audio: Dict[str, Any],
+        user_guidance: str = "",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> StateEstimate:
+
+        available = 0
+
+        for source in [
+            eeg,
+            physiology,
+            rf,
+            audio,
+        ]:
+            if source.get("available"):
+                available += 1
+
+        confidence = min(
+            1.0,
+            0.20 * available +
+            (0.20 if user_guidance else 0.0)
+        )
+
+        return StateEstimate(
+            state_id=new_id("state"),
+            timestamp=now(),
+            eeg=eeg,
+            physiology=physiology,
+            rf=rf,
+            audio=audio,
+            user_guidance=user_guidance,
+            context=context or {},
+            confidence=confidence,
+        )
+
+
+# ============================================================
+# DIGITAL TWIN
+# ============================================================
+
+class DigitalTwin:
+
+    def __init__(
+        self,
+        identity: AgentIdentity,
+        dataset: PersonalDataset,
+        memory: HistoricalMemory,
+    ):
+        self.identity = identity
+        self.dataset = dataset
+        self.memory = memory
+
+        self.current_state: Optional[StateEstimate] = None
+
+        self.context: Dict[str, Any] = {}
+
+    def update_state(
+        self,
+        state: StateEstimate,
+    ) -> None:
+
+        self.current_state = state
+
+    def add_context(
+        self,
+        key: str,
+        value: Any,
+    ) -> None:
+
+        self.context[key] = value
+
+    def context_digest(self) -> str:
+        return sha256_object(self.context)
+
+
+# ============================================================
+# WORMHOLE EVENT MATCH
+# ============================================================
+
+@dataclass
+class EventMatch:
+
+    event_id: str
+
+    score: float
+
+    confidence: float
+
+    evidence: Dict[str, float]
+
+    explanation: str
+
+
+@dataclass
+class WormholeResult:
+
+    wormhole_id: str
+
+    timestamp: str
+
+    state_id: str
+
+    user_guidance: str
+
+    matches: List[EventMatch]
+
+    selected_event_id: Optional[str]
+
+    scene_state: Dict[str, Any]
+
+    confidence: float
+
+
+# ============================================================
+# EEG-HORMONE WORMHOLE
+# ============================================================
+
+class EEGHormoneWormhole:
+
+    """
+    Synchronization and retrieval layer connecting:
+
+        current signals
+             +
+        historical personal events
+             +
+        user guidance
+             +
+        Twin context
+
+    It does NOT claim to directly decode an exact memory.
+    It generates ranked candidate historical events.
+    """
+
+    def __init__(
+        self,
+        twin: DigitalTwin,
+        memory: HistoricalMemory,
+        limit: int = 20,
+    ):
+
+        self.twin = twin
+        self.memory = memory
+        self.limit = limit
+
+        self.last_result: Optional[
+            WormholeResult
+        ] = None
+
+    # --------------------------------------------------------
+    # Text/context similarity
+    # --------------------------------------------------------
+
+    def _text_score(
+        self,
+        guidance: str,
+        event: HistoricalEvent,
+    ) -> float:
+
+        if not guidance:
+            return 0.0
+
+        query = set(
+            guidance.lower().split()
+        )
+
+        text = set(
+            (
+                event.title +
+                " " +
+                event.description +
+                " " +
+                " ".join(event.tags)
+            ).lower().split()
+        )
+
+        if not query:
+            return 0.0
+
+        return len(
+            query.intersection(text)
+        ) / len(query)
+
+    # --------------------------------------------------------
+    # Vector similarity
+    # --------------------------------------------------------
+
+    def _vector_similarity(
+        self,
+        a: List[float],
+        b: List[float],
+    ) -> float:
+
+        if not a or not b:
+            return 0.0
+
+        length = min(len(a), len(b))
+
+        if length == 0:
+            return 0.0
+
+        aa = a[:length]
+        bb = b[:length]
+
+        dot = sum(
+            x * y
+            for x, y in zip(aa, bb)
+        )
+
+        norm_a = sum(
+            x * x for x in aa
+        ) ** 0.5
+
+        norm_b = sum(
+            x * x for x in bb
+        ) ** 0.5
+
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                dot / (norm_a * norm_b)
+            )
+        )
+
+    # --------------------------------------------------------
+    # Match current state to event
+    # --------------------------------------------------------
+
+    def _score_event(
+        self,
+        state: StateEstimate,
+        event: HistoricalEvent,
+    ) -> EventMatch:
+
+        guidance_score = self._text_score(
+            state.user_guidance,
+            event,
+        )
+
+        eeg_score = 0.0
+
+        physiology_score = 0.0
+
+        # Real systems should pass learned embeddings
+        # here rather than raw EEG values.
+
+        if state.eeg.get("embedding"):
+            eeg_score = self._vector_similarity(
+                state.eeg["embedding"],
+                event.eeg_embedding,
+            )
+
+        if state.physiology.get("embedding"):
+            physiology_score = self._vector_similarity(
+                state.physiology["embedding"],
+                event.physiology_embedding,
+            )
+
+        contextual_score = 0.0
+
+        if event.metadata:
+
+            context_terms = set()
+
+            for key, value in event.metadata.items():
+                context_terms.add(
+                    str(key).lower()
+                )
+                context_terms.add(
+                    str(value).lower()
+                )
+
+            if state.context:
+
+                current_terms = set(
+                    str(value).lower()
+                    for value in state.context.values()
+                )
+
+                if context_terms and current_terms:
+
+                    overlap = (
+                        context_terms
+                        .intersection(current_terms)
+                    )
+
+                    contextual_score = min(
+                        1.0,
+                        len(overlap) /
+                        max(1, len(current_terms))
+                    )
+
+        # Guidance receives the strongest semantic role.
+        score = (
+            0.45 * guidance_score +
+            0.25 * eeg_score +
+            0.15 * physiology_score +
+            0.15 * contextual_score
+        )
+
+        confidence = min(
+            1.0,
+            score +
+            (0.15 if state.user_guidance else 0.0)
+        )
+
+        evidence = {
+            "user_guidance": guidance_score,
+            "eeg": eeg_score,
+            "physiology": physiology_score,
+            "context": contextual_score,
+        }
+
+        explanation = (
+            "Candidate generated from multimodal "
+            "state/context similarity."
+        )
+
+        return EventMatch(
+            event_id=event.event_id,
+            score=score,
+            confidence=confidence,
+            evidence=evidence,
+            explanation=explanation,
+        )
+
+    # --------------------------------------------------------
+    # Run wormhole
+    # --------------------------------------------------------
+
+    def run(
+        self,
+        state: StateEstimate,
+    ) -> WormholeResult:
+
+        events = self.memory.all()
+
+        matches = [
+            self._score_event(
+                state,
+                event
+            )
+            for event in events
+        ]
+
+        matches.sort(
+            key=lambda x: x.score,
+            reverse=True
+        )
+
+        matches = matches[:self.limit]
+
+        selected = (
+            matches[0].event_id
+            if matches
+            else None
+        )
+
+        top_event = (
+            self.memory.get(selected)
+            if selected
+            else None
+        )
+
+        scene_state = self.build_scene_state(
+            state,
+            top_event,
+            matches,
+        )
+
+        result = WormholeResult(
+            wormhole_id=new_id("wormhole"),
+            timestamp=now(),
+            state_id=state.state_id,
+            user_guidance=state.user_guidance,
+            matches=matches,
+            selected_event_id=selected,
+            scene_state=scene_state,
+            confidence=(
+                matches[0].confidence
+                if matches
+                else 0.0
+            ),
+        )
+
+        self.last_result = result
+
+        return result
+
+    # --------------------------------------------------------
+    # Scene construction
+    # --------------------------------------------------------
+
+    def build_scene_state(
+        self,
+        state: StateEstimate,
+        selected_event: Optional[HistoricalEvent],
+        matches: List[EventMatch],
+    ) -> Dict[str, Any]:
+
+        if selected_event:
+
+            return {
+                "mode": "historical_reconstruction",
+                "event_id": selected_event.event_id,
+                "event_title": selected_event.title,
+                "event_description":
+                    selected_event.description,
+                "event_timestamp":
+                    selected_event.timestamp,
+                "tags": selected_event.tags,
+                "confidence":
+                    matches[0].confidence
+                    if matches else 0.0,
+                "user_guidance":
+                    state.user_guidance,
+            }
+
+        return {
+            "mode": "guided_generation",
+            "user_guidance":
+                state.user_guidance,
+            "confidence": 0.0,
+        }
+
+
+# ============================================================
+# GENERATIVE AI ADAPTER
+# ============================================================
+
+class ImageGenerator:
+
+    def __init__(
+        self,
+        endpoint: Optional[str] = None,
+    ):
+        self.endpoint = endpoint
+
+    def generate(
+        self,
+        scene_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        return {
+            "generator": "image",
+            "endpoint": self.endpoint,
+            "scene_hash":
+                sha256_object(scene_state),
+            "scene": scene_state,
+            "status": "generation_request_created",
+        }
+
+
+class VideoGenerator:
+
+    def __init__(
+        self,
+        endpoint: Optional[str] = None,
+    ):
+        self.endpoint = endpoint
+
+    def generate(
+        self,
+        scene_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        return {
+            "generator": "video",
+            "endpoint": self.endpoint,
+            "scene_hash":
+                sha256_object(scene_state),
+            "scene": scene_state,
+            "status": "generation_request_created",
+        }
+
+
+# ============================================================
+# RECONSTRUCTION SESSION
+# ============================================================
+
+@dataclass
+class ReconstructionSession:
+
+    session_id: str
+
+    twin_id: str
+
+    started_at: str
+
+    iterations: int = 0
+
+    wormhole_ids: List[str] = field(
+        default_factory=list
+    )
+
+    selected_events: List[str] = field(
+        default_factory=list
+    )
+
+    feedback: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
+
+
+class ReconstructionEngine:
+
+    def __init__(
+        self,
+        wormhole: EEGHormoneWormhole,
+        image_generator: ImageGenerator,
+        video_generator: VideoGenerator,
+    ):
+
+        self.wormhole = wormhole
+        self.image_generator = image_generator
+        self.video_generator = video_generator
+
+        self.session: Optional[
+            ReconstructionSession
+        ] = None
+
+    def start(
+        self,
+        twin_id: str,
+    ) -> str:
+
+        self.session = ReconstructionSession(
+            session_id=new_id("recon"),
+            twin_id=twin_id,
+            started_at=now(),
+        )
+
+        return self.session.session_id
+
+    def reconstruct(
+        self,
+        state: StateEstimate,
+    ) -> Dict[str, Any]:
+
+        if self.session is None:
+
+            self.start(
+                self.wormhole.twin.identity.agent_id
+            )
+
+        result = self.wormhole.run(state)
+
+        image = self.image_generator.generate(
+            result.scene_state
+        )
+
+        video = self.video_generator.generate(
+            result.scene_state
+        )
+
+        self.session.iterations += 1
+
+        self.session.wormhole_ids.append(
+            result.wormhole_id
+        )
+
+        if result.selected_event_id:
+            self.session.selected_events.append(
+                result.selected_event_id
+            )
+
+        return {
+            "wormhole": result,
+            "image": image,
+            "video": video,
+        }
+
+    def add_feedback(
+        self,
+        feedback: str,
+        rating: Optional[float] = None,
+    ) -> None:
+
+        if self.session is None:
+            return
+
+        self.session.feedback.append({
+            "timestamp": now(),
+            "feedback": feedback,
+            "rating": rating,
+        })
+
+
+# ============================================================
+# SPECIALIZED AGENTS
+# ============================================================
+
+class CodingAgent:
+
+    def handle(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        return {
+            "agent": "coding",
+            "task_id": task.task_id,
+            "status": "completed",
+            "output": (
+                "Coding task received. "
+                "A real implementation can connect "
+                "a coding model here."
+            ),
+        }
+
+
+class TerminalAgent:
+
+    def handle(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        return {
+            "agent": "terminal",
+            "task_id": task.task_id,
+            "status": "blocked",
+            "reason":
+                "Terminal execution is disabled by default.",
+        }
+
+
+class DevelopmentAgent:
+
+    def handle(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        return {
+            "agent": "development",
+            "task_id": task.task_id,
+            "status": "completed",
+            "output":
+                "Development task accepted.",
+        }
+
+
+class GPUAgent:
+
+    def handle(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        return {
+            "agent": "gpu",
+            "task_id": task.task_id,
+            "status": "completed",
+            "output":
+                "GPU learning task registered.",
+        }
+
+
+class MicroPythonAgent:
+
+    def handle(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        return {
+            "agent": "micropython",
+            "task_id": task.task_id,
+            "status": "completed",
+            "output":
+                "MicroPython task registered.",
+        }
+
+
+# ============================================================
+# PROVENANCE
+# ============================================================
+
+@dataclass
+class ProvenanceBlock:
+
+    block_index: int
+
+    timestamp: str
+
+    event_type: str
+
+    data_hash: str
+
+    previous_hash: str
+
+    block_hash: str = ""
+
+    def seal(self) -> None:
+
+        self.block_hash = sha256_object({
+            "block_index":
+                self.block_index,
+            "timestamp":
+                self.timestamp,
+            "event_type":
+                self.event_type,
+            "data_hash":
+                self.data_hash,
+            "previous_hash":
+                self.previous_hash,
+        })
+
+
+class ProvenanceBlockchain:
+
+    """
+    Local append-only hash chain.
+
+    This is NOT a distributed consensus blockchain.
+    A distributed blockchain can be substituted later.
+    """
+
+    def __init__(
+        self,
+        filename: str = "twin_provenance.jsonl",
+    ):
+
+        self.filename = filename
+
+        self.chain: List[
+            ProvenanceBlock
+        ] = []
+
+        self._create_genesis()
+
+    def _create_genesis(self):
+
+        genesis = ProvenanceBlock(
+            block_index=0,
+            timestamp=now(),
+            event_type="GENESIS",
+            data_hash=sha256_text(
+                "UniversalTwinOS"
+            ),
+            previous_hash="0",
+        )
+
+        genesis.seal()
+
+        self.chain.append(genesis)
+
+    def add(
+        self,
+        event_type: str,
+        data: Dict[str, Any],
+    ) -> ProvenanceBlock:
+
+        previous = self.chain[-1]
+
+        block = ProvenanceBlock(
+            block_index=len(self.chain),
+            timestamp=now(),
+            event_type=event_type,
+            data_hash=sha256_object(data),
+            previous_hash=previous.block_hash,
+        )
+
+        block.seal()
+
+        self.chain.append(block)
+
+        try:
+
+            with open(
+                self.filename,
+                "a",
+                encoding="utf-8",
+            ) as file:
+
+                file.write(
+                    json.dumps(
+                        asdict(block)
+                    ) + "\n"
+                )
+
+        except Exception:
+            pass
+
+        return block
+
+    def verify(self) -> bool:
+
+        for index in range(1, len(self.chain)):
+
+            current = self.chain[index]
+            previous = self.chain[index - 1]
+
+            if (
+                current.previous_hash
+                != previous.block_hash
+            ):
+                return False
+
+        return True
+
+
+# ============================================================
+# UNIVERSAL A2A PROTOCOL
+# ============================================================
+
+class UniversalA2A:
+
+    VERSION = "1.0"
+
+    @staticmethod
+    def message(
+        sender: AgentIdentity,
+        receiver: str,
+        message_type: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        body = {
+            "protocol": "UniversalA2A",
+            "version": UniversalA2A.VERSION,
+            "message_id": new_id("msg"),
+            "timestamp": now(),
+
+            "sender": asdict(sender),
+            "receiver": receiver,
+
+            "message_type": message_type,
+
+            "payload": payload,
+        }
+
+        body["message_hash"] = sha256_object(
+            body
+        )
+
+        return body
+
+
+# ============================================================
+# UNIVERSAL AGENT NODE
+# ============================================================
+
+class UniversalAgentNode:
+
+    def __init__(
+        self,
+        config: Config,
+    ):
+
+        self.config = config
+
+        identity = AgentIdentity(
+            agent_id=config.twin_id,
+            name=config.twin_name,
+            agent_type=AgentType.TWIN,
+            owner_twin_id=config.twin_id,
+            public_key_hash=sha256_text(
+                config.twin_id
+            ),
+        )
+
+        self.identity = identity
+
+        self.dataset = PersonalDataset()
+
+        self.memory = HistoricalMemory(
+            config.history_limit
+        )
+
+        self.twin = DigitalTwin(
+            identity,
+            self.dataset,
+            self.memory,
+        )
+
+        self.policy = AutonomyPolicy()
+
+        self.state_estimator = StateEstimator()
+
+        # ----------------------------------------------------
+        # SENSOR LAYERS
+        # ----------------------------------------------------
+
+        self.eeg = EEGAdapter(
+            config.eeg_enabled
+        )
+
+        self.physiology = PhysiologyAdapter(
+            config.physiology_enabled
+        )
+
+        self.rf = RFAdapter(
+            config.rf_enabled
+        )
+
+        self.audio = AudioAdapter(
+            config.audio_enabled
+        )
+
+        # ----------------------------------------------------
+        # WORMHOLE
+        # ----------------------------------------------------
+
+        self.wormhole = EEGHormoneWormhole(
+            self.twin,
+            self.memory,
+            config.event_match_limit,
+        )
+
+        # ----------------------------------------------------
+        # GENERATION
+        # ----------------------------------------------------
+
+        self.image_generator = ImageGenerator(
+            config.image_api_url
+        )
+
+        self.video_generator = VideoGenerator(
+            config.video_api_url
+        )
+
+        self.reconstruction = ReconstructionEngine(
+            self.wormhole,
+            self.image_generator,
+            self.video_generator,
+        )
+
+        # ----------------------------------------------------
+        # AGENTS
+        # ----------------------------------------------------
+
+        self.coding_agent = CodingAgent()
+
+        self.terminal_agent = TerminalAgent()
+
+        self.development_agent = DevelopmentAgent()
+
+        self.gpu_agent = GPUAgent()
+
+        self.micropython_agent = MicroPythonAgent()
+
+        # ----------------------------------------------------
+        # PROVENANCE
+        # ----------------------------------------------------
+
+        self.provenance = ProvenanceBlockchain(
+            config.provenance_file
+        )
+
+        # ----------------------------------------------------
+        # NETWORK
+        # ----------------------------------------------------
+
+        self.running = True
+
+    # ========================================================
+    # CAPABILITIES
+    # ========================================================
+
+    def capabilities(self) -> AgentDescription:
+
+        capabilities = [
+
+            Capability(
+                "historical_memory",
+                "Retrieve historical personal event representations."
+            ),
+
+            Capability(
+                "state_estimation",
+                "Fuse current contextual signal sources."
+            ),
+
+            Capability(
+                "eeg_hormone_wormhole",
+                "Match current multimodal state against historical events."
+            ),
+
+            Capability(
+                "image_generation",
+                "Create scene-generation requests."
+            ),
+
+            Capability(
+                "video_generation",
+                "Create video-generation requests."
+            ),
+
+            Capability(
+                "coding",
+                "Communicate with coding agents."
+            ),
+
+            Capability(
+                "development",
+                "Communicate with development agents."
+            ),
+
+            Capability(
+                "terminal",
+                "Communicate with terminal agents."
+            ),
+
+            Capability(
+                "gpu",
+                "Communicate with GPU learning agents."
+            ),
+
+            Capability(
+                "micropython",
+                "Communicate with MicroPython agents."
+            ),
+        ]
+
+        return AgentDescription(
+            identity=self.identity,
+            capabilities=capabilities,
+        )
+
+    # ========================================================
+    # HISTORICAL DATA
+    # ========================================================
+
+    def add_history(
+        self,
+        title: str,
+        description: str,
+        timestamp: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        eeg_embedding: Optional[List[float]] = None,
+        physiology_embedding:
+            Optional[List[float]] = None,
+    ) -> str:
+
+        event = HistoricalEvent(
+            event_id=new_id("event"),
+
+            timestamp=timestamp or now(),
+
+            title=title,
+
+            description=description,
+
+            tags=tags or [],
+
+            metadata=metadata or {},
+
+            eeg_embedding=
+                eeg_embedding or [],
+
+            physiology_embedding=
+                physiology_embedding or [],
+        )
+
+        self.memory.add(event)
+
+        self.dataset.add({
+            "event_id": event.event_id,
+            "timestamp": event.timestamp,
+            "title": title,
+        })
+
+        self.provenance.add(
+            "HISTORICAL_EVENT_REGISTERED",
+            {
+                "event_id":
+                    event.event_id,
+                "event_hash":
+                    sha256_object(
+                        asdict(event)
+                    ),
+            },
+        )
+
+        return event.event_id
+
+    # ========================================================
+    # SIGNAL COLLECTION
+    # ========================================================
+
+    def collect_signals(self) -> Dict[str, Any]:
+
+        return {
+            "eeg":
+                self.eeg.read(),
+
+            "physiology":
+                self.physiology.read(),
+
+            "rf":
+                self.rf.read(),
+
+            "audio":
+                self.audio.read(),
+        }
+
+    # ========================================================
+    # CAPTURE STATE
+    # ========================================================
+
+    def capture_state(
+        self,
+        user_guidance: str = "",
+        context: Optional[Dict[str, Any]] = None,
+    ) -> StateEstimate:
+
+        signals = self.collect_signals()
+
+        state = self.state_estimator.estimate(
+            eeg=signals["eeg"],
+            physiology=signals["physiology"],
+            rf=signals["rf"],
+            audio=signals["audio"],
+            user_guidance=user_guidance,
+            context=context or self.twin.context,
+        )
+
+        self.twin.update_state(state)
+
+        self.provenance.add(
+            "STATE_ESTIMATE",
+            {
+                "state_id":
+                    state.state_id,
+
+                "confidence":
+                    state.confidence,
+
+                "sources": [
+                    key
+                    for key, value
+                    in signals.items()
+                    if value.get("available")
+                ],
+            },
+        )
+
+        return state
+
+    # ========================================================
+    # WORMHOLE RECONSTRUCTION
+    # ========================================================
+
+    def reconstruct_event(
+        self,
+        user_guidance: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+
+        state = self.capture_state(
+            user_guidance,
+            context,
+        )
+
+        result = self.reconstruction.reconstruct(
+            state
+        )
+
+        wormhole = result["wormhole"]
+
+        self.provenance.add(
+            "WORMHOLE_EVENT_MATCH",
+            {
+                "wormhole_id":
+                    wormhole.wormhole_id,
+
+                "state_id":
+                    wormhole.state_id,
+
+                "selected_event":
+                    wormhole.selected_event_id,
+
+                "confidence":
+                    wormhole.confidence,
+
+                "candidate_count":
+                    len(wormhole.matches),
+            },
+        )
+
+        self.provenance.add(
+            "GENERATION_REQUEST",
+            {
+                "wormhole_id":
+                    wormhole.wormhole_id,
+
+                "image_hash":
+                    sha256_object(
+                        result["image"]
+                    ),
+
+                "video_hash":
+                    sha256_object(
+                        result["video"]
+                    ),
+            },
+        )
+
+        return result
+
+    # ========================================================
+    # HUMAN FEEDBACK
+    # ========================================================
+
+    def provide_feedback(
+        self,
+        feedback: str,
+        rating: Optional[float] = None,
+    ) -> None:
+
+        self.reconstruction.add_feedback(
+            feedback,
+            rating,
+        )
+
+        self.provenance.add(
+            "HUMAN_RECONSTRUCTION_FEEDBACK",
+            {
+                "feedback_hash":
+                    sha256_text(feedback),
+
+                "rating":
+                    rating,
+            },
+        )
+
+    # ========================================================
+    # TASK CREATION
+    # ========================================================
+
+    def create_task(
+        self,
+        target: str,
+        task_type: str,
+        payload: Dict[str, Any],
+        requires_approval: bool = True,
+    ) -> AgentTask:
+
+        return AgentTask(
+            task_id=new_id("task"),
+
+            task_type=task_type,
+
+            requester=self.identity.agent_id,
+
+            target=target,
+
+            payload=payload,
+
+            requires_approval=requires_approval,
+        )
+
+    # ========================================================
+    # WORMHOLE ACCESS POLICY
+    # ========================================================
+
+    def wormhole_context_for_agent(
+        self,
+        agent_type: str,
+    ) -> Dict[str, Any]:
+
+        if not self.policy.access_wormhole_results:
+
+            return {
+                "allowed": False
+            }
+
+        result = self.wormhole.last_result
+
+        if result is None:
+
+            return {
+                "allowed": True,
+                "available": False,
+            }
+
+        # Do not expose raw historical sensitive data.
+        response = {
+            "allowed": True,
+            "available": True,
+
+            "wormhole_id":
+                result.wormhole_id,
+
+            "selected_event_id":
+                result.selected_event_id,
+
+            "confidence":
+                result.confidence,
+
+            "scene_state":
+                result.scene_state,
+
+            "candidate_events": [
+                {
+                    "event_id":
+                        match.event_id,
+
+                    "score":
+                        match.score,
+
+                    "confidence":
+                        match.confidence,
+
+                    "evidence":
+                        match.evidence,
+                }
+
+                for match in result.matches
+            ],
+        }
+
+        # Historical content is more restricted.
+        if not self.policy.access_historical_events:
+
+            response.pop(
+                "candidate_events",
+                None
+            )
+
+        return response
+
+    # ========================================================
+    # EXECUTE TASK
+    # ========================================================
+
+    def execute_task(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        self.provenance.add(
+            "TASK_RECEIVED",
+            asdict(task),
+        )
+
+        # ----------------------------------------------------
+        # Permission check
+        # ----------------------------------------------------
+
+        if task.requires_approval:
+
+            if self.config.require_human_approval:
+
+                self.provenance.add(
+                    "APPROVAL_REQUIRED",
+                    {
+                        "task_id":
+                            task.task_id,
+                    },
+                )
+
+                return {
+                    "status":
+                        "approval_required",
+
+                    "task_id":
+                        task.task_id,
+                }
+
+        # ----------------------------------------------------
+        # Wormhole context can be provided to agents.
+        # ----------------------------------------------------
+
+        wormhole_context = (
+            self.wormhole_context_for_agent(
+                task.target
+            )
+        )
+
+        payload = dict(
+            task.payload
+        )
+
+        payload["wormhole_context"] = (
+            wormhole_context
+        )
+
+        # ----------------------------------------------------
+        # Route task
+        # ----------------------------------------------------
+
+        if task.task_type == "coding":
+
+            result = self.coding_agent.handle(
+                task
+            )
+
+        elif task.task_type == "development":
+
+            result = self.development_agent.handle(
+                task
+            )
+
+        elif task.task_type == "terminal":
+
+            if not self.config.allow_terminal:
+
+                result = {
+                    "status":
+                        "blocked",
+
+                    "reason":
+                        "Terminal execution disabled.",
+                }
+
+            else:
+
+                result = self.terminal_agent.handle(
+                    task
+                )
+
+        elif task.task_type == "gpu":
+
+            result = self.gpu_agent.handle(
+                task
+            )
+
+        elif task.task_type == "micropython":
+
+            result = self.micropython_agent.handle(
+                task
+            )
+
+        elif task.task_type == "wormhole_query":
+
+            result = {
+                "status":
+                    "completed",
+
+                "wormhole":
+                    wormhole_context,
+            }
+
+        elif task.task_type == "reconstruct":
+
+            guidance = payload.get(
+                "user_guidance",
+                ""
+            )
+
+            result = self.reconstruct_event(
+                guidance,
+                payload.get(
+                    "context",
+                    {}
+                ),
+            )
+
+        else:
+
+            result = {
+                "status":
+                    "unknown_task",
+
+                "task_type":
+                    task.task_type,
+            }
+
+        self.provenance.add(
+            "TASK_RESULT",
+            {
+                "task_id":
+                    task.task_id,
+
+                "result_hash":
+                    sha256_object(result),
+            },
+        )
+
+        task.status = "completed"
+
+        task.result = result
+
+        return result
+
+    # ========================================================
+    # A2A MESSAGE
+    # ========================================================
+
+    def build_a2a_task_message(
+        self,
+        task: AgentTask,
+    ) -> Dict[str, Any]:
+
+        return UniversalA2A.message(
+            self.identity,
+
+            task.target,
+
+            "TASK_REQUEST",
+
+            {
+                "task":
+                    asdict(task),
+            },
+        )
+
+    # ========================================================
+    # NETWORK MESSAGE HANDLER
+    # ========================================================
+
+    async def handle_message(
+        self,
+        message: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        message_type = message.get(
+            "message_type"
+        )
+
+        sender = message.get(
+            "sender",
+            {}
+        )
+
+        sender_id = sender.get(
+            "agent_id",
+            "unknown"
+        )
+
+        # ----------------------------------------------------
+        # Identity
+        # ----------------------------------------------------
+
+        if message_type == "IDENTITY_REQUEST":
+
+            return UniversalA2A.message(
+                self.identity,
+
+                sender_id,
+
+                "IDENTITY_RESPONSE",
+
+                {
+                    "identity":
+                        asdict(
+                            self.identity
+                        )
+                },
+            )
+
+        # ----------------------------------------------------
+        # Capabilities
+        # ----------------------------------------------------
+
+        if message_type == "CAPABILITY_REQUEST":
+
+            description = self.capabilities()
+
+            return UniversalA2A.message(
+                self.identity,
+
+                sender_id,
+
+                "CAPABILITY_RESPONSE",
+
+                {
+                    "description":
+                        asdict(description)
+                },
+            )
+
+        # ----------------------------------------------------
+        # Task
+        # ----------------------------------------------------
+
+        if message_type == "TASK_REQUEST":
+
+            task_data = (
+                message
+                .get("payload", {})
+                .get("task")
+            )
+
+            if not task_data:
+
+                return UniversalA2A.message(
+                    self.identity,
+                    sender_id,
+                    "TASK_RESULT",
+                    {
+                        "status":
+                            "invalid_task"
+                    },
+                )
+
+            task = AgentTask(
+                **task_data
+            )
+
+            result = self.execute_task(
+                task
+            )
+
+            return UniversalA2A.message(
+                self.identity,
+
+                sender_id,
+
+                "TASK_RESULT",
+
+                {
+                    "task_id":
+                        task.task_id,
+
+                    "result":
+                        result,
+                },
+            )
+
+        # ----------------------------------------------------
+        # Result
+        # ----------------------------------------------------
+
+        if message_type == "TASK_RESULT":
+
+            return {
+                "status":
+                    "received",
+
+                "message_type":
+                    "TASK_RESULT",
+
+                "payload":
+                    message.get(
+                        "payload",
+                        {}
+                    ),
+            }
+
+        # ----------------------------------------------------
+        # Approval
+        # ----------------------------------------------------
+
+        if message_type == "APPROVAL_REQUIRED":
+
+            return {
+                "status":
+                    "approval_required",
+
+                "payload":
+                    message.get(
+                        "payload",
+                        {}
+                    ),
+            }
+
+        return {
+            "status":
+                "unknown_message",
+
+            "message_type":
+                message_type,
+        }
+
+    # ========================================================
+    # NETWORK SERVER
+    # ========================================================
+
+    async def network_handler(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ):
+
+        try:
+
+            data = await reader.readline()
+
+            if not data:
+                return
+
+            message = json.loads(
+                data.decode("utf-8")
+            )
+
+            response = await self.handle_message(
+                message
+            )
+
+            writer.write(
+                (
+                    json.dumps(response)
+                    + "\n"
+                ).encode("utf-8")
+            )
+
+            await writer.drain()
+
+        except Exception as exc:
+
+            error = {
+                "status":
+                    "error",
+
+                "error":
+                    str(exc),
+            }
+
+            writer.write(
+                (
+                    json.dumps(error)
+                    + "\n"
+                ).encode("utf-8")
+            )
+
+            await writer.drain()
+
+        finally:
+
+            writer.close()
+
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    async def start_server(
+        self,
+    ):
+
+        server = await asyncio.start_server(
+            self.network_handler,
+
+            self.config.host,
+
+            self.config.port,
+        )
+
+        addresses = ", ".join(
+            str(sock.getsockname())
+            for sock in server.sockets
+        )
+
+        print(
+            f"Universal TwinOS A2A server: "
+            f"{addresses}"
+        )
+
+        async with server:
+            await server.serve_forever()
+
+    # ========================================================
+    # SEND A2A MESSAGE
+    # ========================================================
+
+    async def send_message(
+        self,
+        host: str,
+        port: int,
+        message: Dict[str, Any],
+    ) -> Dict[str, Any]:
+
+        reader, writer = await asyncio.open_connection(
+            host,
+            port,
+        )
+
+        writer.write(
+            (
+                json.dumps(message)
+                + "\n"
+            ).encode("utf-8")
+        )
+
+        await writer.drain()
+
+        data = await reader.readline()
+
+        writer.close()
+
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+        if not data:
+            return {
+                "status":
+                    "no_response"
+            }
+
+        return json.loads(
+            data.decode("utf-8")
+        )
+
+    # ========================================================
+    # SEND TASK TO OTHER AGENT
+    # ========================================================
+
+    async def send_task(
+        self,
+        host: str,
+        port: int,
+        target_agent: str,
+        task_type: str,
+        payload: Dict[str, Any],
+        requires_approval: bool = True,
+    ) -> Dict[str, Any]:
+
+        task = self.create_task(
+            target=target_agent,
+            task_type=task_type,
+            payload=payload,
+            requires_approval=requires_approval,
+        )
+
+        message = (
+            self.build_a2a_task_message(
+                task
+            )
+        )
+
+        return await self.send_message(
+            host,
+            port,
+            message,
+        )
+
+    # ========================================================
+    # STATUS
+    # ========================================================
+
+    def status(self) -> Dict[str, Any]:
+
+        wormhole = self.wormhole.last_result
+
+        return {
+
+            "system":
+                "Universal TwinOS",
+
+            "platform":
+                platform.platform(),
+
+            "python":
+                sys.version,
+
+            "twin":
+                asdict(
+                    self.identity
+                ),
+
+            "historical_events":
+                len(
+                    self.memory.events
+                ),
+
+            "dataset_records":
+                len(
+                    self.dataset.records
+                ),
+
+            "wormhole_active":
+                wormhole is not None,
+
+            "wormhole_confidence":
+                (
+                    wormhole.confidence
+                    if wormhole
+                    else 0.0
+                ),
+
+            "selected_event":
+                (
+                    wormhole.selected_event_id
+                    if wormhole
+                    else None
+                ),
+
+            "provenance_blocks":
+                len(
+                    self.provenance.chain
+                ),
+
+            "provenance_valid":
+                self.provenance.verify(),
+
+            "capabilities":
+                self.capabilities()
+                .capability_names(),
+        }
+
+
+# ============================================================
+# DEMO DATA
+# ============================================================
+
+def load_demo_history(
+    node: UniversalAgentNode,
+):
+
+    node.add_history(
+        title="Summer evening",
+        description=(
+            "Outdoor evening with warm light, "
+            "trees, people, conversation and music."
+        ),
+        tags=[
+            "summer",
+            "evening",
+            "outdoors",
+            "music",
+        ],
+        metadata={
+            "environment":
+                "outdoors",
+
+            "time":
+                "evening",
+        },
+    )
+
+    node.add_history(
+        title="Computer development session",
+        description=(
+            "Working on software architecture, "
+            "code and AI development at a computer."
+        ),
+        tags=[
+            "computer",
+            "coding",
+            "AI",
+            "development",
+        ],
+        metadata={
+            "environment":
+                "computer",
+
+            "activity":
+                "development",
+        },
+    )
+
+    node.add_history(
+        title="Travel memory",
+        description=(
+            "Travel event involving roads, "
+            "buildings, changing scenery and audio."
+        ),
+        tags=[
+            "travel",
+            "road",
+            "audio",
+        ],
+        metadata={
+            "activity":
+                "travel",
+        },
+    )
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+async def main():
+
+    parser = argparse.ArgumentParser(
+        description=
+        "Universal TwinOS with EEG-Hormone Wormhole"
+    )
+
+    parser.add_argument(
+        "--server",
+        action="store_true",
+        help="Start A2A network server",
+    )
+
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+    )
+
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run wormhole reconstruction demo",
+    )
+
+    parser.add_argument(
+        "--status",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--reconstruct",
+        type=str,
+        default=None,
+        help="User guidance for reconstruction",
+    )
+
+    parser.add_argument(
+        "--feedback",
+        type=str,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--discover",
+        nargs=2,
+        metavar=("HOST", "PORT"),
+    )
+
+    parser.add_argument(
+        "--send",
+        nargs=4,
+        metavar=(
+            "HOST",
+            "PORT",
+            "AGENT",
+            "TASK",
+        ),
+    )
+
+    args = parser.parse_args()
+
+    config = Config(
+        host=args.host,
+        port=args.port,
+    )
+
+    node = UniversalAgentNode(
+        config
+    )
+
+    # --------------------------------------------------------
+    # DEMO HISTORY
+    # --------------------------------------------------------
+
+    load_demo_history(node)
+
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    if args.status:
+
+        print(
+            json.dumps(
+                node.status(),
+                indent=2,
+                default=str,
+            )
+        )
+
+    # --------------------------------------------------------
+    # RECONSTRUCTION
+    # --------------------------------------------------------
+
+    if args.reconstruct:
+
+        result = node.reconstruct_event(
+            args.reconstruct
+        )
+
+        output = {
+
+            "wormhole_id":
+                result[
+                    "wormhole"
+                ].wormhole_id,
+
+            "confidence":
+                result[
+                    "wormhole"
+                ].confidence,
+
+            "selected_event":
+                result[
+                    "wormhole"
+                ].selected_event_id,
+
+            "matches": [
+
+                {
+                    "event_id":
+                        match.event_id,
+
+                    "score":
+                        match.score,
+
+                    "confidence":
+                        match.confidence,
+
+                    "evidence":
+                        match.evidence,
+                }
+
+                for match
+                in result[
+                    "wormhole"
+                ].matches
+            ],
+
+            "scene":
+                result[
+                    "wormhole"
+                ].scene_state,
+
+            "image":
+                result["image"],
+
+            "video":
+                result["video"],
+        }
+
+        print(
+            json.dumps(
+                output,
+                indent=2,
+                default=str,
+            )
+        )
+
+    # --------------------------------------------------------
+    # FEEDBACK
+    # --------------------------------------------------------
+
+    if args.feedback:
+
+        node.provide_feedback(
+            args.feedback
+        )
+
+        print(
+            "Feedback recorded."
+        )
+
+    # --------------------------------------------------------
+    # DEMO
+    # --------------------------------------------------------
+
+    if args.demo:
+
+        print(
+            "\n=== EEG-HORMONE WORMHOLE DEMO ===\n"
+        )
+
+        result = node.reconstruct_event(
+            user_guidance=(
+                "I am thinking about "
+                "an evening outdoors with "
+                "music and trees."
+            )
+        )
+
+        wormhole = result[
+            "wormhole"
+        ]
+
+        print(
+            "Wormhole:",
+            wormhole.wormhole_id,
+        )
+
+        print(
+            "Selected event:",
+            wormhole.selected_event_id,
+        )
+
+        print(
+            "Confidence:",
+            wormhole.confidence,
+        )
+
+        print(
+            "\nCandidate events:"
+        )
+
+        for match in wormhole.matches:
+
+            print(
+                " ",
+                match.event_id,
+                "score=",
+                round(
+                    match.score,
+                    4,
+                ),
+                "confidence=",
+                round(
+                    match.confidence,
+                    4,
+                ),
+            )
+
+        print(
+            "\nScene:"
+        )
+
+        print(
+            json.dumps(
+                wormhole.scene_state,
+                indent=2,
+            )
+        )
+
+        print(
+            "\nGenerated image request:"
+        )
+
+        print(
+            json.dumps(
+                result["image"],
+                indent=2,
+            )
+        )
+
+        print(
+            "\nGenerated video request:"
+        )
+
+        print(
+            json.dumps(
+                result["video"],
+                indent=2,
+            )
+        )
+
+    # --------------------------------------------------------
+    # DISCOVER REMOTE AGENT
+    # --------------------------------------------------------
+
+    if args.discover:
+
+        host = args.discover[0]
+        port = int(
+            args.discover[1]
+        )
+
+        message = UniversalA2A.message(
+            node.identity,
+
+            "remote",
+
+            "IDENTITY_REQUEST",
+
+            {},
+        )
+
+        response = await node.send_message(
+            host,
+            port,
+            message,
+        )
+
+        print(
+            json.dumps(
+                response,
+                indent=2,
+                default=str,
+            )
+        )
+
+    # --------------------------------------------------------
+    # SEND TASK
+    # --------------------------------------------------------
+
+    if args.send:
+
+        host = args.send[0]
+        port = int(
+            args.send[1]
+        )
+
+        agent = args.send[2]
+
+        task_type = args.send[3]
+
+        response = await node.send_task(
+            host,
+            port,
+            agent,
+            task_type,
+            {
+                "message":
+                    "Task generated by Universal TwinOS",
+
+                "wormhole_context":
+                    node.wormhole_context_for_agent(
+                        agent
+                    ),
+            },
+        )
+
+        print(
+            json.dumps(
+                response,
+                indent=2,
+                default=str,
+            )
+        )
+
+    # --------------------------------------------------------
+    # SERVER
+    # --------------------------------------------------------
+
+    if args.server:
+
+        await node.start_server()
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+
+    try:
+
+        asyncio.run(
+            main()
+        )
+
+    except KeyboardInterrupt:
+
+        print(
+            "\nUniversal TwinOS stopped."
+        )

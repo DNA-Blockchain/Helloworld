@@ -37,6 +37,20 @@ python rabbit.py export --format jsonl --out records.jsonl  # with provenance, f
 
 ---
 
+## Research prototype: Universal TwinOS + EEG/Hormone Wormhole
+
+[`research/universal_twinos_eeg_wormhole.py`](research/universal_twinos_eeg_wormhole.py)
+is a single-file research architecture that links a personal digital twin,
+EEG/physiology context, historical event matching, scene reconstruction and an
+OS/network-neutral agent protocol, with a hash-based provenance chain.
+
+**Prototype only. Not clinically validated and not for handling real
+genetic, EEG or health data.** EEG and physiology are treated as
+probabilistic context, not as a readout of private thoughts or memories. Raw
+sensitive data stays off-chain; provenance records hold only hashes and
+metadata. Try it with `python research/universal_twinos_eeg_wormhole.py --demo`.
+If you use `--server`, bind it to localhost only.
+
 ## What it actually does
 
 | Piece | File | What's real |
